@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+config.live.json
+data/*.csv
+!data/.gitkeep
+freqtrade_user_data/data/
+freqtrade_user_data/models/
+freqtrade_user_data/*.sqlite
+freqtrade_user_data/*.sqlite-*
+freqtrade_user_data/backtest_results/

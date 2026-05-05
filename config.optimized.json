@@ -1,0 +1,39 @@
+{
+  "data": {
+    "symbol": "BTCUSDT",
+    "timeframe": "1m",
+    "path": "data/sample_btcusdt_1m.csv"
+  },
+  "strategy": {
+    "fast_ema": 9,
+    "slow_ema": 21,
+    "atr_period": 14,
+    "channel_period": 14,
+    "min_atr_pct": 0.00035,
+    "max_atr_pct": 0.01,
+    "breakout_buffer_atr": 0.2,
+    "ema_gap_atr": 0.2,
+    "volume_period": 20,
+    "min_volume_ratio": 1.0,
+    "stop_loss_atr": 2.0,
+    "take_profit_atr": 2.4,
+    "breakeven_atr": 0.0,
+    "trailing_activation_atr": 1.5,
+    "trailing_stop_atr": 0.0,
+    "max_holding_bars": 30,
+    "allow_short": true
+  },
+  "risk": {
+    "initial_equity": 10000.0,
+    "fee_bps": 4.0,
+    "slippage_bps": 2.0,
+    "max_leverage": 2.0,
+    "risk_per_trade_pct": 0.005,
+    "max_position_notional_pct": 1.0,
+    "max_daily_loss_pct": 0.03,
+    "max_drawdown_pct": 0.15,
+    "maintenance_margin_pct": 0.005,
+    "min_order_notional": 10.0,
+    "cooldown_bars_after_loss": 5
+  }
+}

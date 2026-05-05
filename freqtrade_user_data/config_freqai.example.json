@@ -1,0 +1,126 @@
+{
+  "$schema": "https://schema.freqtrade.io/schema.json",
+  "bot_name": "freqai-market-regime",
+  "initial_state": "running",
+  "dry_run": true,
+  "dry_run_wallet": 10000,
+  "trading_mode": "futures",
+  "margin_mode": "isolated",
+  "stake_currency": "USDT",
+  "stake_amount": 500,
+  "tradable_balance_ratio": 0.5,
+  "max_open_trades": 2,
+  "timeframe": "15m",
+  "cancel_open_orders_on_exit": true,
+  "unfilledtimeout": {
+    "entry": 10,
+    "exit": 10,
+    "exit_timeout_count": 0,
+    "unit": "minutes"
+  },
+  "entry_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0.0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 1
+    }
+  },
+  "exit_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1
+  },
+  "exchange": {
+    "name": "binance",
+    "key": "",
+    "secret": "",
+    "ccxt_config": {
+      "enableRateLimit": true,
+      "options": {
+        "defaultType": "swap",
+        "fetchMarkets": {
+          "types": ["linear"]
+        }
+      }
+    },
+    "ccxt_async_config": {
+      "enableRateLimit": true,
+      "aiohttp_trust_env": false,
+      "options": {
+        "defaultType": "swap",
+        "fetchMarkets": {
+          "types": ["linear"]
+        }
+      }
+    },
+    "pair_whitelist": [
+      "BTC/USDT:USDT",
+      "SOL/USDT:USDT",
+      "ADA/USDT:USDT",
+      "LTC/USDT:USDT"
+    ],
+    "pair_blacklist": []
+  },
+  "pairlists": [
+    {
+      "method": "StaticPairList"
+    }
+  ],
+  "freqai": {
+    "enabled": true,
+    "identifier": "freqai-market-regime-v7-edge-filtered",
+    "purge_old_models": 2,
+    "train_period_days": 14,
+    "backtest_period_days": 5,
+    "live_retrain_hours": 12,
+    "expired_hours": 24,
+    "fit_live_predictions_candles": 300,
+    "feature_parameters": {
+      "include_timeframes": ["15m", "1h"],
+      "include_corr_pairlist": [
+        "BTC/USDT:USDT"
+      ],
+      "label_period_candles": 8,
+      "include_shifted_candles": 1,
+      "indicator_periods_candles": [14, 28],
+      "weight_factor": 0.9,
+      "principal_component_analysis": false,
+      "use_SVM_to_remove_outliers": false
+    },
+    "data_split_parameters": {
+      "test_size": 0.15,
+      "random_state": 42
+    },
+    "model_training_parameters": {
+      "n_estimators": 180,
+      "learning_rate": 0.03,
+      "num_leaves": 24,
+      "max_depth": -1,
+      "min_child_samples": 40,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "n_jobs": 1,
+      "verbosity": -1
+    }
+  },
+  "api_server": {
+    "enabled": false,
+    "listen_ip_address": "127.0.0.1",
+    "listen_port": 8080,
+    "verbosity": "error",
+    "enable_openapi": false,
+    "username": "freqtrader",
+    "password": "change-me",
+    "jwt_secret_key": "change-me",
+    "ws_token": "change-me",
+    "CORS_origins": []
+  },
+  "telegram": {
+    "enabled": false,
+    "token": "",
+    "chat_id": ""
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://schema.freqtrade.io/schema.json",
+  "bot_name": "regime-pullback-baseline",
+  "initial_state": "running",
+  "dry_run": true,
+  "dry_run_wallet": 10000,
+  "trading_mode": "futures",
+  "margin_mode": "isolated",
+  "stake_currency": "USDT",
+  "stake_amount": 500,
+  "tradable_balance_ratio": 0.5,
+  "max_open_trades": 2,
+  "timeframe": "15m",
+  "cancel_open_orders_on_exit": true,
+  "unfilledtimeout": {
+    "entry": 10,
+    "exit": 10,
+    "exit_timeout_count": 0,
+    "unit": "minutes"
+  },
+  "entry_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0.0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 1
+    }
+  },
+  "exit_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1
+  },
+  "exchange": {
+    "name": "binance",
+    "key": "",
+    "secret": "",
+    "ccxt_config": {
+      "enableRateLimit": true,
+      "options": {
+        "defaultType": "swap",
+        "fetchMarkets": {
+          "types": ["linear"]
+        }
+      }
+    },
+    "ccxt_async_config": {
+      "enableRateLimit": true,
+      "aiohttp_trust_env": false,
+      "options": {
+        "defaultType": "swap",
+        "fetchMarkets": {
+          "types": ["linear"]
+        }
+      }
+    },
+    "pair_whitelist": [
+      "BTC/USDT:USDT",
+      "SOL/USDT:USDT",
+      "ADA/USDT:USDT",
+      "LTC/USDT:USDT"
+    ],
+    "pair_blacklist": []
+  },
+  "pairlists": [
+    {
+      "method": "StaticPairList"
+    }
+  ],
+  "api_server": {
+    "enabled": false,
+    "listen_ip_address": "127.0.0.1",
+    "listen_port": 8080,
+    "verbosity": "error",
+    "enable_openapi": false,
+    "username": "freqtrader",
+    "password": "change-me",
+    "jwt_secret_key": "change-me",
+    "ws_token": "change-me",
+    "CORS_origins": []
+  },
+  "telegram": {
+    "enabled": false,
+    "token": "",
+    "chat_id": ""
+  }
+}
