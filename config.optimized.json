@@ -1,0 +1,51 @@
+{
+  "data": {
+    "symbol": "BTCUSDT",
+    "timeframe": "15m",
+    "path": "data/binance_15m_30d/BTCUSDT_15m_20260505_20260604.csv"
+  },
+  "strategy": {
+    "fast_ema": 8,
+    "slow_ema": 89,
+    "atr_period": 10,
+    "channel_period": 30,
+    "min_atr_pct": 0.001,
+    "max_atr_pct": 0.02,
+    "breakout_buffer_atr": 0.1,
+    "ema_gap_atr": 0.0,
+    "volume_period": 20,
+    "min_volume_ratio": 1.0,
+    "stop_loss_atr": 1.6,
+    "take_profit_atr": 4.0,
+    "breakeven_atr": 2.0,
+    "trailing_activation_atr": 1.5,
+    "trailing_stop_atr": 1.0,
+    "max_holding_bars": 24,
+    "spike_guard_enabled": false,
+    "spike_min_range_atr": 3.0,
+    "spike_min_wick_atr": 1.4,
+    "spike_min_wick_ratio": 0.7,
+    "spike_min_volume_ratio": 1.2,
+    "spike_block_bars": 3,
+    "spike_trade_enabled": true,
+    "spike_recovery_ratio": 0.45,
+    "spike_stop_atr": 0.7,
+    "spike_take_profit_atr": 0.9,
+    "spike_risk_multiplier": 0.2,
+    "spike_max_holding_bars": 4,
+    "allow_short": true
+  },
+  "risk": {
+    "initial_equity": 10000.0,
+    "fee_bps": 4.0,
+    "slippage_bps": 2.0,
+    "max_leverage": 30.0,
+    "risk_per_trade_pct": 0.008,
+    "max_position_notional_pct": 3.0,
+    "max_daily_loss_pct": 0.03,
+    "max_drawdown_pct": 0.1,
+    "maintenance_margin_pct": 0.005,
+    "min_order_notional": 5.0,
+    "cooldown_bars_after_loss": 2
+  }
+}

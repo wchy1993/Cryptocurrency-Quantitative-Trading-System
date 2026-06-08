@@ -1,0 +1,13 @@
+[project]
+name = "crypto-scalper"
+version = "0.1.0"
+description = "Research-first crypto futures scalping backtest toolkit"
+requires-python = ">=3.10"
+
+[project.scripts]
+crypto-scalper = "crypto_scalper.cli:main"
+crypto-scalper-gui = "crypto_scalper.gui:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

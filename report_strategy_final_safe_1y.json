@@ -1,0 +1,648 @@
+{
+  "initial_equity": 160.0,
+  "final_equity": 380832.09766802157,
+  "net_return_pct": 237920.0610425135,
+  "monthly_return_pct": 19842.51679319056,
+  "max_drawdown_pct": 22.239233344703173,
+  "total_trades": 14894,
+  "wins": 13332,
+  "losses": 1562,
+  "win_rate_pct": 89.51255539143278,
+  "profit_factor": 1.6365164501352873,
+  "avg_trade_pnl": 25.558755046865954,
+  "avg_trade_return_pct": 0.14177636615634437,
+  "scale_ins": 523,
+  "long": {
+    "trades": 6474,
+    "net_pnl": 165752.59575602956,
+    "win_rate_pct": 88.58510966944702,
+    "profit_factor": 1.5343905431952538
+  },
+  "short": {
+    "trades": 8420,
+    "net_pnl": 214919.50191199227,
+    "win_rate_pct": 90.22565320665083,
+    "profit_factor": 1.7465486481721988
+  },
+  "strategy_buckets": [
+    {
+      "name": "breakout",
+      "trades": 2013,
+      "net_pnl": 74739.42164339553,
+      "win_rate_pct": 89.81619473422752,
+      "profit_factor": 1.9590959986572776,
+      "long_trades": 864,
+      "long_pnl": 47245.84669342023,
+      "short_trades": 1149,
+      "short_pnl": 27493.574949975176
+    },
+    {
+      "name": "indicator_reversal",
+      "trades": 10259,
+      "net_pnl": 184732.98380058532,
+      "win_rate_pct": 89.38493030509797,
+      "profit_factor": 1.4523820972143178,
+      "long_trades": 4385,
+      "long_pnl": 54545.081137095796,
+      "short_trades": 5874,
+      "short_pnl": 130187.9026634895
+    },
+    {
+      "name": "pullback_reclaim",
+      "trades": 1645,
+      "net_pnl": 51644.05095648785,
+      "win_rate_pct": 89.17933130699089,
+      "profit_factor": 1.7247737021154839,
+      "long_trades": 577,
+      "long_pnl": 18589.160426197817,
+      "short_trades": 1068,
+      "short_pnl": 33054.89053029002
+    },
+    {
+      "name": "super_volume_startup",
+      "trades": 977,
+      "net_pnl": 69555.6412675533,
+      "win_rate_pct": 90.78812691914023,
+      "profit_factor": 2.7167049040958897,
+      "long_trades": 648,
+      "long_pnl": 45372.50749931532,
+      "short_trades": 329,
+      "short_pnl": 24183.133768238087
+    }
+  ],
+  "entry_reasons": [
+    {
+      "name": "short_pullback_reject score=0.96",
+      "trades": 83,
+      "net_pnl": 7025.868507738034,
+      "win_rate_pct": 90.36144578313254,
+      "profit_factor": 3.788122887418152,
+      "long_trades": 0,
+      "long_pnl": 0,
+      "short_trades": 83,
+      "short_pnl": 7025.868507738034
+    },
+    {
+      "name": "long_breakout score=0.97",
+      "trades": 140,
+      "net_pnl": 6782.812371463014,
+      "win_rate_pct": 87.85714285714286,
+      "profit_factor": 2.608968453287483,
+      "long_trades": 140,
+      "long_pnl": 6782.812371463014,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "long_pullback_reclaim score=0.99",
+      "trades": 24,
+      "net_pnl": 6260.617427026288,
+      "win_rate_pct": 91.66666666666666,
+      "profit_factor": 62.82673481420342,
+      "long_trades": 24,
+      "long_pnl": 6260.617427026288,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "long_pullback_reclaim score=0.97",
+      "trades": 134,
+      "net_pnl": 6150.438408887473,
+      "win_rate_pct": 92.53731343283582,
+      "profit_factor": 3.5736669132252366,
+      "long_trades": 134,
+      "long_pnl": 6150.438408887473,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "long_breakout score=0.86",
+      "trades": 62,
+      "net_pnl": 4673.400457481862,
+      "win_rate_pct": 91.93548387096774,
+      "profit_factor": 4.915750832563288,
+      "long_trades": 62,
+      "long_pnl": 4673.400457481862,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "long_breakout score=0.87",
+      "trades": 52,
+      "net_pnl": 4603.433143911337,
+      "win_rate_pct": 90.38461538461539,
+      "profit_factor": 4.5589429024450485,
+      "long_trades": 52,
+      "long_pnl": 4603.433143911337,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "long_breakout score=0.89",
+      "trades": 41,
+      "net_pnl": 4471.91285664053,
+      "win_rate_pct": 90.2439024390244,
+      "profit_factor": 31.507901141280374,
+      "long_trades": 41,
+      "long_pnl": 4471.91285664053,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "long_pullback_reclaim score=0.96",
+      "trades": 65,
+      "net_pnl": 4015.146734028359,
+      "win_rate_pct": 92.3076923076923,
+      "profit_factor": 4.6032023650999365,
+      "long_trades": 65,
+      "long_pnl": 4015.146734028359,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "short_pullback_reject score=0.80",
+      "trades": 90,
+      "net_pnl": 3663.575044618247,
+      "win_rate_pct": 92.22222222222223,
+      "profit_factor": 2.670342294482286,
+      "long_trades": 0,
+      "long_pnl": 0,
+      "short_trades": 90,
+      "short_pnl": 3663.575044618247
+    },
+    {
+      "name": "short_pullback_reject score=0.81",
+      "trades": 53,
+      "net_pnl": 3452.445364479784,
+      "win_rate_pct": 94.33962264150944,
+      "profit_factor": 5.608492343942207,
+      "long_trades": 0,
+      "long_pnl": 0,
+      "short_trades": 53,
+      "short_pnl": 3452.445364479784
+    },
+    {
+      "name": "short_breakdown score=0.71",
+      "trades": 37,
+      "net_pnl": 3386.5018686568674,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "long_trades": 0,
+      "long_pnl": 0,
+      "short_trades": 37,
+      "short_pnl": 3386.5018686568674
+    },
+    {
+      "name": "long_breakout score=0.98",
+      "trades": 90,
+      "net_pnl": 3371.0791420320256,
+      "win_rate_pct": 91.11111111111111,
+      "profit_factor": 2.3287400137648113,
+      "long_trades": 90,
+      "long_pnl": 3371.0791420320256,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "long_breakout score=0.93",
+      "trades": 51,
+      "net_pnl": 3367.1565730218463,
+      "win_rate_pct": 88.23529411764706,
+      "profit_factor": 2.191830268404375,
+      "long_trades": 51,
+      "long_pnl": 3367.1565730218463,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "long_pullback_reclaim score=0.98",
+      "trades": 42,
+      "net_pnl": 3273.0098162063628,
+      "win_rate_pct": 92.85714285714286,
+      "profit_factor": 2.433269626776272,
+      "long_trades": 42,
+      "long_pnl": 3273.0098162063628,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "long_breakout score=0.92",
+      "trades": 50,
+      "net_pnl": 3179.065422552986,
+      "win_rate_pct": 94.0,
+      "profit_factor": 2.962270628379981,
+      "long_trades": 50,
+      "long_pnl": 3179.065422552986,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "short_breakdown score=0.90",
+      "trades": 36,
+      "net_pnl": 3157.8386488275723,
+      "win_rate_pct": 97.22222222222221,
+      "profit_factor": 16.00217699907591,
+      "long_trades": 0,
+      "long_pnl": 0,
+      "short_trades": 36,
+      "short_pnl": 3157.8386488275723
+    },
+    {
+      "name": "short_breakdown score=0.82",
+      "trades": 53,
+      "net_pnl": 3147.1920212144805,
+      "win_rate_pct": 90.56603773584906,
+      "profit_factor": 8.605135862815585,
+      "long_trades": 0,
+      "long_pnl": 0,
+      "short_trades": 53,
+      "short_pnl": 3147.1920212144805
+    },
+    {
+      "name": "short_pullback_reject score=0.97",
+      "trades": 171,
+      "net_pnl": 3068.1174380889165,
+      "win_rate_pct": 86.54970760233918,
+      "profit_factor": 1.3009708045189146,
+      "long_trades": 0,
+      "long_pnl": 0,
+      "short_trades": 171,
+      "short_pnl": 3068.1174380889165
+    },
+    {
+      "name": "long_breakout score=0.85",
+      "trades": 36,
+      "net_pnl": 2753.6554353025044,
+      "win_rate_pct": 94.44444444444444,
+      "profit_factor": 9.61091902335558,
+      "long_trades": 36,
+      "long_pnl": 2753.6554353025044,
+      "short_trades": 0,
+      "short_pnl": 0
+    },
+    {
+      "name": "long_breakout_super_volume volume=9.86x score=1.00",
+      "trades": 1,
+      "net_pnl": 2668.5680170276873,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "long_trades": 1,
+      "long_pnl": 2668.5680170276873,
+      "short_trades": 0,
+      "short_pnl": 0
+    }
+  ],
+  "monthly": [
+    {
+      "month": "2025-06",
+      "start_equity": 160.0,
+      "end_equity": 415.6993103576906,
+      "pnl": 255.6993103576906,
+      "return_pct": 159.81206897355662,
+      "opened": 897,
+      "closed": 893,
+      "long": {
+        "opened": 393,
+        "closed": 391,
+        "wins": 354,
+        "losses": 37,
+        "pnl": 155.69451827119096,
+        "win_rate_pct": 90.53708439897699,
+        "profit_factor": 2.178956219601937
+      },
+      "short": {
+        "opened": 504,
+        "closed": 502,
+        "wins": 459,
+        "losses": 43,
+        "pnl": 101.21707639831446,
+        "win_rate_pct": 91.43426294820716,
+        "profit_factor": 1.890679898211516
+      }
+    },
+    {
+      "month": "2025-07",
+      "start_equity": 417.31577627871593,
+      "end_equity": 1441.4656880093642,
+      "pnl": 1024.1499117306482,
+      "return_pct": 245.4136579410411,
+      "opened": 1354,
+      "closed": 1358,
+      "long": {
+        "opened": 592,
+        "closed": 594,
+        "wins": 533,
+        "losses": 61,
+        "pnl": 694.3440585705112,
+        "win_rate_pct": 89.73063973063972,
+        "profit_factor": 2.00210990301847
+      },
+      "short": {
+        "opened": 762,
+        "closed": 764,
+        "wins": 690,
+        "losses": 74,
+        "pnl": 330.210034769346,
+        "win_rate_pct": 90.31413612565446,
+        "profit_factor": 1.8049525190288964
+      }
+    },
+    {
+      "month": "2025-08",
+      "start_equity": 1441.4656880093642,
+      "end_equity": 3031.665611268609,
+      "pnl": 1590.199923259245,
+      "return_pct": 110.31826400635869,
+      "opened": 1246,
+      "closed": 1242,
+      "long": {
+        "opened": 520,
+        "closed": 519,
+        "wins": 457,
+        "losses": 62,
+        "pnl": 809.5447349767261,
+        "win_rate_pct": 88.0539499036609,
+        "profit_factor": 1.3991247676491383
+      },
+      "short": {
+        "opened": 726,
+        "closed": 723,
+        "wins": 650,
+        "losses": 73,
+        "pnl": 733.5970978096321,
+        "win_rate_pct": 89.90318118948825,
+        "profit_factor": 1.5331702294321092
+      }
+    },
+    {
+      "month": "2025-09",
+      "start_equity": 3044.696605550491,
+      "end_equity": 4754.370420579187,
+      "pnl": 1709.6738150286965,
+      "return_pct": 56.152518182335676,
+      "opened": 1185,
+      "closed": 1188,
+      "long": {
+        "opened": 532,
+        "closed": 532,
+        "wins": 462,
+        "losses": 70,
+        "pnl": 754.3542794135468,
+        "win_rate_pct": 86.8421052631579,
+        "profit_factor": 1.2277261495314657
+      },
+      "short": {
+        "opened": 653,
+        "closed": 656,
+        "wins": 576,
+        "losses": 80,
+        "pnl": 1010.6957138265968,
+        "win_rate_pct": 87.8048780487805,
+        "profit_factor": 1.4409304306825321
+      }
+    },
+    {
+      "month": "2025-10",
+      "start_equity": 4758.199459003827,
+      "end_equity": 9122.587783050201,
+      "pnl": 4364.388324046375,
+      "return_pct": 91.72352612893829,
+      "opened": 1167,
+      "closed": 1164,
+      "long": {
+        "opened": 474,
+        "closed": 472,
+        "wins": 413,
+        "losses": 59,
+        "pnl": 2012.7162130672289,
+        "win_rate_pct": 87.5,
+        "profit_factor": 1.331370434910583
+      },
+      "short": {
+        "opened": 693,
+        "closed": 692,
+        "wins": 625,
+        "losses": 67,
+        "pnl": 2509.5293112669356,
+        "win_rate_pct": 90.3179190751445,
+        "profit_factor": 1.5533699065364563
+      }
+    },
+    {
+      "month": "2025-11",
+      "start_equity": 9150.768741469516,
+      "end_equity": 26979.095182307632,
+      "pnl": 17828.326440838115,
+      "return_pct": 194.82872908855825,
+      "opened": 1272,
+      "closed": 1273,
+      "long": {
+        "opened": 568,
+        "closed": 570,
+        "wins": 510,
+        "losses": 60,
+        "pnl": 8428.238338823317,
+        "win_rate_pct": 89.47368421052632,
+        "profit_factor": 1.3813944553794173
+      },
+      "short": {
+        "opened": 704,
+        "closed": 703,
+        "wins": 641,
+        "losses": 62,
+        "pnl": 9574.186297683013,
+        "win_rate_pct": 91.18065433854908,
+        "profit_factor": 1.706271496672554
+      }
+    },
+    {
+      "month": "2025-12",
+      "start_equity": 27818.019944885826,
+      "end_equity": 56040.40771811395,
+      "pnl": 28222.387773228125,
+      "return_pct": 101.45361829901427,
+      "opened": 1141,
+      "closed": 1141,
+      "long": {
+        "opened": 469,
+        "closed": 467,
+        "wins": 412,
+        "losses": 55,
+        "pnl": 16764.985344304154,
+        "win_rate_pct": 88.22269807280514,
+        "profit_factor": 1.6690901681391852
+      },
+      "short": {
+        "opened": 672,
+        "closed": 674,
+        "wins": 596,
+        "losses": 78,
+        "pnl": 12150.594794869914,
+        "win_rate_pct": 88.4272997032641,
+        "profit_factor": 1.4013365344244901
+      }
+    },
+    {
+      "month": "2026-01",
+      "start_equity": 56392.81091151395,
+      "end_equity": 127883.35907000794,
+      "pnl": 71490.54815849398,
+      "return_pct": 126.7724502519832,
+      "opened": 1348,
+      "closed": 1350,
+      "long": {
+        "opened": 579,
+        "closed": 581,
+        "wins": 521,
+        "losses": 60,
+        "pnl": 38491.96434304315,
+        "win_rate_pct": 89.67297762478485,
+        "profit_factor": 1.93186238269574
+      },
+      "short": {
+        "opened": 769,
+        "closed": 769,
+        "wins": 696,
+        "losses": 73,
+        "pnl": 33079.25259427624,
+        "win_rate_pct": 90.50715214564369,
+        "profit_factor": 1.9001628419910996
+      }
+    },
+    {
+      "month": "2026-02",
+      "start_equity": 127836.05930141313,
+      "end_equity": 159665.70016220986,
+      "pnl": 31829.64086079673,
+      "return_pct": 24.89879697069548,
+      "opened": 1040,
+      "closed": 1041,
+      "long": {
+        "opened": 413,
+        "closed": 414,
+        "wins": 354,
+        "losses": 60,
+        "pnl": -3488.825727698755,
+        "win_rate_pct": 85.5072463768116,
+        "profit_factor": 0.9380513053595962
+      },
+      "short": {
+        "opened": 627,
+        "closed": 627,
+        "wins": 565,
+        "losses": 62,
+        "pnl": 35393.40113853847,
+        "win_rate_pct": 90.1116427432217,
+        "profit_factor": 1.726932758381058
+      }
+    },
+    {
+      "month": "2026-03",
+      "start_equity": 159665.70016220986,
+      "end_equity": 190038.23632608308,
+      "pnl": 30372.536163873214,
+      "return_pct": 19.0225803870316,
+      "opened": 1312,
+      "closed": 1308,
+      "long": {
+        "opened": 574,
+        "closed": 572,
+        "wins": 487,
+        "losses": 85,
+        "pnl": 3547.9451994863307,
+        "win_rate_pct": 85.13986013986013,
+        "profit_factor": 1.057833573297564
+      },
+      "short": {
+        "opened": 738,
+        "closed": 736,
+        "wins": 668,
+        "losses": 68,
+        "pnl": 26832.94779676059,
+        "win_rate_pct": 90.76086956521739,
+        "profit_factor": 1.5263559346638849
+      }
+    },
+    {
+      "month": "2026-04",
+      "start_equity": 189995.29203713,
+      "end_equity": 249144.03816739164,
+      "pnl": 59148.74613026163,
+      "return_pct": 31.131690420361803,
+      "opened": 1292,
+      "closed": 1292,
+      "long": {
+        "opened": 597,
+        "closed": 595,
+        "wins": 535,
+        "losses": 60,
+        "pnl": 39297.68220338363,
+        "win_rate_pct": 89.91596638655463,
+        "profit_factor": 2.0681969009318415
+      },
+      "short": {
+        "opened": 695,
+        "closed": 697,
+        "wins": 618,
+        "losses": 79,
+        "pnl": 20347.914632456897,
+        "win_rate_pct": 88.66571018651362,
+        "profit_factor": 1.39271447567084
+      }
+    },
+    {
+      "month": "2026-05",
+      "start_equity": 249392.8909699026,
+      "end_equity": 358423.37842778343,
+      "pnl": 109030.48745788084,
+      "return_pct": 43.71836223312353,
+      "opened": 1442,
+      "closed": 1445,
+      "long": {
+        "opened": 685,
+        "closed": 689,
+        "wins": 630,
+        "losses": 59,
+        "pnl": 58398.03357971857,
+        "win_rate_pct": 91.43686502177069,
+        "profit_factor": 2.372212505538903
+      },
+      "short": {
+        "opened": 757,
+        "closed": 756,
+        "wins": 695,
+        "losses": 61,
+        "pnl": 50359.401103660646,
+        "win_rate_pct": 91.93121693121694,
+        "profit_factor": 2.150928210798832
+      }
+    },
+    {
+      "month": "2026-06",
+      "start_equity": 358451.28021338343,
+      "end_equity": 380832.09766802157,
+      "pnl": 22380.817454638134,
+      "return_pct": 6.24375436497674,
+      "opened": 198,
+      "closed": 199,
+      "long": {
+        "opened": 78,
+        "closed": 78,
+        "wins": 67,
+        "losses": 11,
+        "pnl": -114.08132933053514,
+        "win_rate_pct": 85.8974358974359,
+        "profit_factor": 0.990842976025161
+      },
+      "short": {
+        "opened": 120,
+        "closed": 121,
+        "wins": 118,
+        "losses": 3,
+        "pnl": 22496.55431967604,
+        "win_rate_pct": 97.52066115702479,
+        "profit_factor": 7.732620125194895
+      }
+    }
+  ]
+}

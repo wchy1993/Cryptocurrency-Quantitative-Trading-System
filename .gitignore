@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
+.venv/
+venv/
+.env
+config.live.json
+data/*.csv
+data/**/*.csv
+data/binance_*/
+!data/.gitkeep
+!data/macro_events_us_major_2025_2026.csv
+!data/sample_btcusdt_1m.csv
