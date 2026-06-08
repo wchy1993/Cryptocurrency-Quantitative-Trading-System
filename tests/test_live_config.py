@@ -8,6 +8,7 @@ import time
 import unittest
 
 from crypto_scalper.binance_client import BinanceApiError, BinanceFuturesClient, SymbolRules
+from crypto_scalper.gui import _position_symbols_first
 from crypto_scalper.live_config import default_live_config, load_live_config, write_live_config
 from crypto_scalper.live_trader import (
     AccountSnapshot,
@@ -23,6 +24,14 @@ from crypto_scalper.models import Candle, Direction, Signal
 
 
 class LiveConfigTests(unittest.TestCase):
+    def test_position_symbols_are_ordered_with_active_positions_first(self) -> None:
+        symbols = ("BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT")
+        rows_by_symbol = {"BNBUSDT": [object()], "BTCUSDT": [object()]}
+
+        ordered = _position_symbols_first(symbols, rows_by_symbol)
+
+        self.assertEqual(ordered, ["BTCUSDT", "BNBUSDT", "ETHUSDT", "SOLUSDT"])
+
     def test_live_config_round_trip_normalizes_symbols(self) -> None:
         config = default_live_config()
         with tempfile.TemporaryDirectory() as temp_dir:

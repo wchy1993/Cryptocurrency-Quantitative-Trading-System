@@ -1090,7 +1090,7 @@ class TradingApp(tk.Tk):
         for position in snapshot.position_rows:
             rows_by_symbol.setdefault(position.symbol, []).append(position)
 
-        for symbol in config.trading.symbols:
+        for symbol in _position_symbols_first(config.trading.symbols, rows_by_symbol):
             rows = rows_by_symbol.get(symbol)
             if not rows:
                 self.positions.insert("", tk.END, values=(symbol, "空仓", "0.00", "-", "-", "-", "0.00", "0.00", "0.00%"), tags=("flat",))
@@ -1304,6 +1304,13 @@ def _summarize_user_trades(trades: list[dict]) -> dict[str, float | int | str]:
         "avg_closed_pnl": avg_closed_pnl,
         "commission_text": commission_text,
     }
+
+
+def _position_symbols_first(symbols: tuple[str, ...], rows_by_symbol: dict[str, list]) -> list[str]:
+    active = [symbol for symbol in symbols if rows_by_symbol.get(symbol)]
+    inactive = [symbol for symbol in symbols if not rows_by_symbol.get(symbol)]
+    extras = [symbol for symbol in rows_by_symbol if symbol not in symbols]
+    return active + extras + inactive
 
 
 def main() -> int:
