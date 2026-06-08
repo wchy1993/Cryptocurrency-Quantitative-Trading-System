@@ -60,6 +60,8 @@ class StrategyConfig:
     super_volume_confidence_boost: float = 0.15
     super_volume_risk_multiplier: float = 1.35
     super_volume_take_profit_multiplier: float = 1.35
+    super_volume_live_chase_guard_enabled: bool = False
+    super_volume_max_entry_chase_pct: float = 0.006
     breakout_rsi_guard_enabled: bool = False
     breakout_rsi_fast_period: int = 6
     breakout_rsi_mid_period: int = 12
@@ -97,6 +99,11 @@ class StrategyConfig:
     indicator_confirmed_trend_fallback_enabled: bool = True
     indicator_confirmed_trend_buffer_atr: float = 0.15
     indicator_confirmed_trend_slope_atr: float = 0.05
+    indicator_confirmed_cross_extreme_required_enabled: bool = False
+    indicator_confirmed_cross_long_max_rsi: float = 45.0
+    indicator_confirmed_cross_long_max_kdj: float = 35.0
+    indicator_confirmed_cross_short_min_rsi: float = 60.0
+    indicator_confirmed_cross_short_min_kdj: float = 70.0
     indicator_reference_guard_enabled: bool = False
     indicator_reference_guard_long_enabled: bool = True
     indicator_reference_guard_short_enabled: bool = True

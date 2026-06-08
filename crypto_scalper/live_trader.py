@@ -798,17 +798,54 @@ class BinanceAutoTrader:
         return EntryCandidate(symbol, signal, candles[-1], rank_score, momentum_pct, volume_ratio, filter_reason)
 
     def _open_entry_candidate(self, candidate: EntryCandidate, account: AccountSnapshot) -> bool:
-        quantity, reason = self._size_order(candidate.symbol, candidate.candle.close, candidate.signal, account)
+        chase_guard_reason = self._super_volume_chase_guard_reason(candidate)
+        if chase_guard_reason:
+            self.log(f"{candidate.symbol}: 跳过强突破追价开仓 ({chase_guard_reason})")
+            return False
+
+        execution_price = self._entry_execution_reference_price(candidate)
+        execution_candle = replace(
+            candidate.candle,
+            high=max(candidate.candle.high, execution_price),
+            low=min(candidate.candle.low, execution_price),
+            close=execution_price,
+        )
+        quantity, reason = self._size_order(candidate.symbol, execution_price, candidate.signal, account)
         if float(quantity) <= 0:
             self.log(f"{candidate.symbol}: 跳过开仓 ({reason})")
             return False
 
         self.log(
             f"{candidate.symbol}: 选择开仓候选 rank={candidate.rank_score:.2f} "
-            f"动能={candidate.directional_momentum_pct * 100:+.2f}% 量能={candidate.volume_ratio:.2f}x"
+            f"动能={candidate.directional_momentum_pct * 100:+.2f}% 量能={candidate.volume_ratio:.2f}x "
+            f"参考价={execution_price:.6g}"
         )
-        self._enter_position(candidate.symbol, candidate.signal, candidate.candle, quantity)
+        self._enter_position(candidate.symbol, candidate.signal, execution_candle, quantity)
         return True
+
+    def _entry_execution_reference_price(self, candidate: EntryCandidate) -> float:
+        latest = self._latest_close(candidate.symbol)
+        return latest if latest > 0 else candidate.candle.close
+
+    def _super_volume_chase_guard_reason(self, candidate: EntryCandidate) -> str | None:
+        strategy = self.config.strategy
+        if not getattr(strategy, "super_volume_live_chase_guard_enabled", False):
+            return None
+        reason = candidate.signal.reason.lower()
+        if "super_volume" not in reason and "startup_breakout" not in reason:
+            return None
+        signal_close = candidate.candle.close
+        latest = self._entry_execution_reference_price(candidate)
+        if signal_close <= 0 or latest <= 0:
+            return None
+        chase_pct = (latest / signal_close - 1.0) * candidate.signal.direction.value
+        max_chase = max(0.0, float(getattr(strategy, "super_volume_max_entry_chase_pct", 0.006)))
+        if chase_pct <= max_chase:
+            return None
+        return (
+            f"latest={latest:.6g} signal_close={signal_close:.6g} "
+            f"追价={chase_pct * 100:.2f}% > {max_chase * 100:.2f}%"
+        )
 
     def _entry_rank_metrics(self, signal: Signal, candles: list[Candle]) -> tuple[float, float, float]:
         candle = candles[-1]
@@ -1073,6 +1110,14 @@ class BinanceAutoTrader:
         if long_cross:
             if self.config.strategy.long_risk_bias <= 0:
                 return Signal(Direction.FLAT, 0.0, "indicator_long_disabled", 0.0, 0.0)
+            strict_guard_reason = self._indicator_confirmed_cross_required_extreme_guard_reason(
+                Direction.LONG,
+                current_rsi,
+                current_k,
+                current_d,
+            )
+            if strict_guard_reason:
+                return Signal(Direction.FLAT, 0.0, strict_guard_reason, 0.0, 0.0)
             context_guard_reason = self._indicator_confirmed_cross_context_guard_reason(
                 Direction.LONG,
                 closes,
@@ -1099,6 +1144,14 @@ class BinanceAutoTrader:
         if short_cross:
             if self.config.strategy.short_risk_bias <= 0:
                 return Signal(Direction.FLAT, 0.0, "indicator_short_disabled", 0.0, 0.0)
+            strict_guard_reason = self._indicator_confirmed_cross_required_extreme_guard_reason(
+                Direction.SHORT,
+                current_rsi,
+                current_k,
+                current_d,
+            )
+            if strict_guard_reason:
+                return Signal(Direction.FLAT, 0.0, strict_guard_reason, 0.0, 0.0)
             context_guard_reason = self._indicator_confirmed_cross_context_guard_reason(
                 Direction.SHORT,
                 closes,
@@ -1841,6 +1894,39 @@ class BinanceAutoTrader:
                     f"rsi_max={max(recent_rsi):.1f} kdj_max={max(recent_kd):.1f} {conflict_reason}"
                 )
             return None
+
+        return None
+
+    def _indicator_confirmed_cross_required_extreme_guard_reason(
+        self,
+        direction: Direction,
+        current_rsi: float,
+        current_k: float,
+        current_d: float,
+    ) -> str | None:
+        strategy = self.config.strategy
+        if not getattr(strategy, "indicator_confirmed_cross_extreme_required_enabled", False):
+            return None
+
+        if direction == Direction.LONG:
+            max_rsi = float(getattr(strategy, "indicator_confirmed_cross_long_max_rsi", 45.0))
+            max_kdj = float(getattr(strategy, "indicator_confirmed_cross_long_max_kdj", 35.0))
+            if current_rsi <= max_rsi or min(current_k, current_d) <= max_kdj:
+                return None
+            return (
+                f"indicator_long_blocked_not_cold_enough "
+                f"rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}"
+            )
+
+        if direction == Direction.SHORT:
+            min_rsi = float(getattr(strategy, "indicator_confirmed_cross_short_min_rsi", 60.0))
+            min_kdj = float(getattr(strategy, "indicator_confirmed_cross_short_min_kdj", 70.0))
+            if current_rsi >= min_rsi or max(current_k, current_d) >= min_kdj:
+                return None
+            return (
+                f"indicator_short_blocked_not_hot_enough "
+                f"rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}"
+            )
 
         return None
 

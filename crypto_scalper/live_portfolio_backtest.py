@@ -493,6 +493,16 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                 if config.strategy.long_risk_bias <= 0:
                     signals.append(no_signal)
                 else:
+                    strict_guard_reason = _indicator_confirmed_cross_required_extreme_guard_reason(
+                        config,
+                        Direction.LONG,
+                        current_rsi,
+                        current_k,
+                        current_d,
+                    )
+                    if strict_guard_reason:
+                        signals.append(Signal(Direction.FLAT, 0.0, strict_guard_reason, 0.0, 0.0))
+                        continue
                     context_guard_reason = _indicator_confirmed_cross_context_guard_reason(
                         config,
                         Direction.LONG,
@@ -524,6 +534,16 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                 if config.strategy.short_risk_bias <= 0:
                     signals.append(no_signal)
                 else:
+                    strict_guard_reason = _indicator_confirmed_cross_required_extreme_guard_reason(
+                        config,
+                        Direction.SHORT,
+                        current_rsi,
+                        current_k,
+                        current_d,
+                    )
+                    if strict_guard_reason:
+                        signals.append(Signal(Direction.FLAT, 0.0, strict_guard_reason, 0.0, 0.0))
+                        continue
                     context_guard_reason = _indicator_confirmed_cross_context_guard_reason(
                         config,
                         Direction.SHORT,
@@ -669,6 +689,40 @@ def _indicator_confirmed_cross_context_guard_reason(
                 f"rsi_max={max(recent_rsi):.1f} kdj_max={max(recent_kd):.1f} {conflict_reason}"
             )
         return None
+
+    return None
+
+
+def _indicator_confirmed_cross_required_extreme_guard_reason(
+    config: Any,
+    direction: Direction,
+    current_rsi: float,
+    current_k: float,
+    current_d: float,
+) -> str | None:
+    strategy = config.strategy
+    if not getattr(strategy, "indicator_confirmed_cross_extreme_required_enabled", False):
+        return None
+
+    if direction == Direction.LONG:
+        max_rsi = float(getattr(strategy, "indicator_confirmed_cross_long_max_rsi", 45.0))
+        max_kdj = float(getattr(strategy, "indicator_confirmed_cross_long_max_kdj", 35.0))
+        if current_rsi <= max_rsi or min(current_k, current_d) <= max_kdj:
+            return None
+        return (
+            f"indicator_long_blocked_not_cold_enough "
+            f"rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}"
+        )
+
+    if direction == Direction.SHORT:
+        min_rsi = float(getattr(strategy, "indicator_confirmed_cross_short_min_rsi", 60.0))
+        min_kdj = float(getattr(strategy, "indicator_confirmed_cross_short_min_kdj", 70.0))
+        if current_rsi >= min_rsi or max(current_k, current_d) >= min_kdj:
+            return None
+        return (
+            f"indicator_short_blocked_not_hot_enough "
+            f"rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}"
+        )
 
     return None
 
