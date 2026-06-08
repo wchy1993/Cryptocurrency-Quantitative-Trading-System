@@ -1230,6 +1230,11 @@ class BinanceAutoTrader:
             self.log(f"{symbol}: 趋势单亏损保护触发，准备平仓 ({trend_loss_reason})")
             self._exit_position(symbol, position, trend_loss_reason)
             return
+        stale_reason = self._stale_position_exit_reason(position, candles[-1].close)
+        if stale_reason:
+            self.log(f"{symbol}: 长时间持仓观察退出，准备平仓 ({stale_reason})")
+            self._exit_position(symbol, position, stale_reason)
+            return
         false_position_reason = self._false_breakout_reason(position.direction, candles)
         if false_position_reason and _position_profit_pct(position, candles[-1].close) < 0:
             self.log(f"{symbol}: 当前持仓方向疑似假突破，准备平仓 ({false_position_reason})")
@@ -1466,6 +1471,11 @@ class BinanceAutoTrader:
                         if trend_loss_reason:
                             exit_price = candle.close
                             reason = trend_loss_reason
+                        else:
+                            stale_reason = self._stale_position_exit_reason(position, candle.close)
+                            if stale_reason:
+                                exit_price = candle.close
+                                reason = stale_reason
 
                 if exit_price is None and position.max_holding_bars > 0 and position.bars_held >= position.max_holding_bars:
                     exit_price = candle.close
@@ -1796,6 +1806,38 @@ class BinanceAutoTrader:
         if current_profit > -abs(loss_pct):
             return None
         return f"trend_loss_guard loss={current_profit * 100:.3f}% bars={self._position_bars_held(position)}"
+
+    def _stale_position_exit_reason(self, position: LivePosition | SimPosition, mark_price: float) -> str | None:
+        strategy = self.config.strategy
+        if not getattr(strategy, "stale_position_exit_enabled", False):
+            return None
+
+        bars_held = self._position_bars_held(position)
+        if bars_held <= 0:
+            return None
+
+        entry_reason = getattr(position, "entry_reason", "")
+        is_super_volume = "super_volume" in entry_reason.lower() or "startup_breakout" in entry_reason.lower()
+        observation_bars = (
+            int(getattr(strategy, "stale_super_volume_observation_bars", 3))
+            if is_super_volume
+            else int(getattr(strategy, "stale_observation_bars", 8))
+        )
+        force_exit_bars = (
+            int(getattr(strategy, "stale_super_volume_force_exit_bars", 6))
+            if is_super_volume
+            else int(getattr(strategy, "stale_force_exit_bars", 12))
+        )
+        observation_bars = max(1, observation_bars)
+        force_exit_bars = max(observation_bars, force_exit_bars)
+
+        current_profit = _directional_profit_pct(position.direction, position.entry_price, mark_price)
+        minimum_profit = self._minimum_profit_exit_pct()
+        if bars_held >= force_exit_bars:
+            return f"stale_force_exit bars={bars_held} profit={current_profit * 100:.3f}%"
+        if bars_held >= observation_bars and current_profit >= minimum_profit:
+            return f"stale_profit_exit bars={bars_held} profit={current_profit * 100:.3f}%"
+        return None
 
     def _position_bars_held(self, position: LivePosition | SimPosition) -> int:
         bars_held = int(getattr(position, "bars_held", 0) or 0)

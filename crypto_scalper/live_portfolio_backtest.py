@@ -1519,6 +1519,11 @@ def _manage_positions(
                 if trend_loss_reason:
                     exit_price = candle.close
                     reason = trend_loss_reason
+                else:
+                    stale_reason = trader._stale_position_exit_reason(sim, candle.close)
+                    if stale_reason:
+                        exit_price = candle.close
+                        reason = stale_reason
 
         if exit_price is None and position.max_holding_bars > 0 and position.bars_held >= position.max_holding_bars:
             exit_price = candle.close

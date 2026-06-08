@@ -529,11 +529,15 @@ class VolatilityBreakoutScalper:
             signal.take_profit_pct * self.config.super_volume_take_profit_multiplier,
             signal.stop_loss_pct * 1.15,
         )
+        max_holding_bars = signal.max_holding_bars
+        if self.config.super_volume_max_holding_bars > 0:
+            max_holding_bars = self.config.super_volume_max_holding_bars
         return replace(
             signal,
             confidence=boosted_confidence,
             take_profit_pct=boosted_take_profit,
             risk_multiplier=boosted_risk,
+            max_holding_bars=max_holding_bars,
             reason=f"{signal.reason}_super_volume volume={volume_ratio:.2f}x",
         )
 

@@ -62,6 +62,7 @@ class StrategyConfig:
     super_volume_take_profit_multiplier: float = 1.35
     super_volume_live_chase_guard_enabled: bool = False
     super_volume_max_entry_chase_pct: float = 0.006
+    super_volume_max_holding_bars: int = 0
     breakout_rsi_guard_enabled: bool = False
     breakout_rsi_fast_period: int = 6
     breakout_rsi_mid_period: int = 12
@@ -85,6 +86,11 @@ class StrategyConfig:
     trend_loss_guard_loss_pct: float = 0.006
     trend_loss_guard_super_volume_bars: int = 5
     trend_loss_guard_super_volume_loss_pct: float = 0.009
+    stale_position_exit_enabled: bool = False
+    stale_observation_bars: int = 8
+    stale_force_exit_bars: int = 12
+    stale_super_volume_observation_bars: int = 3
+    stale_super_volume_force_exit_bars: int = 6
     indicator_trend_guard_enabled: bool = False
     indicator_trend_guard_lookback_bars: int = 12
     indicator_trend_guard_buffer_atr: float = 0.10

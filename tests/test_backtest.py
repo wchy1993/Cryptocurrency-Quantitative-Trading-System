@@ -149,6 +149,7 @@ class BacktestSmokeTests(unittest.TestCase):
             super_volume_min_ratio=2.0,
             super_volume_min_breakout_atr=0.2,
             super_volume_min_body_atr=0.1,
+            super_volume_max_holding_bars=6,
         )
         disabled_strategy = VolatilityBreakoutScalper(
             StrategyConfig(**{**base_config.__dict__, "super_volume_breakout_enabled": False})
@@ -166,6 +167,7 @@ class BacktestSmokeTests(unittest.TestCase):
         self.assertGreater(boosted.confidence, normal.confidence)
         self.assertGreater(boosted.risk_multiplier, normal.risk_multiplier)
         self.assertGreater(boosted.take_profit_pct, normal.take_profit_pct)
+        self.assertEqual(boosted.max_holding_bars, 6)
 
     def test_rsi_reversal_signal_can_be_disabled(self) -> None:
         candles = _rsi_reversal_candles()

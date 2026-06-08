@@ -558,6 +558,60 @@ class LiveConfigTests(unittest.TestCase):
         self.assertIn("indicator_short", signal.reason)
         self.assertGreater(signal.stop_loss_pct, 0.0)
 
+    def test_stale_position_exits_when_observed_profit_returns(self) -> None:
+        base = default_live_config()
+        config = replace(
+            base,
+            strategy=replace(base.strategy, stale_position_exit_enabled=True, stale_observation_bars=3, stale_force_exit_bars=6),
+        )
+        trader = BinanceAutoTrader(config, FakeClient())
+        position = SimPosition(
+            symbol="BTCUSDT",
+            direction=Direction.LONG,
+            quantity=1.0,
+            entry_price=100.0,
+            stop_price=98.0,
+            take_profit_price=103.0,
+            max_holding_bars=18,
+            entry_time=datetime(2025, 1, 1),
+            last_checked_time=datetime(2025, 1, 1),
+            best_price=100.0,
+            bars_held=3,
+            entry_reason="long_breakout score=0.90",
+        )
+
+        reason = trader._stale_position_exit_reason(position, 100.30)
+
+        self.assertIsNotNone(reason)
+        self.assertIn("stale_profit_exit", reason or "")
+
+    def test_stale_position_force_exits_after_hard_limit(self) -> None:
+        base = default_live_config()
+        config = replace(
+            base,
+            strategy=replace(base.strategy, stale_position_exit_enabled=True, stale_observation_bars=3, stale_force_exit_bars=6),
+        )
+        trader = BinanceAutoTrader(config, FakeClient())
+        position = SimPosition(
+            symbol="BTCUSDT",
+            direction=Direction.LONG,
+            quantity=1.0,
+            entry_price=100.0,
+            stop_price=98.0,
+            take_profit_price=103.0,
+            max_holding_bars=18,
+            entry_time=datetime(2025, 1, 1),
+            last_checked_time=datetime(2025, 1, 1),
+            best_price=100.0,
+            bars_held=6,
+            entry_reason="long_breakout_super_volume volume=4.0x",
+        )
+
+        reason = trader._stale_position_exit_reason(position, 99.70)
+
+        self.assertIsNotNone(reason)
+        self.assertIn("stale_force_exit", reason or "")
+
     def test_profit_pullback_does_not_pause_new_entries(self) -> None:
         base = default_live_config()
         config = replace(
