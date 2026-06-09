@@ -1220,6 +1220,9 @@ class BinanceAutoTrader:
         strategy = VolatilityBreakoutScalper(self.config.strategy)
         strategy.prepare(candles)
         signal = strategy.signal(len(candles) - 1, candles)
+        if not self._managed_exit_allowed(position):
+            self._profit_state_for(symbol, position)
+            return
         profit_exit_reason = self._profit_exit_reason(position, candles, state=self._profit_state_for(symbol, position))
         if profit_exit_reason:
             self.log(f"{symbol}: 盈利保护触发，准备平仓 ({profit_exit_reason})")
@@ -1462,20 +1465,21 @@ class BinanceAutoTrader:
 
                 if exit_price is None:
                     self._update_sim_profit_protection(position, candle)
-                    profit_reason = self._profit_exit_reason(position, candles, current_candle=candle)
-                    if profit_reason:
-                        exit_price = candle.close
-                        reason = profit_reason
-                    else:
-                        trend_loss_reason = self._trend_loss_exit_reason(position, candle.close)
-                        if trend_loss_reason:
+                    if self._managed_exit_allowed(position):
+                        profit_reason = self._profit_exit_reason(position, candles, current_candle=candle)
+                        if profit_reason:
                             exit_price = candle.close
-                            reason = trend_loss_reason
+                            reason = profit_reason
                         else:
-                            stale_reason = self._stale_position_exit_reason(position, candle.close)
-                            if stale_reason:
+                            trend_loss_reason = self._trend_loss_exit_reason(position, candle.close)
+                            if trend_loss_reason:
                                 exit_price = candle.close
-                                reason = stale_reason
+                                reason = trend_loss_reason
+                            else:
+                                stale_reason = self._stale_position_exit_reason(position, candle.close)
+                                if stale_reason:
+                                    exit_price = candle.close
+                                    reason = stale_reason
 
                 if exit_price is None and position.max_holding_bars > 0 and position.bars_held >= position.max_holding_bars:
                     exit_price = candle.close
@@ -1850,6 +1854,12 @@ class BinanceAutoTrader:
         elapsed_seconds = max(0.0, (now - opened_at).total_seconds())
         bar_seconds = max(1.0, interval_to_milliseconds(self.config.trading.timeframe) / 1000.0)
         return int(elapsed_seconds // bar_seconds)
+
+    def _managed_exit_allowed(self, position: LivePosition | SimPosition) -> bool:
+        minimum = max(0, int(getattr(self.config.trading, "min_managed_exit_bars", 0)))
+        if minimum <= 0:
+            return True
+        return self._position_bars_held(position) >= minimum
 
     def _minimum_profit_exit_pct(self) -> float:
         round_trip_fee = max(0.0, self.config.risk.estimated_fee_bps) * 2.0 / 10_000.0

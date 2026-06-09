@@ -612,6 +612,29 @@ class LiveConfigTests(unittest.TestCase):
         self.assertIsNotNone(reason)
         self.assertIn("stale_force_exit", reason or "")
 
+    def test_managed_exit_waits_for_minimum_holding_bars(self) -> None:
+        base = default_live_config()
+        config = replace(base, trading=replace(base.trading, min_managed_exit_bars=2))
+        trader = BinanceAutoTrader(config, FakeClient())
+        position = SimPosition(
+            symbol="BTCUSDT",
+            direction=Direction.LONG,
+            quantity=1.0,
+            entry_price=100.0,
+            stop_price=98.0,
+            take_profit_price=103.0,
+            max_holding_bars=18,
+            entry_time=datetime(2025, 1, 1),
+            last_checked_time=datetime(2025, 1, 1),
+            best_price=100.0,
+            bars_held=1,
+            entry_reason="long_breakout score=0.90",
+        )
+
+        self.assertFalse(trader._managed_exit_allowed(position))
+        position.bars_held = 2
+        self.assertTrue(trader._managed_exit_allowed(position))
+
     def test_profit_pullback_does_not_pause_new_entries(self) -> None:
         base = default_live_config()
         config = replace(

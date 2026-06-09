@@ -233,6 +233,7 @@
     "super_volume_extra_min_momentum_pct": 0.025,
     "super_volume_extra_min_volume_ratio": 2.8,
     "max_new_entries_per_cycle": 1,
+    "min_managed_exit_bars": 1,
     "stats_log_interval_seconds": 300,
     "initial_entry_fraction": 0.75,
     "scale_in_entry_fraction": 0.15,

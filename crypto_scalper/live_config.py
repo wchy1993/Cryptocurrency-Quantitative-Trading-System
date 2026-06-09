@@ -109,6 +109,7 @@ class LiveTradingConfig:
     super_volume_extra_min_momentum_pct: float = 0.035
     super_volume_extra_min_volume_ratio: float = 2.8
     max_new_entries_per_cycle: int = 1
+    min_managed_exit_bars: int = 1
     stats_log_interval_seconds: int = 300
     initial_entry_fraction: float = 0.75
     scale_in_entry_fraction: float = 0.35

@@ -1494,7 +1494,7 @@ def _manage_positions(
                 exit_price = position.take_profit_price
                 reason = "take_profit"
 
-        if exit_price is None:
+        if exit_price is None and trader._managed_exit_allowed(position):
             _update_profit_protection(trader, config, position, candle)
             sim = SimPosition(
                 symbol=position.symbol,
