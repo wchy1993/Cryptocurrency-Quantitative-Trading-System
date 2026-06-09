@@ -72,6 +72,7 @@ class TradingApp(tk.Tk):
         self.summary_labels: dict[str, ttk.Label] = {}
         self.symbols_text: tk.Text | None = None
         self._last_config: LiveAppConfig | None = None
+        self._log_file_path = Path("logs") / f"gui_{datetime.now().date().isoformat()}.log"
 
         self._build_vars()
         self._build_style()
@@ -1137,6 +1138,13 @@ class TradingApp(tk.Tk):
         self.account_queue.put((snapshot, sync_starting_capital))
 
     def log(self, message: str) -> None:
+        try:
+            self._log_file_path.parent.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with self._log_file_path.open("a", encoding="utf-8") as handle:
+                handle.write(f"[{timestamp}] {message}\n")
+        except OSError:
+            pass
         self.log_text.insert(tk.END, f"{message}\n")
         self.log_text.see(tk.END)
 
