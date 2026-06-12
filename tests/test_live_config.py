@@ -8,7 +8,13 @@ import time
 import unittest
 
 from crypto_scalper.binance_client import BinanceApiError, BinanceFuturesClient, SymbolRules
-from crypto_scalper.gui import _position_symbols_first
+from crypto_scalper.gui import (
+    STRATEGY_MODE_INDICATOR,
+    STRATEGY_MODE_MTF,
+    STRATEGY_MODE_SUPER_VOLUME,
+    _config_with_strategy_mode,
+    _position_symbols_first,
+)
 from crypto_scalper.live_config import default_live_config, load_live_config, write_live_config
 from crypto_scalper.live_trader import (
     AccountSnapshot,
@@ -31,6 +37,37 @@ class LiveConfigTests(unittest.TestCase):
         ordered = _position_symbols_first(symbols, rows_by_symbol)
 
         self.assertEqual(ordered, ["BTCUSDT", "BNBUSDT", "ETHUSDT", "SOLUSDT"])
+
+    def test_gui_indicator_strategy_mode_enables_only_stable_indicator_reversal(self) -> None:
+        config = _config_with_strategy_mode(default_live_config(), STRATEGY_MODE_INDICATOR)
+
+        self.assertTrue(config.filters.extreme_reversal_entry_enabled)
+        self.assertFalse(config.filters.enabled)
+        self.assertFalse(config.filters.pre_cross_entry_enabled)
+        self.assertTrue(config.strategy.indicator_confirmed_cross_extreme_required_enabled)
+        self.assertEqual(config.strategy.indicator_reversal_size_multiplier, 0.30)
+        self.assertFalse(config.strategy.allow_short)
+        self.assertEqual(config.strategy.short_risk_bias, 0.0)
+        self.assertFalse(config.strategy.super_volume_breakout_enabled)
+        self.assertFalse(config.strategy.startup_breakout_enabled)
+        self.assertFalse(config.strategy.ordinary_breakout_enabled)
+        self.assertFalse(config.strategy.pullback_reclaim_enabled)
+        self.assertFalse(config.strategy.fast_breakout_enabled)
+        self.assertFalse(config.strategy.rsi_reversal_enabled)
+        self.assertFalse(config.strategy.mtf_4h_rsi_regime_enabled)
+        self.assertFalse(config.strategy.oi_flush_reversal_enabled)
+
+    def test_gui_strategy_modes_switch_hidden_strategy_flags(self) -> None:
+        base = default_live_config()
+        super_volume = _config_with_strategy_mode(base, STRATEGY_MODE_SUPER_VOLUME)
+        mtf = _config_with_strategy_mode(base, STRATEGY_MODE_MTF)
+
+        self.assertTrue(super_volume.strategy.super_volume_breakout_enabled)
+        self.assertFalse(super_volume.strategy.mtf_4h_rsi_regime_enabled)
+        self.assertTrue(super_volume.trading.super_volume_extra_slot_enabled)
+        self.assertTrue(mtf.strategy.mtf_4h_rsi_regime_enabled)
+        self.assertTrue(mtf.strategy.mtf_disable_legacy_strategies)
+        self.assertFalse(mtf.strategy.super_volume_breakout_enabled)
 
     def test_live_config_round_trip_normalizes_symbols(self) -> None:
         config = default_live_config()
@@ -353,6 +390,32 @@ class LiveConfigTests(unittest.TestCase):
         self.assertIn("BTCUSDT", snapshot.positions)
         self.assertEqual(trader.stats.closed_trades, 0)
 
+    def test_dry_run_open_uses_live_open_time_for_management_guard(self) -> None:
+        base = default_live_config()
+        config = replace(
+            base,
+            trading=replace(base.trading, min_managed_exit_bars=1),
+            strategy=replace(base.strategy, stale_position_exit_enabled=True, stale_observation_bars=1, stale_force_exit_bars=2),
+        )
+        candles = [
+            Candle(datetime(2025, 1, 1) + timedelta(minutes=30 * index), 100.0, 101.0, 99.0, 100.0, 1000.0)
+            for index in range(80)
+        ]
+        client = SequenceClient(candles)
+        trader = BinanceAutoTrader(config, client)
+        signal = Signal(Direction.LONG, 1.0, "long_breakout score=0.90", 0.10, 0.10, max_holding_bars=100)
+
+        trader._enter_position("BTCUSDT", signal, candles[10], "1")
+
+        position = trader._sim_positions["BTCUSDT"]
+        self.assertEqual(position.bars_held, 0)
+        self.assertEqual(position.last_checked_time, candles[-2].timestamp)
+        snapshot = trader.snapshot_account()
+        self.assertFalse(trader._managed_exit_allowed(snapshot.positions["BTCUSDT"]))
+        trader._manage_sim_positions()
+        self.assertIn("BTCUSDT", trader._sim_positions)
+        self.assertEqual(trader.stats.closed_trades, 0)
+
     def test_dry_run_profit_protection_exits_winner(self) -> None:
         base = default_live_config()
         config = replace(
@@ -370,10 +433,11 @@ class LiveConfigTests(unittest.TestCase):
         profit = Candle(datetime(2025, 1, 1, 0, 1), 100.0, 100.5, 99.95, 100.4, 1200.0)
         pullback = Candle(datetime(2025, 1, 1, 0, 2), 100.4, 100.42, 100.20, 100.25, 1200.0)
         open_candle = Candle(datetime(2025, 1, 1, 0, 3), 100.25, 100.3, 100.1, 100.2, 900.0)
-        client = SequenceClient([entry, profit, pullback, open_candle])
+        client = SequenceClient([entry, open_candle])
         trader = BinanceAutoTrader(config, client)
         signal = Signal(Direction.LONG, 1.0, "test", 0.05, 0.10)
         trader._enter_position("BTCUSDT", signal, entry, "0.1")
+        client.candles = [entry, profit, pullback, open_candle]
         trader._manage_sim_positions()
         snapshot = trader.snapshot_account()
         self.assertNotIn("BTCUSDT", snapshot.positions)

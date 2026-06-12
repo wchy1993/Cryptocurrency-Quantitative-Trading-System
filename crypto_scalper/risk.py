@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
+from datetime import datetime
+from decimal import Decimal, ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR
+from typing import Any, Iterable
 
+from .binance_client import SymbolRules
 from .config import RiskConfig
-from .models import Candle, Signal
+from .models import Candle, Direction, Signal
 
 
 def signal_risk_weight(confidence: float, risk_multiplier: float) -> float:
@@ -120,3 +125,231 @@ class RiskManager:
             self.cooldown_remaining = max(self.cooldown_remaining, loss_cooldown)
         else:
             self.consecutive_losses = 0
+
+
+@dataclass(frozen=True)
+class BacktestExecutionConfig:
+    mode: str = "conservative"
+    market_slippage_bps: float = 2.0
+    stop_slippage_bps: float = 5.0
+    take_profit_slippage_bps: float = 2.0
+    maker_fee_rate: float = 0.0002
+    taker_fee_rate: float = 0.0005
+    funding_enabled: bool = False
+    funding_default_rate: float = 0.0
+
+
+@dataclass(frozen=True)
+class ExecutionFill:
+    raw_price: float
+    price: float
+    fee: float
+    fee_rate: float
+    slippage_cost: float
+    order_type: str
+    liquidity: str
+
+
+@dataclass(frozen=True)
+class FundingRate:
+    timestamp: datetime
+    rate: float
+
+
+@dataclass
+class BacktestExecutionStats:
+    same_bar_tp_sl_conflict_count: int = 0
+    limit_touch_count: int = 0
+    limit_filled_count: int = 0
+
+
+def execution_config_from_live_config(
+    config: Any,
+    cost_experiment: str | None = None,
+    mode: str | None = None,
+) -> BacktestExecutionConfig:
+    risk = getattr(config, "risk", config)
+    estimated_fee_bps = float(getattr(risk, "estimated_fee_bps", getattr(risk, "fee_bps", 5.0)))
+    estimated_slippage_bps = float(getattr(risk, "estimated_slippage_bps", getattr(risk, "slippage_bps", 2.0)))
+    taker_fee_rate = float(getattr(risk, "taker_fee_rate", estimated_fee_bps / 10_000.0))
+    maker_fee_rate = float(getattr(risk, "maker_fee_rate", min(taker_fee_rate, 0.0002)))
+    market_slippage = float(getattr(risk, "market_slippage_bps", estimated_slippage_bps))
+    stop_slippage = float(getattr(risk, "stop_slippage_bps", max(estimated_slippage_bps * 2.0, estimated_slippage_bps)))
+    take_profit_slippage = float(getattr(risk, "take_profit_slippage_bps", estimated_slippage_bps))
+    selected_mode = str(mode or getattr(risk, "backtest_mode", "conservative") or "conservative").lower()
+    experiment = str(cost_experiment or getattr(risk, "cost_experiment", "full_cost") or "full_cost").lower()
+    funding_enabled = bool(getattr(risk, "funding_enabled", False))
+    funding_default_rate = float(getattr(risk, "funding_default_rate", 0.0))
+
+    if experiment == "no_cost":
+        maker_fee_rate = taker_fee_rate = 0.0
+        market_slippage = stop_slippage = take_profit_slippage = 0.0
+        funding_enabled = False
+    elif experiment == "fee_only":
+        market_slippage = stop_slippage = take_profit_slippage = 0.0
+        funding_enabled = False
+    elif experiment.startswith("fee_slippage_") and experiment.endswith("bps"):
+        value = experiment.removeprefix("fee_slippage_").removesuffix("bps")
+        try:
+            bps = float(value)
+        except ValueError:
+            bps = estimated_slippage_bps
+        market_slippage = bps
+        take_profit_slippage = bps
+        stop_slippage = max(bps * 2.0, bps)
+        funding_enabled = False
+    elif experiment == "full_cost":
+        pass
+    elif experiment in {"conservative", "pessimistic", "optimistic"}:
+        selected_mode = experiment
+
+    if selected_mode == "pessimistic":
+        selected_mode = "conservative"
+    if selected_mode not in {"conservative", "optimistic", "neutral"}:
+        selected_mode = "conservative"
+
+    return BacktestExecutionConfig(
+        mode=selected_mode,
+        market_slippage_bps=max(0.0, market_slippage),
+        stop_slippage_bps=max(0.0, stop_slippage),
+        take_profit_slippage_bps=max(0.0, take_profit_slippage),
+        maker_fee_rate=max(0.0, maker_fee_rate),
+        taker_fee_rate=max(0.0, taker_fee_rate),
+        funding_enabled=funding_enabled,
+        funding_default_rate=funding_default_rate,
+    )
+
+
+def market_entry_fill(
+    config: BacktestExecutionConfig,
+    rules: SymbolRules,
+    direction: Direction,
+    quantity: float,
+    raw_open_price: float,
+) -> ExecutionFill:
+    side = "buy" if direction == Direction.LONG else "sell"
+    return _fill_with_slippage(config, rules, direction, side, quantity, raw_open_price, config.market_slippage_bps, "market", "taker")
+
+
+def market_exit_fill(
+    config: BacktestExecutionConfig,
+    rules: SymbolRules,
+    direction: Direction,
+    quantity: float,
+    raw_price: float,
+    order_type: str = "market",
+) -> ExecutionFill:
+    side = "sell" if direction == Direction.LONG else "buy"
+    slip_bps = config.market_slippage_bps
+    normalized = order_type.lower()
+    if "stop" in normalized:
+        slip_bps = config.stop_slippage_bps
+    elif "take_profit" in normalized or "take-profit" in normalized:
+        slip_bps = config.take_profit_slippage_bps
+    return _fill_with_slippage(config, rules, direction, side, quantity, raw_price, slip_bps, order_type, "taker")
+
+
+def limit_order_filled(rules: SymbolRules, side: str, candle: Candle, limit_price: float) -> tuple[bool, bool]:
+    tick = float(rules.price_tick)
+    side = side.lower()
+    if side == "buy":
+        touched = candle.low <= limit_price
+        filled = candle.low < limit_price - tick
+    elif side == "sell":
+        touched = candle.high >= limit_price
+        filled = candle.high > limit_price + tick
+    else:
+        raise ValueError(f"unsupported side: {side}")
+    return touched, filled
+
+
+def limit_fill(
+    config: BacktestExecutionConfig,
+    rules: SymbolRules,
+    direction: Direction,
+    side: str,
+    quantity: float,
+    limit_price: float,
+) -> ExecutionFill:
+    rounded = conservative_price(rules, limit_price, side)
+    notional = abs(quantity * rounded)
+    fee = notional * config.maker_fee_rate
+    return ExecutionFill(
+        raw_price=limit_price,
+        price=rounded,
+        fee=fee,
+        fee_rate=config.maker_fee_rate,
+        slippage_cost=0.0,
+        order_type="limit",
+        liquidity="maker",
+    )
+
+
+def conservative_price(rules: SymbolRules, price: float, side: str) -> float:
+    rounding = ROUND_CEILING if side.lower() == "buy" else ROUND_FLOOR
+    return float(_round_decimal(price, rules.price_tick, rounding))
+
+
+def conservative_quantity(rules: SymbolRules, quantity: float) -> float:
+    return float(_round_decimal(quantity, rules.quantity_step, ROUND_DOWN))
+
+
+def validate_order_size(rules: SymbolRules, quantity: float, price: float, min_notional: float = 0.0) -> str:
+    if quantity <= 0:
+        return "below_min_quantity"
+    if Decimal(str(quantity)) < rules.min_quantity:
+        return "below_min_quantity"
+    notional = quantity * price
+    required_notional = max(float(rules.min_notional), float(min_notional))
+    if notional < required_notional:
+        return "below_exchange_min_notional"
+    return "ok"
+
+
+def funding_cashflow(direction: Direction, notional: float, funding_rates: Iterable[float]) -> float:
+    return sum(-direction.value * abs(notional) * float(rate) for rate in funding_rates)
+
+
+def funding_rates_between(rates: Iterable[FundingRate], entry_time: datetime, exit_time: datetime) -> list[float]:
+    return [item.rate for item in rates if entry_time < item.timestamp <= exit_time]
+
+
+def _fill_with_slippage(
+    config: BacktestExecutionConfig,
+    rules: SymbolRules,
+    direction: Direction,
+    side: str,
+    quantity: float,
+    raw_price: float,
+    slippage_bps: float,
+    order_type: str,
+    liquidity: str,
+) -> ExecutionFill:
+    slip = max(0.0, slippage_bps) / 10_000.0
+    slipped = raw_price * (1.0 + slip) if side == "buy" else raw_price * (1.0 - slip)
+    executed = conservative_price(rules, slipped, side)
+    fee_rate = config.taker_fee_rate if liquidity == "taker" else config.maker_fee_rate
+    notional = abs(quantity * executed)
+    fee = notional * fee_rate
+    raw_reference = raw_price
+    if side == "buy":
+        slip_cost = max(0.0, (executed - raw_reference) * quantity)
+    else:
+        slip_cost = max(0.0, (raw_reference - executed) * quantity)
+    return ExecutionFill(
+        raw_price=raw_price,
+        price=executed,
+        fee=fee,
+        fee_rate=fee_rate,
+        slippage_cost=slip_cost,
+        order_type=order_type,
+        liquidity=liquidity,
+    )
+
+
+def _round_decimal(value: float, step: Decimal, rounding: str) -> Decimal:
+    decimal_value = Decimal(str(value))
+    decimal_step = Decimal(str(step))
+    if decimal_step <= 0:
+        return decimal_value
+    return (decimal_value / decimal_step).to_integral_value(rounding=rounding) * decimal_step

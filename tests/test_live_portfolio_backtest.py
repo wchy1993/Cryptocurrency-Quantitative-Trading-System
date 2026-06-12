@@ -38,6 +38,38 @@ class LivePortfolioBacktestTests(unittest.TestCase):
         self.assertEqual(len(one_hour), 2)
         self.assertEqual(one_hour[-1].close, candles[7].close)
 
+    def test_historical_client_infers_price_tick_from_price_level(self) -> None:
+        low_price_candles = [
+            Candle(
+                datetime(2025, 1, 1, 0, index),
+                0.012,
+                0.0125,
+                0.0115,
+                0.012,
+                1000.0,
+            )
+            for index in range(3)
+        ]
+        btc_candles = [
+            Candle(
+                datetime(2025, 1, 1, 0, index),
+                68000.0,
+                68100.0,
+                67900.0,
+                68000.0,
+                10.0,
+            )
+            for index in range(3)
+        ]
+        client = HistoricalClient(
+            {"1000SHIBUSDT": low_price_candles, "BTCUSDT": btc_candles},
+            "1m",
+            ("1m",),
+        )
+
+        self.assertEqual(str(client.symbol_rules("1000SHIBUSDT").price_tick), "0.00001")
+        self.assertEqual(str(client.symbol_rules("BTCUSDT").price_tick), "0.1")
+
     def test_load_symbol_data_uses_configured_base_timeframe(self) -> None:
         candles = _candles(8)
         with tempfile.TemporaryDirectory() as temp_dir:

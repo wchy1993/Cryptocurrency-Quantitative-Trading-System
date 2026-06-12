@@ -81,6 +81,9 @@ class MultiTimeframeFilter:
         fast = frames[0]
         if not self._long_fast_timing(fast):
             return False, self._frame_reason("15m_timing_not_ready", fast)
+        alignment_reason = self._higher_tf_alignment_conflict(Direction.LONG, frames)
+        if alignment_reason:
+            return False, alignment_reason
 
         hostile_frames = [
             frame
@@ -111,6 +114,9 @@ class MultiTimeframeFilter:
         fast = frames[0]
         if not self._short_fast_timing(fast):
             return False, self._frame_reason("15m_timing_not_ready", fast)
+        alignment_reason = self._higher_tf_alignment_conflict(Direction.SHORT, frames)
+        if alignment_reason:
+            return False, alignment_reason
 
         hostile_frames = [
             frame
@@ -150,6 +156,38 @@ class MultiTimeframeFilter:
         kdj_turning_down = frame.k < frame.d and (frame.previous_k >= frame.previous_d or frame.k > 30.0)
         not_oversold = frame.rsi >= self.config.rsi_short_floor
         return not_oversold and (rsi_falling or macd_weakening or kdj_turning_down)
+
+    def _higher_tf_alignment_conflict(self, direction: Direction, frames: Sequence[TimeframeSignal]) -> str | None:
+        if not self.config.higher_tf_alignment_enabled:
+            return None
+        target = self.config.higher_tf_alignment_timeframe
+        frame = next((item for item in frames if item.timeframe == target), None)
+        if frame is None:
+            return None
+
+        required = max(1, self.config.higher_tf_alignment_conflict_score)
+        buffer = max(0.0, self.config.higher_tf_alignment_rsi_buffer)
+        if direction == Direction.LONG:
+            conflict_score = 0
+            if frame.rsi < 50.0 - buffer:
+                conflict_score += 1
+            if frame.macd_histogram < frame.previous_macd_histogram:
+                conflict_score += 1
+            if frame.k < frame.d:
+                conflict_score += 1
+            if conflict_score >= required:
+                return self._frame_reason(f"{target}_bearish_against_long", frame)
+        elif direction == Direction.SHORT:
+            conflict_score = 0
+            if frame.rsi > 50.0 + buffer:
+                conflict_score += 1
+            if frame.macd_histogram > frame.previous_macd_histogram:
+                conflict_score += 1
+            if frame.k > frame.d:
+                conflict_score += 1
+            if conflict_score >= required:
+                return self._frame_reason(f"{target}_bullish_against_short", frame)
+        return None
 
     @staticmethod
     def _frame_reason(prefix: str, frame: TimeframeSignal) -> str:

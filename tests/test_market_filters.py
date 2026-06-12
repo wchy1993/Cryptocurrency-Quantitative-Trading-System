@@ -43,6 +43,34 @@ class MarketFilterTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("rising", reason)
 
+    def test_long_filter_rejects_primary_higher_tf_bearish_conflict(self) -> None:
+        config = MultiTimeframeFilterConfig(
+            min_score=3,
+            higher_tf_alignment_enabled=True,
+            higher_tf_alignment_timeframe="1h",
+        )
+        market_filter = MultiTimeframeFilter(config)
+        thirty = _frame("30m", rsi_value=55.0, previous_rsi=49.0, hist=0.2, previous_hist=0.1, k=60.0, d=50.0)
+        one_hour = _frame("1h", rsi_value=43.0, previous_rsi=47.0, hist=-0.3, previous_hist=-0.1, k=35.0, d=48.0)
+        two_hour = _frame("2h", rsi_value=52.0, previous_rsi=50.0, hist=0.1, previous_hist=0.0, k=55.0, d=48.0)
+        allowed, reason = market_filter.evaluate(Direction.LONG, [thirty, one_hour, two_hour])
+        self.assertFalse(allowed)
+        self.assertIn("1h_bearish_against_long", reason)
+
+    def test_short_filter_rejects_primary_higher_tf_bullish_conflict(self) -> None:
+        config = MultiTimeframeFilterConfig(
+            min_score=3,
+            higher_tf_alignment_enabled=True,
+            higher_tf_alignment_timeframe="1h",
+        )
+        market_filter = MultiTimeframeFilter(config)
+        thirty = _frame("30m", rsi_value=45.0, previous_rsi=51.0, hist=-0.2, previous_hist=-0.1, k=40.0, d=50.0)
+        one_hour = _frame("1h", rsi_value=58.0, previous_rsi=54.0, hist=0.3, previous_hist=0.1, k=65.0, d=52.0)
+        two_hour = _frame("2h", rsi_value=49.0, previous_rsi=51.0, hist=-0.1, previous_hist=0.0, k=45.0, d=52.0)
+        allowed, reason = market_filter.evaluate(Direction.SHORT, [thirty, one_hour, two_hour])
+        self.assertFalse(allowed)
+        self.assertIn("1h_bullish_against_short", reason)
+
 
 def _trend_candles(count: int, start: float, step: float) -> list[Candle]:
     candles: list[Candle] = []

@@ -72,6 +72,44 @@ python -m crypto_scalper.gui
 python -m crypto_scalper.cli trade-live --config config.live.json --once
 ```
 
+## MTF RSI Regime Pullback
+
+新增独立策略 `mtf_4h_rsi_regime_pullback_futures`，实现位置在 `crypto_scalper/mtf_4h_rsi_regime.py`。它不复用旧的 `VolatilityBreakoutScalper` 入场逻辑：当前优化版用 4H 判断主 RSI 反转/衰竭 regime，2H 作为 fallback 补充，1H 做方向确认，30M 找回踩/反抽 setup，5M 放量 sweep 收盘确认 trigger，1M 只做 conservative/full_cost 成交模拟。
+
+关键规则：
+
+- 4H / 2H / 1H / 30M / 5M 都必须收盘后才可用，5M trigger 最早下一根 1M open 成交。
+- `mtf_symbols_mode=top30` 会在回测和 GUI/实盘候选生成里同时生效，避免 top30 之外的币混入。
+- 当前优化配置使用 MTF 专用仓位上限：`mtf_symbol_margin_pct=0.20`、`mtf_account_margin_usage_pct=0.20`，不会放大全局旧策略。
+- 当前优化配置放宽 30M 回踩过滤：RSI 区间 `40-62`，距离 30M EMA 上限 `0.012`，5M trigger 距离上限 `0.014`。
+- 旧 `breakout` / `pullback` / `indicator_reversal` / `rsi_reversal` / `fast_breakout` / `startup_breakout` 不会被新策略重新打开。
+- OI 5M 特征按 `timestamp + 5 minutes` 后才可用；funding 缺失时默认 0，不伪造历史。
+- MTF 持仓支持 `mtf_fail_fast`、`mtf_time_stop`、`mtf_1h_confirm_lost` 退出。
+
+运行 baseline 一个月回测：
+
+```powershell
+python -m crypto_scalper.mtf_4h_rsi_regime --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_3m_top100 --initial-equity 160 --trade-start 2026-05-10T00:00:00 --trade-end 2026-06-10T00:00:00 --experiments A_baseline_long_short --output report_mtf_4h_rsi_regime_baseline_1m_30d_160u.json
+```
+
+运行当前优化版一月回测：
+
+```powershell
+python -m crypto_scalper.mtf_4h_rsi_regime --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_3m_top100 --initial-equity 160 --trade-start 2026-05-10T00:00:00 --trade-end 2026-06-10T00:00:00 --experiments Q_4h_5m_volume_with_2h_fallback --output report_mtf_4h5m_2h_fallback_1m_30d_160u.json
+```
+
+运行当前加仓优化版一月回测：
+
+```powershell
+python -m crypto_scalper.mtf_4h_rsi_regime --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_3m_top100 --initial-equity 160 --trade-start 2026-05-10T00:00:00 --trade-end 2026-06-10T00:00:00 --experiments R_4h_5m_2h_fallback_looser_30m_sized --output report_mtf_4h5m_2h_fallback_sized_1m_30d_160u.json
+```
+
+运行全部实验：
+
+```powershell
+python -m crypto_scalper.mtf_4h_rsi_regime --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_3m_top100 --initial-equity 160 --trade-start 2026-05-10T00:00:00 --trade-end 2026-06-10T00:00:00 --output report_mtf_4h_rsi_regime_1m_30d_160u.json
+```
+
 配置文件：
 
 - `config.live.json`: 本机运行配置，默认不提交
@@ -133,6 +171,49 @@ python -m crypto_scalper.live_portfolio_backtest --config config.live.optimized_
 ```powershell
 python -m crypto_scalper.live_portfolio_backtest --config config.live.optimized_super_volume.json --data-dir data/binance_15m_100d
 ```
+
+## 保守 1m 执行回测
+
+`crypto_scalper.live_execution_backtest` 是更接近实盘的执行层回测入口：策略信号仍按配置里的主周期生成，例如 `30m`；成交、止损、止盈、资金曲线按 `1m` K 线重放。
+
+核心规则：
+
+- 30m K 线必须完全收盘后才能生成信号。`10:00:00 - 10:29:59.999` 这根 K 的信号，最早只在 `10:30:00` 可见。
+- 信号可见后不会在同一根 1m K 内立刻成交，最早在下一根 1m K 的 open 用市价单模拟入场。
+- 市价入场使用不利滑点：多头买入向上滑，空头卖出向下滑。
+- 止损触发后按市价止损模拟，不假设刚好在 stop price 完美成交，并使用更大的 `stop_slippage_bps`。
+- 止盈使用 `take_profit_slippage_bps`，不默认完美成交。
+- 同一根 1m K 同时触发 TP 和 SL 时，默认 `conservative` 模式按 SL 先成交，并记录 `same_bar_tp_sl_conflict_count`。`optimistic` 仅用于对照。
+- 限价单不是 touch 即成交：买入限价需要 `low < limit_price - tickSize`，卖出限价需要 `high > limit_price + tickSize`。
+- 价格按 `tickSize` 做不利方向取整，数量按 `stepSize` 向下取整；不满足 `minQty` / `minNotional` 会跳过。
+
+成本拆分：
+
+- `gross_pnl`: 不扣手续费、滑点、funding 的毛收益。
+- `fee`: 开仓和平仓手续费，市价单按 taker，限价 maker 成交按 maker。
+- `slippage_cost`: 入场和出场不利滑点成本。
+- `funding`: 永续 funding 收入或支出。当前保留接口和开关；没有 funding history 时不硬编码交易所数据。
+- `net_pnl = gross_pnl - fee - slippage_cost + funding`。
+
+运行示例：
+
+```powershell
+python -m crypto_scalper.live_execution_backtest --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_15d_top100 --initial-equity 160 --include-trades
+```
+
+实验模式：
+
+```powershell
+python -m crypto_scalper.live_execution_backtest --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_15d_top100 --cost-experiment no_cost
+python -m crypto_scalper.live_execution_backtest --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_15d_top100 --cost-experiment fee_only
+python -m crypto_scalper.live_execution_backtest --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_15d_top100 --cost-experiment fee_slippage_1bps
+python -m crypto_scalper.live_execution_backtest --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_15d_top100 --cost-experiment fee_slippage_3bps
+python -m crypto_scalper.live_execution_backtest --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_15d_top100 --cost-experiment fee_slippage_5bps
+python -m crypto_scalper.live_execution_backtest --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_15d_top100 --cost-experiment full_cost
+python -m crypto_scalper.live_execution_backtest --config config.live.optimized_super_volume.json --execution-data-dir data/binance_1m_15d_top100 --backtest-mode optimistic
+```
+
+增强报告会保留旧字段，并额外输出 `enhanced_summary`，包括 strategy、side、symbol、strategy+side、strategy+symbol、strategy+side+symbol、hour of day、weekday、long only、short only 等聚合。
 
 最新 30m 版本使用 60 个币种，数据在 `data/binance_30m_180d`，100U 最新优化报告在 `report_live_super_volume_30m_180d_100u.md`。15m 100U 报告保留在 `report_live_super_volume_180d_100u.md`，10000U 优化报告保留在 `report_live_super_volume_180d_weekly_risk_optimized.md`。复跑命令：
 

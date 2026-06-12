@@ -157,14 +157,23 @@ class VolatilityBreakoutScalper:
             guard_reason = self._breakout_rsi_guard_reason(Direction.LONG, index, atr_value, breakout_distance, average_volume)
             if guard_reason:
                 return self._hold(guard_reason)
-            return self._scored_signal(Signal(
+            signal = Signal(
                 direction=Direction.LONG,
                 confidence=quality,
                 reason="long_breakout",
                 stop_loss_pct=stop_pct,
                 take_profit_pct=take_profit_pct,
                 risk_multiplier=quality,
-            ), index, atr_value, breakout_distance, average_volume)
+            )
+            if not self.config.ordinary_breakout_enabled and not self._is_super_volume_breakout_candidate(
+                Direction.LONG,
+                index,
+                atr_value,
+                breakout_distance,
+                average_volume,
+            ):
+                return self._hold("ordinary_breakout_disabled")
+            return self._scored_signal(signal, index, atr_value, breakout_distance, average_volume)
 
         if self.config.allow_short and candle.close < lower_channel - breakout_buffer and fast < slow:
             quality = self._signal_quality(
@@ -178,18 +187,33 @@ class VolatilityBreakoutScalper:
             guard_reason = self._breakout_rsi_guard_reason(Direction.SHORT, index, atr_value, breakout_distance, average_volume)
             if guard_reason:
                 return self._hold(guard_reason)
-            return self._scored_signal(Signal(
+            signal = Signal(
                 direction=Direction.SHORT,
                 confidence=quality,
                 reason="short_breakdown",
                 stop_loss_pct=stop_pct,
                 take_profit_pct=take_profit_pct,
                 risk_multiplier=quality,
-            ), index, atr_value, breakout_distance, average_volume)
+            )
+            if not self.config.ordinary_breakout_enabled and not self._is_super_volume_breakout_candidate(
+                Direction.SHORT,
+                index,
+                atr_value,
+                breakout_distance,
+                average_volume,
+            ):
+                return self._hold("ordinary_breakout_disabled")
+            return self._scored_signal(signal, index, atr_value, breakout_distance, average_volume)
 
         previous_close = self._closes[index - 1]
         previous_fast = self._fast[index - 1]
-        if fast > slow and previous_close <= previous_fast and candle.close > fast and candle.close > candle.open:
+        if (
+            self.config.pullback_reclaim_enabled
+            and fast > slow
+            and previous_close <= previous_fast
+            and candle.close > fast
+            and candle.close > candle.open
+        ):
             quality = self._signal_quality(
                 max(candle.close - fast, atr_value * 0.25),
                 atr_value,
@@ -207,6 +231,8 @@ class VolatilityBreakoutScalper:
             ), index, atr_value)
 
         if (
+            self.config.pullback_reclaim_enabled
+            and
             self.config.allow_short
             and fast < slow
             and previous_close >= previous_fast

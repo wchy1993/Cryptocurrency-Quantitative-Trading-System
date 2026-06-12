@@ -26,6 +26,25 @@ from .secrets import mask_secret, read_secret
 
 DEFAULT_CONFIG_PATH = "config.live.optimized_super_volume.json"
 FALLBACK_CONFIG_PATH = "config.live.example.json"
+STRATEGY_MODE_INDICATOR = "指标反转稳定版"
+STRATEGY_MODE_SUPER_VOLUME = "强放量突破"
+STRATEGY_MODE_MTF = "MTF多周期"
+STRATEGY_MODE_OI_FLUSH = "OI去杠杆反弹"
+STRATEGY_MODE_MANUAL = "手动配置"
+STRATEGY_MODE_VALUES = (
+    STRATEGY_MODE_INDICATOR,
+    STRATEGY_MODE_SUPER_VOLUME,
+    STRATEGY_MODE_MTF,
+    STRATEGY_MODE_OI_FLUSH,
+    STRATEGY_MODE_MANUAL,
+)
+STRATEGY_MODE_SUMMARIES = {
+    STRATEGY_MODE_INDICATOR: "当前启用：indicator_reversal 稳定版。只做多，要求极端 RSI/KDJ 后确认交叉，其它策略关闭。",
+    STRATEGY_MODE_SUPER_VOLUME: "启用强放量突破策略；适合捕捉高量能趋势启动，旧突破/回踩/反转策略保持关闭。",
+    STRATEGY_MODE_MTF: "启用 MTF 多周期策略；旧策略关闭，由多周期信号单独筛选入场。",
+    STRATEGY_MODE_OI_FLUSH: "启用 OI 去杠杆反弹策略；只做多，旧策略关闭。",
+    STRATEGY_MODE_MANUAL: "保留当前配置文件中的隐藏策略开关，只保存界面上可编辑的参数。",
+}
 THEME = {
     "root": "#0b1017",
     "header": "#111827",
@@ -118,6 +137,8 @@ class TradingApp(tk.Tk):
         self.min_profit_after_cost = tk.StringVar()
         self.min_available = tk.StringVar()
         self.mainnet_confirmation = tk.StringVar()
+        self.strategy_mode = tk.StringVar(value=STRATEGY_MODE_INDICATOR)
+        self.strategy_mode_summary = tk.StringVar(value=STRATEGY_MODE_SUMMARIES[STRATEGY_MODE_INDICATOR])
         self.fast_ema = tk.StringVar()
         self.slow_ema = tk.StringVar()
         self.atr_period = tk.StringVar()
@@ -408,6 +429,11 @@ class TradingApp(tk.Tk):
         self._entry(risk, "最低净利", self.min_profit_after_cost, 13)
         self._entry(risk, "最低保留U", self.min_available, 14)
 
+        self._build_strategy_selector(strategy)
+        strategy_fields = ttk.Frame(strategy, style="Panel.TFrame")
+        strategy_fields.grid(row=2, column=0, columnspan=4, sticky="ew")
+        strategy = strategy_fields
+
         self._entry(strategy, "快EMA", self.fast_ema, 0, column=0)
         self._entry(strategy, "慢EMA", self.slow_ema, 1, column=0)
         self._entry(strategy, "突破通道", self.channel_period, 2, column=0)
@@ -615,6 +641,62 @@ class TradingApp(tk.Tk):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, pady=5, padx=(0, 8))
         ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=18).grid(row=row, column=1, sticky=tk.EW, pady=5)
         parent.columnconfigure(1, weight=1)
+
+    def _build_strategy_selector(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        ttk.Label(parent, text="策略选择", style="SectionTitle.TLabel").grid(row=0, column=0, sticky=tk.W, pady=(0, 6))
+        selector = ttk.Frame(parent, style="Panel.TFrame")
+        selector.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 12))
+        selector.columnconfigure(1, weight=1)
+        ttk.Label(selector, text="当前策略").grid(row=0, column=0, sticky=tk.W, padx=(0, 8), pady=5)
+        combo = ttk.Combobox(
+            selector,
+            textvariable=self.strategy_mode,
+            values=STRATEGY_MODE_VALUES,
+            state="readonly",
+            width=22,
+        )
+        combo.grid(row=0, column=1, sticky="ew", pady=5, padx=(0, 8))
+        combo.bind("<<ComboboxSelected>>", self._on_strategy_mode_selected)
+        ttk.Button(selector, text="应用到表单", command=self._apply_selected_strategy_to_form).grid(row=0, column=2, sticky=tk.E, pady=5)
+        ttk.Label(
+            selector,
+            textvariable=self.strategy_mode_summary,
+            style="Muted.TLabel",
+            wraplength=350,
+            justify=tk.LEFT,
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+
+    def _on_strategy_mode_selected(self, _event: tk.Event | None = None) -> None:
+        self._update_strategy_mode_summary()
+
+    def _update_strategy_mode_summary(self) -> None:
+        mode = self._selected_strategy_mode()
+        self.strategy_mode_summary.set(STRATEGY_MODE_SUMMARIES.get(mode, STRATEGY_MODE_SUMMARIES[STRATEGY_MODE_MANUAL]))
+
+    def _selected_strategy_mode(self) -> str:
+        mode = self.strategy_mode.get().strip()
+        return mode if mode in STRATEGY_MODE_VALUES else STRATEGY_MODE_MANUAL
+
+    def _apply_selected_strategy_to_form(self) -> None:
+        mode = self._selected_strategy_mode()
+        self._update_strategy_mode_summary()
+        if mode == STRATEGY_MODE_INDICATOR:
+            self.allow_short.set(False)
+            self.short_risk_bias.set("0.0")
+            self.spike_trade_enabled.set(False)
+            self.rsi_reversal_enabled.set(False)
+            self.entry_scan_seconds.set("300")
+            self.leverage.set("20")
+        elif mode == STRATEGY_MODE_SUPER_VOLUME:
+            self.spike_trade_enabled.set(False)
+            self.rsi_reversal_enabled.set(False)
+        elif mode == STRATEGY_MODE_OI_FLUSH:
+            self.allow_short.set(False)
+            self.short_risk_bias.set("0.0")
+            self.spike_trade_enabled.set(False)
+            self.rsi_reversal_enabled.set(False)
+        self.log(f"策略已切换为: {mode}。启动或保存时会写入对应策略开关。")
 
     def _load_initial_config(self) -> None:
         path = Path(DEFAULT_CONFIG_PATH)
@@ -882,6 +964,8 @@ class TradingApp(tk.Tk):
         self.macro_max_holding_seconds.set(str(config.macro_events.max_holding_seconds))
         self.macro_nfp_min_surprise_k.set(str(config.macro_events.nfp_min_surprise_k))
         self.macro_cpi_min_surprise_pct.set(str(config.macro_events.cpi_min_surprise_pct))
+        self.strategy_mode.set(_detect_strategy_mode(config))
+        self._update_strategy_mode_summary()
         self.status_var.set(f"{config.exchange.environment.upper()} / {'DRY-RUN' if config.trading.dry_run else 'LIVE'}")
 
     def _read_config(self) -> LiveAppConfig:
@@ -995,7 +1079,8 @@ class TradingApp(tk.Tk):
             nfp_min_surprise_k=read_float(self.macro_nfp_min_surprise_k, base.macro_events.nfp_min_surprise_k),
             cpi_min_surprise_pct=read_float(self.macro_cpi_min_surprise_pct, base.macro_events.cpi_min_surprise_pct),
         )
-        return LiveAppConfig(exchange=exchange, trading=trading, strategy=strategy, filters=base.filters, risk=risk, macro_events=macro_events)
+        config = LiveAppConfig(exchange=exchange, trading=trading, strategy=strategy, filters=base.filters, risk=risk, macro_events=macro_events)
+        return _config_with_strategy_mode(config, self._selected_strategy_mode())
 
     def _apply_symbol_preset(self) -> None:
         self._set_symbols_value(DEFAULT_SYMBOLS)
@@ -1319,6 +1404,121 @@ def _position_symbols_first(symbols: tuple[str, ...], rows_by_symbol: dict[str, 
     inactive = [symbol for symbol in symbols if not rows_by_symbol.get(symbol)]
     extras = [symbol for symbol in rows_by_symbol if symbol not in symbols]
     return active + extras + inactive
+
+
+def _detect_strategy_mode(config: LiveAppConfig) -> str:
+    strategy = config.strategy
+    if getattr(strategy, "mtf_4h_rsi_regime_enabled", False):
+        return STRATEGY_MODE_MTF
+    if getattr(strategy, "oi_flush_reversal_enabled", False):
+        return STRATEGY_MODE_OI_FLUSH
+    if getattr(strategy, "super_volume_breakout_enabled", False) or getattr(strategy, "startup_breakout_enabled", False):
+        return STRATEGY_MODE_SUPER_VOLUME
+    indicator_only = (
+        config.filters.extreme_reversal_entry_enabled
+        and getattr(strategy, "indicator_confirmed_cross_extreme_required_enabled", False)
+        and not getattr(strategy, "allow_short", False)
+        and not getattr(strategy, "super_volume_breakout_enabled", False)
+        and not getattr(strategy, "ordinary_breakout_enabled", False)
+        and not getattr(strategy, "pullback_reclaim_enabled", False)
+        and not getattr(strategy, "fast_breakout_enabled", False)
+        and not getattr(strategy, "rsi_reversal_enabled", False)
+    )
+    return STRATEGY_MODE_INDICATOR if indicator_only else STRATEGY_MODE_MANUAL
+
+
+def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfig:
+    if mode == STRATEGY_MODE_MANUAL:
+        return config
+
+    strategy = config.strategy
+    filters = config.filters
+    trading = config.trading
+    disable_legacy_breakout = {
+        "super_volume_breakout_enabled": False,
+        "startup_breakout_enabled": False,
+        "ordinary_breakout_enabled": False,
+        "pullback_reclaim_enabled": False,
+        "fast_breakout_enabled": False,
+        "spike_trade_enabled": False,
+        "rsi_reversal_enabled": False,
+    }
+
+    if mode == STRATEGY_MODE_INDICATOR:
+        strategy = replace(
+            strategy,
+            **disable_legacy_breakout,
+            mtf_4h_rsi_regime_enabled=False,
+            mtf_disable_legacy_strategies=False,
+            oi_flush_reversal_enabled=False,
+            trend_reference_filter_enabled=False,
+            btc_market_filter_enabled=False,
+            weak_market_long_filter_enabled=False,
+            strong_market_short_filter_enabled=False,
+            entry_timing_filter_enabled=True,
+            entry_execution_filter_enabled=True,
+            entry_execution_filter_trend_only=False,
+            allow_short=False,
+            short_risk_bias=0.0,
+            indicator_reversal_size_multiplier=0.30,
+            indicator_max_holding_bars=18,
+            indicator_confirmed_cross_extreme_required_enabled=True,
+            indicator_confirmed_cross_extreme_guard_enabled=False,
+            indicator_trend_guard_enabled=False,
+            indicator_reference_guard_enabled=False,
+            indicator_reversal_loss_pause_enabled=True,
+            indicator_reversal_loss_pause_losses=2,
+            indicator_reversal_loss_pause_bars=8,
+            indicator_min_rank_guard_enabled=False,
+        )
+        filters = replace(
+            filters,
+            enabled=False,
+            extreme_reversal_entry_enabled=True,
+            pre_cross_entry_enabled=False,
+            reversal_cross_lookback_bars=1,
+            confirmed_cross_risk_multiplier=0.45,
+        )
+        trading = replace(trading, super_volume_extra_slot_enabled=False)
+    elif mode == STRATEGY_MODE_SUPER_VOLUME:
+        super_volume_flags = dict(disable_legacy_breakout)
+        super_volume_flags["super_volume_breakout_enabled"] = True
+        strategy = replace(
+            strategy,
+            **super_volume_flags,
+            mtf_4h_rsi_regime_enabled=False,
+            mtf_disable_legacy_strategies=False,
+            oi_flush_reversal_enabled=False,
+            entry_timing_filter_enabled=True,
+            entry_execution_filter_enabled=True,
+            entry_execution_filter_trend_only=False,
+        )
+        filters = replace(filters, enabled=True, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False)
+        trading = replace(trading, super_volume_extra_slot_enabled=True)
+    elif mode == STRATEGY_MODE_MTF:
+        strategy = replace(
+            strategy,
+            **disable_legacy_breakout,
+            mtf_4h_rsi_regime_enabled=True,
+            mtf_disable_legacy_strategies=True,
+            oi_flush_reversal_enabled=False,
+        )
+        filters = replace(filters, enabled=False, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False)
+        trading = replace(trading, super_volume_extra_slot_enabled=False)
+    elif mode == STRATEGY_MODE_OI_FLUSH:
+        strategy = replace(
+            strategy,
+            **disable_legacy_breakout,
+            mtf_4h_rsi_regime_enabled=False,
+            mtf_disable_legacy_strategies=False,
+            oi_flush_reversal_enabled=True,
+            allow_short=False,
+            short_risk_bias=0.0,
+        )
+        filters = replace(filters, enabled=False, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False)
+        trading = replace(trading, super_volume_extra_slot_enabled=False)
+
+    return replace(config, trading=trading, strategy=strategy, filters=filters)
 
 
 def main() -> int:

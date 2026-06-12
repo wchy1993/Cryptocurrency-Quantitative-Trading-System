@@ -152,6 +152,10 @@ class MultiTimeframeFilterConfig:
     macd_slow: int = 26
     macd_signal: int = 9
     kdj_period: int = 9
+    higher_tf_alignment_enabled: bool = False
+    higher_tf_alignment_timeframe: str = "1h"
+    higher_tf_alignment_conflict_score: int = 2
+    higher_tf_alignment_rsi_buffer: float = 5.0
     extreme_reversal_entry_enabled: bool = True
     pre_cross_entry_enabled: bool = True
     reversal_cross_lookback_bars: int = 3
@@ -180,6 +184,16 @@ class LiveRiskConfig:
     soft_drawdown_min_size_multiplier: float = 0.35
     estimated_fee_bps: float = 5.0
     estimated_slippage_bps: float = 2.0
+    backtest_mode: str = "conservative"
+    cost_experiment: str = "full_cost"
+    market_slippage_bps: float = 2.0
+    stop_slippage_bps: float = 5.0
+    take_profit_slippage_bps: float = 2.0
+    maker_fee_rate: float = 0.0002
+    taker_fee_rate: float = 0.0005
+    funding_enabled: bool = False
+    funding_data_dir: str = ""
+    funding_default_rate: float = 0.0
     min_profit_after_cost_pct: float = 0.0010
     min_available_balance_usdt: float = 20.0
     min_order_notional_usdt: float = 5.0

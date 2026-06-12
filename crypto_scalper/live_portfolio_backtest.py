@@ -4,13 +4,15 @@ import argparse
 import bisect
 import json
 import math
+import statistics
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .binance_client import SymbolRules
-from .data import interval_to_milliseconds, load_candles_csv
+from .data import interval_to_milliseconds, load_candles_csv, parse_timestamp
 from .indicators import atr, ema, kdj, macd, rsi
 from .live_config import LiveAppConfig, load_live_config
 from .macro_events import MacroEvent, load_macro_events
@@ -23,11 +25,26 @@ from .live_trader import (
     LivePosition,
     SimPosition,
     _candidate_requires_extra_slot,
+    _entry_execution_guard_reason_for_candles,
     _entry_position_limit,
+    _entry_quality_guard_reason,
+    _fast_breakout_signal_for_candles,
+    _is_trend_entry_reason,
+    _ordinary_breakout_adjusted_signal,
     _scale_fraction,
     _super_volume_extra_slot_candidate_allowed,
+    _trend_reference_adjusted_signal_for_candles,
 )
 from .models import Candle, Direction, Signal
+from .risk import (
+    BacktestExecutionConfig,
+    BacktestExecutionStats,
+    execution_config_from_live_config,
+    funding_cashflow,
+    market_entry_fill,
+    market_exit_fill,
+    validate_order_size,
+)
 from .strategy import VolatilityBreakoutScalper
 
 
@@ -47,6 +64,15 @@ class PortfolioPosition:
     entry_reason: str = ""
     bars_held: int = 0
     scale_ins: int = 0
+    entry_time: Any = None
+    raw_entry_price: float = 0.0
+    entry_slippage_cost: float = 0.0
+    entry_order_type: str = "market"
+    entry_liquidity: str = "taker"
+    signal_time: Any = None
+    signal_available_time: Any = None
+    mfe: float = 0.0
+    mae: float = 0.0
 
     def unrealized_pnl(self, mark_price: float) -> float:
         return self.direction.value * self.quantity * (mark_price - self.entry_price)
@@ -67,6 +93,10 @@ class HistoricalClient:
         self.base_timeframe = base_timeframe
         self.base_candles = candles_by_symbol
         self.current_index = 0
+        self._rules = {
+            symbol.upper(): _inferred_symbol_rules(symbol.upper(), candles)
+            for symbol, candles in candles_by_symbol.items()
+        }
         self.resample_factors: dict[str, int] = {}
         self.resampled: dict[str, dict[str, list[Candle]]] = {}
         for timeframe in (base_timeframe, *filter_timeframes):
@@ -87,14 +117,43 @@ class HistoricalClient:
         factor = self.resample_factors[interval]
         candles = self.resampled[interval][symbol]
         if factor == 1:
-            end = min(len(candles), self.current_index + 2)
+            end = min(len(candles), self.current_index + 1)
             return candles[max(0, end - limit):end]
 
         closed_count = min(len(candles), max(0, self.current_index + 1) // factor)
         return candles[max(0, closed_count - limit):closed_count]
 
     def symbol_rules(self, symbol: str) -> SymbolRules:
-        return SymbolRules(symbol, "0.001", "0.001", "0.01", "5")
+        symbol = symbol.upper()
+        return self._rules.get(symbol, _inferred_symbol_rules(symbol, self.base_candles.get(symbol, [])))
+
+
+def _inferred_symbol_rules(symbol: str, candles: list[Candle]) -> SymbolRules:
+    sampled_closes = [
+        candle.close
+        for candle in candles[: min(len(candles), 1440)]
+        if candle.close > 0
+    ]
+    price = statistics.median(sampled_closes) if sampled_closes else 1.0
+    if price >= 1000:
+        tick = "0.1"
+        quantity_step = "0.001"
+    elif price >= 100:
+        tick = "0.01"
+        quantity_step = "0.001"
+    elif price >= 1:
+        tick = "0.001"
+        quantity_step = "0.01"
+    elif price >= 0.1:
+        tick = "0.0001"
+        quantity_step = "0.1"
+    elif price >= 0.01:
+        tick = "0.00001"
+        quantity_step = "1"
+    else:
+        tick = "0.000001"
+        quantity_step = "1"
+    return SymbolRules(symbol, quantity_step, quantity_step, tick, "5")
 
 
 def run_portfolio_backtest(
@@ -102,12 +161,41 @@ def run_portfolio_backtest(
     data_dir: str,
     initial_equity: float | None = None,
     macro_data_dir: str | None = None,
+    entry_timing_data_dir: str | None = None,
+    execution_timing_data_dir: str | None = None,
+    include_trades: bool = False,
+    trade_start: Any = None,
+    trade_end: Any = None,
 ) -> dict[str, Any]:
     config = load_live_config(config_path)
     candles_by_symbol = _load_symbol_data(data_dir, tuple(config.trading.symbols), config.trading.timeframe)
     if not candles_by_symbol:
         raise RuntimeError(f"no data loaded from {data_dir}")
-    return run_portfolio_backtest_config(config, candles_by_symbol, initial_equity, macro_data_dir=macro_data_dir)
+    entry_timing_candles_by_symbol = None
+    if entry_timing_data_dir and getattr(config.strategy, "entry_timing_filter_enabled", False):
+        entry_timing_candles_by_symbol = _load_symbol_data(
+            entry_timing_data_dir,
+            tuple(config.trading.symbols),
+            str(getattr(config.strategy, "entry_timing_timeframe", "15m")),
+        )
+    execution_timing_candles_by_symbol = None
+    if execution_timing_data_dir and getattr(config.strategy, "entry_execution_filter_enabled", False):
+        execution_timing_candles_by_symbol = _load_symbol_data(
+            execution_timing_data_dir,
+            tuple(config.trading.symbols),
+            str(getattr(config.strategy, "entry_execution_timeframe", "5m")),
+        )
+    return run_portfolio_backtest_config(
+        config,
+        candles_by_symbol,
+        initial_equity,
+        macro_data_dir=macro_data_dir,
+        entry_timing_candles_by_symbol=entry_timing_candles_by_symbol,
+        execution_timing_candles_by_symbol=execution_timing_candles_by_symbol,
+        include_trades=include_trades,
+        trade_start=trade_start,
+        trade_end=trade_end,
+    )
 
 
 def run_portfolio_backtest_config(
@@ -115,6 +203,11 @@ def run_portfolio_backtest_config(
     candles_by_symbol: dict[str, list[Candle]],
     initial_equity: float | None = None,
     macro_data_dir: str | None = None,
+    entry_timing_candles_by_symbol: dict[str, list[Candle]] | None = None,
+    execution_timing_candles_by_symbol: dict[str, list[Candle]] | None = None,
+    include_trades: bool = False,
+    trade_start: Any = None,
+    trade_end: Any = None,
 ) -> dict[str, Any]:
     symbols = tuple(symbol for symbol in config.trading.symbols if symbol in candles_by_symbol)
     if not symbols:
@@ -129,6 +222,24 @@ def run_portfolio_backtest_config(
     mtf_cache = _build_mtf_cache(config, client, tuple(candles_by_symbol))
     market_regime_cache = _build_market_regime_cache(config, candles_by_symbol, common_length)
     btc_market_state_cache = _build_btc_market_state_cache(config, candles_by_symbol, common_length)
+    entry_timing_candles_by_symbol = {
+        symbol: candles
+        for symbol, candles in (entry_timing_candles_by_symbol or {}).items()
+        if symbol in symbols and candles
+    }
+    entry_timing_timestamps_by_symbol = {
+        symbol: [candle.timestamp for candle in candles]
+        for symbol, candles in entry_timing_candles_by_symbol.items()
+    }
+    execution_timing_candles_by_symbol = {
+        symbol: candles
+        for symbol, candles in (execution_timing_candles_by_symbol or {}).items()
+        if symbol in symbols and candles
+    }
+    execution_timing_timestamps_by_symbol = {
+        symbol: [candle.timestamp for candle in candles]
+        for symbol, candles in execution_timing_candles_by_symbol.items()
+    }
     macro_state = _build_macro_backtest_state(config, macro_data_dir)
     starting_equity = initial_equity if initial_equity is not None else config.risk.starting_capital_usdt
     trader._peak_equity = starting_equity
@@ -150,6 +261,7 @@ def run_portfolio_backtest_config(
     warmup = max(config.strategy.slow_ema, config.strategy.channel_period, config.strategy.volume_period, 96) + 8
     bar_seconds = max(1.0, interval_to_milliseconds(config.trading.timeframe) / 1000.0)
     next_entry_scan_second = 0.0
+    summary_first_candle = next(iter(candles_by_symbol.values()))[0]
     for index in range(warmup, common_length - 1):
         bar_number = index - warmup
         bar_start_second = bar_number * bar_seconds
@@ -163,8 +275,16 @@ def run_portfolio_backtest_config(
         client.current_index = index
         trader._mtf_candle_cache.clear()
         timestamp = next(iter(candles_by_symbol.values()))[index].timestamp
-        macro_event = _macro_event_for_bar(macro_state, timestamp, bar_seconds)
         equity = _mark_equity(cash, positions, candles_by_symbol, index)
+        if trade_start is not None and timestamp < trade_start:
+            summary_first_candle = next(iter(candles_by_symbol.values()))[index]
+            equity_curve.append(equity)
+            continue
+        if trade_end is not None and timestamp > trade_end:
+            break
+        if trade_start is not None and summary_first_candle.timestamp < trade_start <= timestamp:
+            summary_first_candle = next(iter(candles_by_symbol.values()))[index]
+        macro_event = _macro_event_for_bar(macro_state, timestamp, bar_seconds)
         if current_day != timestamp.date():
             current_day = timestamp.date()
             day_start_equity = equity
@@ -190,6 +310,7 @@ def run_portfolio_backtest_config(
                     candles_by_symbol[symbol][index].open,
                     f"macro_event_pre_flatten_{macro_event.event_type}",
                     index,
+                    candles_by_symbol[symbol][index].timestamp,
                 )
                 _mark_reentry_cooldown(config, reentry_block_until, symbol, index)
             _record_monthly_closed_trades(monthly_stats, timestamp, trades[closed_before:])
@@ -285,8 +406,9 @@ def run_portfolio_backtest_config(
                         continue
                     if reentry_block_until.get(symbol, -1) >= index:
                         continue
-                    main_signal = signal_cache[symbol][index]
-                    reversal_signal = reversal_cache[symbol][index]
+                    signal_index = index - 1
+                    main_signal = signal_cache[symbol][signal_index]
+                    reversal_signal = reversal_cache[symbol][signal_index]
                     if main_signal.direction == Direction.FLAT and reversal_signal.direction == Direction.FLAT:
                         continue
                     if (
@@ -306,7 +428,12 @@ def run_portfolio_backtest_config(
                         market_regime_cache,
                         btc_market_state_cache,
                         symbol,
-                        index,
+                        signal_index,
+                        entry_timing_candles_by_symbol=entry_timing_candles_by_symbol,
+                        entry_timing_timestamps_by_symbol=entry_timing_timestamps_by_symbol,
+                        execution_timing_candles_by_symbol=execution_timing_candles_by_symbol,
+                        execution_timing_timestamps_by_symbol=execution_timing_timestamps_by_symbol,
+                        decision_timestamp=timestamp,
                     )
                     if candidate:
                         bar_candidates.append(candidate)
@@ -326,11 +453,20 @@ def run_portfolio_backtest_config(
                     if not _super_volume_extra_slot_candidate_allowed(config, candidate):
                         continue
                 account = _account_snapshot(config, _mark_equity(cash, positions, candles_by_symbol, index), positions, candles_by_symbol, index)
-                quantity_text, reason = trader._size_order(candidate.symbol, candidate.candle.close, candidate.signal, account)
+                execution_price = candles_by_symbol[candidate.symbol][index].open
+                execution_candle = replace(
+                    candidate.candle,
+                    timestamp=timestamp,
+                    open=execution_price,
+                    high=execution_price,
+                    low=execution_price,
+                    close=execution_price,
+                )
+                quantity_text, reason = trader._size_order(candidate.symbol, execution_price, candidate.signal, account)
                 quantity = float(quantity_text)
                 if reason != "ok" or quantity <= 0:
                     continue
-                cash = _open_position(config, cash, positions, candidate.symbol, candidate.signal, candidate.candle, quantity, index)
+                cash = _open_position(config, cash, positions, candidate.symbol, candidate.signal, execution_candle, quantity, index)
                 _record_monthly_open(monthly_stats, timestamp, candidate.signal.direction)
                 opened += 1
             if opened <= 0:
@@ -338,16 +474,28 @@ def run_portfolio_backtest_config(
             _record_monthly_equity(monthly_stats, timestamp, _mark_equity(cash, positions, candles_by_symbol, index))
 
     last_index = common_length - 1
+    if trade_end is not None:
+        timestamps = [candle.timestamp for candle in next(iter(candles_by_symbol.values()))]
+        last_index = max(0, bisect.bisect_right(timestamps, trade_end) - 1)
     last_candle = next(iter(candles_by_symbol.values()))[last_index]
     for symbol in list(positions):
         candle = candles_by_symbol[symbol][last_index]
         closed_before = len(trades)
-        cash = _close_position(config, cash, positions, trades, symbol, candle.close, "end_of_data", last_index)
+        cash = _close_position(config, cash, positions, trades, symbol, candle.close, "end_of_data", last_index, candle.timestamp)
         _record_monthly_closed_trades(monthly_stats, last_candle.timestamp, trades[closed_before:])
     final_equity = cash
     equity_curve.append(final_equity)
     _record_monthly_equity(monthly_stats, last_candle.timestamp, final_equity)
-    return _summary(starting_equity, final_equity, equity_curve, trades, next(iter(candles_by_symbol.values()))[0], last_candle, monthly_stats)
+    return _summary(
+        starting_equity,
+        final_equity,
+        equity_curve,
+        trades,
+        summary_first_candle,
+        last_candle,
+        monthly_stats,
+        include_trades=include_trades,
+    )
 
 
 def _build_signal_cache(config: Any, candles_by_symbol: dict[str, list[Candle]], common_length: int) -> dict[str, list[Signal]]:
@@ -797,10 +945,15 @@ def _build_mtf_cache(config: Any, client: HistoricalClient, symbols: tuple[str, 
 
 def _build_market_regime_cache(config: Any, candles_by_symbol: dict[str, list[Candle]], common_length: int) -> list[MarketRegime]:
     strategy = config.strategy
-    if not getattr(strategy, "weak_market_long_filter_enabled", False):
+    if not (
+        getattr(strategy, "weak_market_long_filter_enabled", False)
+        or getattr(strategy, "strong_market_short_filter_enabled", False)
+    ):
         return [MarketRegime(False, 1.0, 0.0) for _ in range(common_length)]
 
-    lookback = max(1, int(getattr(strategy, "weak_market_lookback_bars", 48)))
+    weak_lookback = int(getattr(strategy, "weak_market_lookback_bars", 48))
+    strong_lookback = int(getattr(strategy, "strong_market_lookback_bars", weak_lookback))
+    lookback = max(1, weak_lookback, strong_lookback)
     breadth_threshold = max(0.0, min(1.0, float(getattr(strategy, "weak_market_breadth_threshold", 0.42))))
     avg_return_threshold = float(getattr(strategy, "weak_market_avg_return_threshold", -0.012))
     closes_by_symbol = {symbol: [candle.close for candle in candles] for symbol, candles in candles_by_symbol.items()}
@@ -844,19 +997,55 @@ def _build_btc_market_state_cache(config: Any, candles_by_symbol: dict[str, list
     if not candles:
         return [BtcMarketState(Direction.FLAT, 0.0, 0.0, "btc_market_no_data") for _ in range(common_length)]
 
-    lookback = max(1, int(getattr(strategy, "btc_market_lookback_bars", 12)))
+    primary = _build_btc_market_state_cache_for_timeframe(
+        config,
+        candles,
+        common_length,
+        str(getattr(strategy, "btc_market_timeframe", config.trading.timeframe)),
+        max(1, int(getattr(strategy, "btc_market_lookback_bars", 12))),
+    )
+    if not getattr(strategy, "btc_market_confirmation_enabled", False):
+        return primary
+
+    confirmation = _build_btc_market_state_cache_for_timeframe(
+        config,
+        candles,
+        common_length,
+        str(getattr(strategy, "btc_market_confirmation_timeframe", "8h")),
+        max(1, int(getattr(strategy, "btc_market_confirmation_lookback_bars", 2))),
+    )
+    return [
+        _combine_btc_market_states(primary_state, confirmation_state)
+        for primary_state, confirmation_state in zip(primary, confirmation)
+    ]
+
+
+def _build_btc_market_state_cache_for_timeframe(
+    config: Any,
+    base_candles: list[Candle],
+    common_length: int,
+    timeframe: str,
+    lookback: int,
+) -> list[BtcMarketState]:
+    strategy = config.strategy
+    try:
+        factor = _resample_factor(config.trading.timeframe, timeframe)
+    except ValueError:
+        factor = 1
+    candles = base_candles if factor == 1 else _resample(base_candles, factor)
     closes = [candle.close for candle in candles]
-    slow_values = ema(closes, strategy.slow_ema)
+    ema_period = max(2, int(getattr(strategy, "btc_market_ema_period", strategy.slow_ema)))
+    slow_values = ema(closes, ema_period)
     atr_values = atr(candles, strategy.atr_period)
     bull_return = float(getattr(strategy, "btc_bull_return_threshold", 0.006))
     bear_return = float(getattr(strategy, "btc_bear_return_threshold", -0.006))
     slope_threshold = float(getattr(strategy, "btc_market_slope_atr_threshold", 0.20))
-    warmup = max(lookback, strategy.slow_ema, strategy.atr_period)
-    output: list[BtcMarketState] = []
+    warmup = max(lookback, ema_period, strategy.atr_period)
+    timeframe_states: list[BtcMarketState] = []
 
-    for index in range(common_length):
+    for index in range(len(candles)):
         if index >= len(candles) or index < warmup:
-            output.append(BtcMarketState(Direction.FLAT, 0.0, 0.0, "btc_market_warmup"))
+            timeframe_states.append(BtcMarketState(Direction.FLAT, 0.0, 0.0, f"btc_{timeframe}_warmup"))
             continue
 
         current = closes[index]
@@ -873,8 +1062,38 @@ def _build_btc_market_state_cache(config: Any, candles_by_symbol: dict[str, list
         else:
             direction = Direction.FLAT
             label = "btc_neutral"
-        output.append(BtcMarketState(direction, return_pct * 100.0, slope_atr, f"{label} ret={return_pct * 100:.2f}% slope_atr={slope_atr:.2f}"))
+        timeframe_states.append(BtcMarketState(direction, return_pct * 100.0, slope_atr, f"{label}_{timeframe} ret={return_pct * 100:.2f}% slope_atr={slope_atr:.2f}"))
+
+    output: list[BtcMarketState] = []
+    for index in range(common_length):
+        if factor <= 1:
+            state_index = min(index, len(timeframe_states) - 1)
+        else:
+            closed_count = min(len(timeframe_states), max(0, index + 1) // factor)
+            state_index = closed_count - 1
+        if state_index < 0:
+            output.append(BtcMarketState(Direction.FLAT, 0.0, 0.0, f"btc_{timeframe}_warmup"))
+        else:
+            output.append(timeframe_states[state_index])
     return output
+
+
+def _combine_btc_market_states(primary: BtcMarketState, confirmation: BtcMarketState) -> BtcMarketState:
+    if primary.direction == Direction.FLAT:
+        return primary
+    if confirmation.direction == primary.direction:
+        return BtcMarketState(
+            primary.direction,
+            primary.return_pct,
+            primary.slope_atr,
+            f"{primary.reason}; confirm={confirmation.reason}",
+        )
+    return BtcMarketState(
+        Direction.FLAT,
+        primary.return_pct,
+        primary.slope_atr,
+        f"btc_mixed primary={primary.reason}; confirm={confirmation.reason}",
+    )
 
 
 def trader_mtf_warmup(config: Any) -> int:
@@ -923,6 +1142,11 @@ def _cached_entry_candidate(
     btc_market_state_cache: list[BtcMarketState],
     symbol: str,
     index: int,
+    entry_timing_candles_by_symbol: dict[str, list[Candle]] | None = None,
+    entry_timing_timestamps_by_symbol: dict[str, list[Any]] | None = None,
+    execution_timing_candles_by_symbol: dict[str, list[Candle]] | None = None,
+    execution_timing_timestamps_by_symbol: dict[str, list[Any]] | None = None,
+    decision_timestamp: Any = None,
 ) -> EntryCandidate | None:
     start = max(0, index + 1 - config.trading.kline_limit)
     candles = candles_by_symbol[symbol][start:index + 1]
@@ -935,6 +1159,44 @@ def _cached_entry_candidate(
         if signal.direction == Direction.FLAT:
             return None
 
+    return _filtered_entry_candidate_from_signal(
+        trader,
+        config,
+        client,
+        mtf_cache,
+        market_regime_cache,
+        btc_market_state_cache,
+        symbol,
+        index,
+        signal,
+        candles,
+        candles[-1],
+        entry_timing_candles_by_symbol=entry_timing_candles_by_symbol,
+        entry_timing_timestamps_by_symbol=entry_timing_timestamps_by_symbol,
+        execution_timing_candles_by_symbol=execution_timing_candles_by_symbol,
+        execution_timing_timestamps_by_symbol=execution_timing_timestamps_by_symbol,
+        decision_timestamp=decision_timestamp,
+    )
+
+
+def _filtered_entry_candidate_from_signal(
+    trader: BinanceAutoTrader,
+    config: Any,
+    client: HistoricalClient,
+    mtf_cache: dict[tuple[str, str], list[TimeframeSignal | None]],
+    market_regime_cache: list[MarketRegime],
+    btc_market_state_cache: list[BtcMarketState],
+    symbol: str,
+    index: int,
+    signal: Signal,
+    rank_candles: list[Candle],
+    candidate_candle: Candle,
+    entry_timing_candles_by_symbol: dict[str, list[Candle]] | None = None,
+    entry_timing_timestamps_by_symbol: dict[str, list[Any]] | None = None,
+    execution_timing_candles_by_symbol: dict[str, list[Candle]] | None = None,
+    execution_timing_timestamps_by_symbol: dict[str, list[Any]] | None = None,
+    decision_timestamp: Any = None,
+) -> EntryCandidate | None:
     reference_guard_reason = _indicator_reference_guard_reason(config, client, symbol, signal)
     if reference_guard_reason:
         return None
@@ -943,18 +1205,228 @@ def _cached_entry_candidate(
     if not allowed:
         return None
 
-    rank_score, momentum_pct, volume_ratio = trader._entry_rank_metrics(signal, candles)
+    rank_score, momentum_pct, volume_ratio = trader._entry_rank_metrics(signal, rank_candles)
     regime = market_regime_cache[index] if 0 <= index < len(market_regime_cache) else MarketRegime(False, 1.0, 0.0)
     signal = _weak_market_adjusted_signal(config, signal, rank_score, regime)
     if signal is None:
         return None
-    rank_score, momentum_pct, volume_ratio = trader._entry_rank_metrics(signal, candles)
+    rank_score, momentum_pct, volume_ratio = trader._entry_rank_metrics(signal, rank_candles)
+    signal = _strong_market_adjusted_signal(config, signal, rank_score, regime)
+    if signal is None:
+        return None
+    rank_score, momentum_pct, volume_ratio = trader._entry_rank_metrics(signal, rank_candles)
     btc_state = btc_market_state_cache[index] if 0 <= index < len(btc_market_state_cache) else BtcMarketState(Direction.FLAT, 0.0, 0.0, "btc_market_missing")
     signal = _btc_market_adjusted_signal(config, signal, rank_score, momentum_pct, volume_ratio, btc_state)
     if signal is None:
         return None
-    rank_score, momentum_pct, volume_ratio = trader._entry_rank_metrics(signal, candles)
-    return EntryCandidate(symbol, signal, candles[-1], rank_score, momentum_pct, volume_ratio, filter_reason)
+    rank_score, momentum_pct, volume_ratio = trader._entry_rank_metrics(signal, rank_candles)
+    signal = _trend_reference_adjusted_signal(config, client, symbol, signal)
+    if signal is None:
+        return None
+    rank_score, momentum_pct, volume_ratio = trader._entry_rank_metrics(signal, rank_candles)
+    signal = _ordinary_breakout_adjusted_signal(config, signal, rank_score)
+    if signal is None:
+        return None
+    rank_score, momentum_pct, volume_ratio = trader._entry_rank_metrics(signal, rank_candles)
+    candidate = EntryCandidate(symbol, signal, candidate_candle, rank_score, momentum_pct, volume_ratio, filter_reason)
+    if _entry_quality_guard_reason(config, candidate):
+        return None
+    timing_guard_reason = _entry_timing_guard_reason(
+        config,
+        candidate,
+        entry_timing_candles_by_symbol,
+        entry_timing_timestamps_by_symbol,
+        decision_timestamp,
+    )
+    if timing_guard_reason:
+        return None
+    execution_guard_reason = _execution_timing_guard_reason(
+        config,
+        candidate,
+        execution_timing_candles_by_symbol,
+        execution_timing_timestamps_by_symbol,
+        decision_timestamp,
+    )
+    if execution_guard_reason:
+        return None
+    return candidate
+
+
+def _cached_fast_breakout_candidate(
+    trader: BinanceAutoTrader,
+    config: Any,
+    client: HistoricalClient,
+    mtf_cache: dict[tuple[str, str], list[TimeframeSignal | None]],
+    market_regime_cache: list[MarketRegime],
+    btc_market_state_cache: list[BtcMarketState],
+    symbol: str,
+    index: int,
+    fast_candles_by_symbol: dict[str, list[Candle]] | None,
+    fast_timestamps_by_symbol: dict[str, list[Any]] | None,
+    decision_timestamp: Any,
+    entry_timing_candles_by_symbol: dict[str, list[Candle]] | None = None,
+    entry_timing_timestamps_by_symbol: dict[str, list[Any]] | None = None,
+    execution_timing_candles_by_symbol: dict[str, list[Candle]] | None = None,
+    execution_timing_timestamps_by_symbol: dict[str, list[Any]] | None = None,
+) -> EntryCandidate | None:
+    if not getattr(config.strategy, "fast_breakout_enabled", False):
+        return None
+    if not fast_candles_by_symbol or not fast_timestamps_by_symbol or decision_timestamp is None:
+        return None
+
+    candles = fast_candles_by_symbol.get(symbol)
+    timestamps = fast_timestamps_by_symbol.get(symbol)
+    if not candles or not timestamps:
+        return None
+
+    timeframe = str(getattr(config.strategy, "fast_breakout_timeframe", "5m"))
+    closed_before = decision_timestamp - timedelta(milliseconds=interval_to_milliseconds(timeframe))
+    end = bisect.bisect_right(timestamps, closed_before)
+    if end <= 0:
+        return None
+    start = max(0, end - max(100, int(getattr(config.strategy, "fast_breakout_channel_period", 18)) + int(getattr(config.strategy, "fast_breakout_volume_period", 24)) + 20))
+    fast_candles = candles[start:end]
+    signal = _fast_breakout_signal_for_candles(config, fast_candles)
+    if signal.direction == Direction.FLAT:
+        return None
+
+    return _filtered_entry_candidate_from_signal(
+        trader,
+        config,
+        client,
+        mtf_cache,
+        market_regime_cache,
+        btc_market_state_cache,
+        symbol,
+        index,
+        signal,
+        fast_candles,
+        fast_candles[-1],
+        entry_timing_candles_by_symbol=entry_timing_candles_by_symbol,
+        entry_timing_timestamps_by_symbol=entry_timing_timestamps_by_symbol,
+        execution_timing_candles_by_symbol=execution_timing_candles_by_symbol,
+        execution_timing_timestamps_by_symbol=execution_timing_timestamps_by_symbol,
+        decision_timestamp=decision_timestamp,
+    )
+
+
+def _entry_timing_guard_reason(
+    config: Any,
+    candidate: EntryCandidate,
+    candles_by_symbol: dict[str, list[Candle]] | None,
+    timestamps_by_symbol: dict[str, list[Any]] | None,
+    decision_timestamp: Any,
+) -> str | None:
+    strategy = config.strategy
+    if not getattr(strategy, "entry_timing_filter_enabled", False):
+        return None
+    if not candles_by_symbol or not timestamps_by_symbol or decision_timestamp is None:
+        return None
+
+    candles = candles_by_symbol.get(candidate.symbol)
+    timestamps = timestamps_by_symbol.get(candidate.symbol)
+    if not candles or not timestamps:
+        return None
+
+    timeframe = str(getattr(strategy, "entry_timing_timeframe", "15m"))
+    closed_before = decision_timestamp - timedelta(milliseconds=interval_to_milliseconds(timeframe))
+    end = bisect.bisect_right(timestamps, closed_before)
+    if end <= 0:
+        return None
+    fast_period = max(2, int(getattr(strategy, "entry_timing_rsi_fast_period", 6)))
+    mid_period = max(fast_period, int(getattr(strategy, "entry_timing_rsi_mid_period", 12)))
+    start = max(0, end - max(80, mid_period + 10))
+    return _entry_timing_guard_reason_for_candles(config, candidate, candles[start:end])
+
+
+def _entry_timing_guard_reason_for_candles(config: Any, candidate: EntryCandidate, candles: list[Candle]) -> str | None:
+    strategy = config.strategy
+    fast_period = max(2, int(getattr(strategy, "entry_timing_rsi_fast_period", 6)))
+    mid_period = max(fast_period, int(getattr(strategy, "entry_timing_rsi_mid_period", 12)))
+    if len(candles) < mid_period + 3:
+        return None
+
+    window = candles[-max(80, mid_period + 10):]
+    closes = [candle.close for candle in window]
+    latest = closes[-1]
+    signal_close = candidate.candle.close
+    if latest <= 0 or signal_close <= 0:
+        return None
+
+    direction = candidate.signal.direction
+    chase_pct = (latest / signal_close - 1.0) * direction.value
+    max_chase = max(0.0, float(getattr(strategy, "entry_timing_max_chase_pct", 0.010)))
+    if chase_pct > max_chase:
+        return "15m_chase"
+
+    reversal_pct = (latest / window[-2].close - 1.0) * direction.value if window[-2].close > 0 else 0.0
+    max_reversal = max(0.0, float(getattr(strategy, "entry_timing_reversal_pct", 0.006)))
+    if reversal_pct < -max_reversal:
+        return "15m_reversal"
+
+    fast_rsi = rsi(closes, fast_period)[-1]
+    mid_rsi = rsi(closes, mid_period)[-1]
+    if direction == Direction.LONG:
+        if (
+            fast_rsi >= float(getattr(strategy, "entry_timing_long_rsi_fast_ceiling", 82.0))
+            and mid_rsi >= float(getattr(strategy, "entry_timing_long_rsi_mid_ceiling", 76.0))
+        ):
+            return "15m_long_rsi_hot"
+    elif direction == Direction.SHORT:
+        if (
+            fast_rsi <= float(getattr(strategy, "entry_timing_short_rsi_fast_floor", 18.0))
+            and mid_rsi <= float(getattr(strategy, "entry_timing_short_rsi_mid_floor", 24.0))
+        ):
+            return "15m_short_rsi_cold"
+    return None
+
+
+def _execution_timing_guard_reason(
+    config: Any,
+    candidate: EntryCandidate,
+    candles_by_symbol: dict[str, list[Candle]] | None,
+    timestamps_by_symbol: dict[str, list[Any]] | None,
+    decision_timestamp: Any,
+) -> str | None:
+    strategy = config.strategy
+    if not getattr(strategy, "entry_execution_filter_enabled", False):
+        return None
+    if getattr(strategy, "entry_execution_filter_trend_only", True) and not _is_trend_entry_reason(candidate.signal.reason):
+        return None
+    if not candles_by_symbol or not timestamps_by_symbol or decision_timestamp is None:
+        return None
+
+    candles = candles_by_symbol.get(candidate.symbol)
+    timestamps = timestamps_by_symbol.get(candidate.symbol)
+    if not candles or not timestamps:
+        return None
+
+    timeframe = str(getattr(strategy, "entry_execution_timeframe", "5m"))
+    closed_before = decision_timestamp - timedelta(milliseconds=interval_to_milliseconds(timeframe))
+    end = bisect.bisect_right(timestamps, closed_before)
+    if end <= 0:
+        return None
+    fast_period = max(2, int(getattr(strategy, "entry_execution_rsi_fast_period", 6)))
+    mid_period = max(fast_period, int(getattr(strategy, "entry_execution_rsi_mid_period", 12)))
+    start = max(0, end - max(80, mid_period + 10))
+    return _entry_execution_guard_reason_for_candles(config, candidate, candles[start:end])
+
+
+def _trend_reference_adjusted_signal(config: Any, client: HistoricalClient, symbol: str, signal: Signal) -> Signal | None:
+    strategy = config.strategy
+    if not getattr(strategy, "trend_reference_filter_enabled", False):
+        return signal
+    if signal.direction == Direction.FLAT or not _is_trend_entry_reason(signal.reason):
+        return signal
+
+    timeframe = str(getattr(strategy, "trend_reference_timeframe", "1h"))
+    if timeframe not in client.resampled:
+        return signal
+    lookback = max(1, int(getattr(strategy, "trend_reference_lookback_bars", 6)))
+    limit = max(strategy.slow_ema + lookback + 5, strategy.atr_period + lookback + 5, 120)
+    candles = client.klines(symbol, timeframe, limit)
+    adjusted, _reason = _trend_reference_adjusted_signal_for_candles(config, signal, candles)
+    return adjusted
 
 
 def _indicator_reference_guard_reason(config: Any, client: HistoricalClient, symbol: str, signal: Signal) -> str | None:
@@ -1047,6 +1519,35 @@ def _weak_market_adjusted_signal(config: Any, signal: Signal, rank_score: float,
         signal.direction,
         signal.confidence,
         f"{signal.reason}_weak_market_guard breadth={regime.breadth_pct:.2f} avg={regime.avg_return_pct:.2f}%",
+        signal.stop_loss_pct,
+        signal.take_profit_pct,
+        risk_multiplier=signal.risk_multiplier * multiplier,
+        max_holding_bars=signal.max_holding_bars,
+    )
+
+
+def _strong_market_adjusted_signal(config: Any, signal: Signal, rank_score: float, regime: MarketRegime) -> Signal | None:
+    strategy = config.strategy
+    if signal.direction != Direction.SHORT or not getattr(strategy, "strong_market_short_filter_enabled", False):
+        return signal
+
+    strong = (
+        regime.breadth_pct >= max(0.0, min(1.0, float(getattr(strategy, "strong_market_breadth_threshold", 0.58))))
+        and regime.avg_return_pct >= float(getattr(strategy, "strong_market_avg_return_threshold", 0.006)) * 100.0
+    )
+    if not strong:
+        return signal
+
+    min_rank = max(0.0, float(getattr(strategy, "strong_market_short_min_rank_score", 6.2)))
+    is_exceptional = "super_volume" in signal.reason or "startup_breakout" in signal.reason
+    if not is_exceptional and rank_score < min_rank:
+        return None
+
+    multiplier = max(0.0, min(1.0, float(getattr(strategy, "strong_market_short_risk_multiplier", 0.45))))
+    return Signal(
+        signal.direction,
+        signal.confidence,
+        f"{signal.reason}_strong_market_short_guard breadth={regime.breadth_pct:.2f} avg={regime.avg_return_pct:.2f}%",
         signal.stop_loss_pct,
         signal.take_profit_pct,
         risk_multiplier=signal.risk_multiplier * multiplier,
@@ -1199,9 +1700,14 @@ def _execute_macro_event_trade(
     if notional < config.risk.min_order_notional_usdt:
         return cash
 
-    entry_price = _entry_execution_price(config, entry_candle.open, direction)
+    execution_config = execution_config_from_live_config(config)
+    rules = SymbolRules(config.macro_events.primary_symbol, "0.001", "0.001", "0.01", "5")
+    entry_fill = market_entry_fill(execution_config, rules, direction, notional / entry_candle.open, entry_candle.open)
+    entry_price = entry_fill.price
     quantity = notional / entry_price
-    entry_fee = _fee(config, notional)
+    entry_fill = market_entry_fill(execution_config, rules, direction, quantity, entry_candle.open)
+    entry_price = entry_fill.price
+    entry_fee = entry_fill.fee
     cash -= entry_fee
     if direction == Direction.LONG:
         stop_price = entry_price * (1.0 - config.macro_events.stop_loss_pct)
@@ -1214,8 +1720,16 @@ def _execute_macro_event_trade(
     exit_index = min(len(macro_state.candles) - 1, entry_index + max_minutes)
     exit_price = macro_state.candles[exit_index].close
     exit_reason = "macro_event_time_stop"
+    mfe = 0.0
+    mae = 0.0
     for scan_index in range(entry_index, exit_index + 1):
         candle = macro_state.candles[scan_index]
+        if direction == Direction.LONG:
+            mfe = max(mfe, max(0.0, (candle.high - entry_price) * quantity))
+            mae = min(mae, min(0.0, (candle.low - entry_price) * quantity))
+        else:
+            mfe = max(mfe, max(0.0, (entry_price - candle.low) * quantity))
+            mae = min(mae, min(0.0, (entry_price - candle.high) * quantity))
         if direction == Direction.LONG:
             if candle.low <= stop_price:
                 exit_index = scan_index
@@ -1239,31 +1753,64 @@ def _execute_macro_event_trade(
                 exit_reason = "macro_event_take_profit"
                 break
 
-    executed_exit = _exit_execution_price(config, exit_price, direction)
-    gross_pnl = direction.value * quantity * (executed_exit - entry_price)
-    exit_fee = _fee(config, abs(quantity * executed_exit))
-    net_pnl = gross_pnl - entry_fee - exit_fee
-    cash += gross_pnl - exit_fee
+    exit_fill = market_exit_fill(execution_config, rules, direction, quantity, exit_price, _exit_order_type(exit_reason))
+    executed_exit = exit_fill.price
+    raw_gross_pnl = direction.value * quantity * (exit_price - entry_candle.open)
+    execution_gross_pnl = direction.value * quantity * (executed_exit - entry_price)
+    fee = entry_fee + exit_fill.fee
+    slippage_cost = entry_fill.slippage_cost + exit_fill.slippage_cost
+    funding = 0.0
+    net_pnl = raw_gross_pnl - fee - slippage_cost + funding
+    cash += execution_gross_pnl - exit_fill.fee + funding
     exit_candle = macro_state.candles[exit_index]
+    hold_minutes = _hold_minutes(entry_candle.timestamp, exit_candle.timestamp)
+    entry_reason = (
+        f"macro_event_{event.event_type} reference={event.reference} "
+        f"actual={event.actual:g}{event.unit} forecast={event.forecast:g}{event.unit}"
+    )
     _record_monthly_open(monthly_stats, entry_candle.timestamp, direction)
     trades.append(
         {
             "symbol": config.macro_events.primary_symbol,
+            "strategy": "macro_event",
+            "side": direction.name,
             "direction": direction.name,
-            "gross_pnl": gross_pnl,
-            "fees": entry_fee + exit_fee,
-            "net_pnl": net_pnl,
-            "return_pct": net_pnl / max(notional, 1e-12),
-            "entry_reason": (
-                f"macro_event_{event.event_type} reference={event.reference} "
-                f"actual={event.actual:g}{event.unit} forecast={event.forecast:g}{event.unit}"
-            ),
-            "strategy_bucket": "macro_event",
-            "reason": exit_reason,
-            "bars": exit_index - entry_index,
-            "scale_ins": 0,
             "entry_time": entry_candle.timestamp.isoformat(),
             "exit_time": exit_candle.timestamp.isoformat(),
+            "entry_price": entry_price,
+            "exit_price": executed_exit,
+            "raw_entry_price": entry_candle.open,
+            "raw_exit_price": exit_price,
+            "qty": quantity,
+            "quantity": quantity,
+            "notional": abs(quantity * entry_price),
+            "entry_fee": entry_fee,
+            "exit_fee": exit_fill.fee,
+            "fee": fee,
+            "fees": fee,
+            "gross_pnl": raw_gross_pnl,
+            "execution_gross_pnl": execution_gross_pnl,
+            "slippage_cost": slippage_cost,
+            "funding": funding,
+            "net_pnl": net_pnl,
+            "return_pct": net_pnl / max(notional, 1e-12),
+            "net_bps": net_pnl / max(notional, 1e-12) * 10_000.0,
+            "entry_reason": entry_reason,
+            "strategy_bucket": "macro_event",
+            "reason": exit_reason,
+            "exit_reason": exit_reason,
+            "mfe": mfe,
+            "mae": mae,
+            "hold_minutes": hold_minutes,
+            "entry_order_type": entry_fill.order_type,
+            "exit_order_type": exit_fill.order_type,
+            "entry_liquidity": entry_fill.liquidity,
+            "exit_liquidity": exit_fill.liquidity,
+            "signal_time": event.timestamp.isoformat(),
+            "signal_available_time": event.timestamp.isoformat(),
+            "skip_reason": "",
+            "bars": exit_index - entry_index,
+            "scale_ins": 0,
         }
     )
     _record_monthly_equity(monthly_stats, exit_candle.timestamp, cash)
@@ -1477,6 +2024,7 @@ def _manage_positions(
             continue
         candle = candles_by_symbol[symbol][index]
         position.bars_held += 1
+        _update_position_excursion(position, candle)
         exit_price = None
         reason = ""
         if position.direction == Direction.LONG:
@@ -1496,6 +2044,7 @@ def _manage_positions(
 
         if exit_price is None and trader._managed_exit_allowed(position):
             _update_profit_protection(trader, config, position, candle)
+            account = _account_snapshot(config, _mark_equity(cash, positions, candles_by_symbol, index), positions, candles_by_symbol, index)
             sim = SimPosition(
                 symbol=position.symbol,
                 direction=position.direction,
@@ -1515,21 +2064,26 @@ def _manage_positions(
                 exit_price = candle.close
                 reason = profit_reason
             else:
-                trend_loss_reason = trader._trend_loss_exit_reason(sim, candle.close)
-                if trend_loss_reason:
+                account_loss_reason = trader._account_loss_exit_reason(sim, candle.close, account)
+                if account_loss_reason:
                     exit_price = candle.close
-                    reason = trend_loss_reason
+                    reason = account_loss_reason
                 else:
-                    stale_reason = trader._stale_position_exit_reason(sim, candle.close)
-                    if stale_reason:
+                    trend_loss_reason = trader._trend_loss_exit_reason(sim, candle.close)
+                    if trend_loss_reason:
                         exit_price = candle.close
-                        reason = stale_reason
+                        reason = trend_loss_reason
+                    else:
+                        stale_reason = trader._stale_position_exit_reason(sim, candle.close)
+                        if stale_reason:
+                            exit_price = candle.close
+                            reason = stale_reason
 
         if exit_price is None and position.max_holding_bars > 0 and position.bars_held >= position.max_holding_bars:
             exit_price = candle.close
             reason = "time_stop"
         if exit_price is not None:
-            cash = _close_position(config, cash, positions, trades, symbol, exit_price, reason, index)
+            cash = _close_position(config, cash, positions, trades, symbol, exit_price, reason, index, candle.timestamp)
             _mark_reentry_cooldown(config, reentry_block_until, symbol, index)
             continue
 
@@ -1693,10 +2247,23 @@ def _open_position(
     quantity: float,
     index: int,
     leverage_override: int | None = None,
+    raw_entry_price: float | None = None,
+    entry_time: Any = None,
+    signal_time: Any = None,
+    signal_available_time: Any = None,
+    execution_config: BacktestExecutionConfig | None = None,
+    rules: SymbolRules | None = None,
 ) -> float:
-    entry_price = _entry_execution_price(config, candle.close, signal.direction)
+    execution_config = execution_config or execution_config_from_live_config(config)
+    rules = rules or SymbolRules(symbol, "0.001", "0.001", "0.01", "5")
+    raw_price = candle.close if raw_entry_price is None else raw_entry_price
+    fill = market_entry_fill(execution_config, rules, signal.direction, quantity, raw_price)
+    size_reason = validate_order_size(rules, quantity, fill.price, getattr(config.risk, "min_order_notional_usdt", 0.0))
+    if size_reason != "ok":
+        return cash
+    entry_price = fill.price
     notional = abs(quantity * entry_price)
-    entry_fee = _fee(config, notional)
+    entry_fee = fill.fee
     cash -= entry_fee
     if signal.direction == Direction.LONG:
         stop_price = entry_price * (1.0 - signal.stop_loss_pct)
@@ -1717,19 +2284,44 @@ def _open_position(
         entry_price,
         leverage_override or config.trading.leverage,
         signal.reason,
+        entry_time=entry_time or candle.timestamp,
+        raw_entry_price=fill.raw_price,
+        entry_slippage_cost=fill.slippage_cost,
+        entry_order_type=fill.order_type,
+        entry_liquidity=fill.liquidity,
+        signal_time=signal_time,
+        signal_available_time=signal_available_time,
     )
     return cash
 
 
-def _add_to_position(config: Any, cash: float, position: PortfolioPosition, signal: Any, candle: Candle, quantity: float) -> float:
-    entry_price = _entry_execution_price(config, candle.close, signal.direction)
-    entry_fee = _fee(config, abs(quantity * entry_price))
+def _add_to_position(
+    config: Any,
+    cash: float,
+    position: PortfolioPosition,
+    signal: Any,
+    candle: Candle,
+    quantity: float,
+    execution_config: BacktestExecutionConfig | None = None,
+    rules: SymbolRules | None = None,
+) -> float:
+    execution_config = execution_config or execution_config_from_live_config(config)
+    rules = rules or SymbolRules(position.symbol, "0.001", "0.001", "0.01", "5")
+    fill = market_entry_fill(execution_config, rules, signal.direction, quantity, candle.close)
+    size_reason = validate_order_size(rules, quantity, fill.price, getattr(config.risk, "min_order_notional_usdt", 0.0))
+    if size_reason != "ok":
+        return cash
+    entry_price = fill.price
+    entry_fee = fill.fee
     cash -= entry_fee
-    total_quantity = position.quantity + quantity
+    old_quantity = position.quantity
+    old_raw_entry = position.raw_entry_price or position.entry_price
+    total_quantity = old_quantity + quantity
     if total_quantity <= 0:
         return cash
 
-    average_entry = (position.entry_price * position.quantity + entry_price * quantity) / total_quantity
+    average_entry = (position.entry_price * old_quantity + entry_price * quantity) / total_quantity
+    average_raw_entry = (old_raw_entry * old_quantity + fill.raw_price * quantity) / total_quantity
     if signal.direction == Direction.LONG:
         position.stop_price = max(position.stop_price, entry_price * (1.0 - signal.stop_loss_pct))
         position.take_profit_price = min(position.take_profit_price, entry_price * (1.0 + signal.take_profit_pct))
@@ -1741,48 +2333,127 @@ def _add_to_position(config: Any, cash: float, position: PortfolioPosition, sign
 
     position.quantity = total_quantity
     position.entry_price = average_entry
+    position.raw_entry_price = average_raw_entry
     position.entry_fee += entry_fee
+    position.entry_slippage_cost += fill.slippage_cost
     position.scale_ins += 1
     return cash
 
 
-def _close_position(config: Any, cash: float, positions: dict[str, PortfolioPosition], trades: list[dict[str, Any]], symbol: str, exit_price: float, reason: str, index: int) -> float:
+def _close_position(
+    config: Any,
+    cash: float,
+    positions: dict[str, PortfolioPosition],
+    trades: list[dict[str, Any]],
+    symbol: str,
+    exit_price: float,
+    reason: str,
+    index: int,
+    exit_time: Any = None,
+    execution_config: BacktestExecutionConfig | None = None,
+    rules: SymbolRules | None = None,
+) -> float:
     position = positions.pop(symbol)
-    executed_exit = _exit_execution_price(config, exit_price, position.direction)
-    gross_pnl = position.direction.value * position.quantity * (executed_exit - position.entry_price)
-    exit_fee = _fee(config, abs(position.quantity * executed_exit))
-    net_pnl = gross_pnl - exit_fee
-    cash += net_pnl
+    execution_config = execution_config or execution_config_from_live_config(config)
+    rules = rules or SymbolRules(symbol, "0.001", "0.001", "0.01", "5")
+    exit_order_type = _exit_order_type(reason)
+    fill = market_exit_fill(execution_config, rules, position.direction, position.quantity, exit_price, exit_order_type)
+    executed_exit = fill.price
+    raw_entry = position.raw_entry_price or position.entry_price
+    raw_gross_pnl = position.direction.value * position.quantity * (exit_price - raw_entry)
+    execution_gross_pnl = position.direction.value * position.quantity * (executed_exit - position.entry_price)
+    fee = position.entry_fee + fill.fee
+    slippage_cost = position.entry_slippage_cost + fill.slippage_cost
+    funding = _funding_for_position(execution_config, position, exit_time)
+    net_pnl = raw_gross_pnl - fee - slippage_cost + funding
+    cash += execution_gross_pnl - fill.fee + funding
+    notional = abs(position.quantity * position.entry_price)
+    hold_minutes = _hold_minutes(position.entry_time, exit_time)
+    strategy_bucket = _strategy_bucket(position.entry_reason)
     trades.append(
         {
             "symbol": symbol,
+            "strategy": strategy_bucket,
+            "side": position.direction.name,
             "direction": position.direction.name,
-            "gross_pnl": gross_pnl,
-            "fees": position.entry_fee + exit_fee,
-            "net_pnl": gross_pnl - position.entry_fee - exit_fee,
-            "return_pct": (gross_pnl - position.entry_fee - exit_fee) / max(abs(position.quantity * position.entry_price), 1e-12),
+            "entry_time": position.entry_time.isoformat() if hasattr(position.entry_time, "isoformat") else position.entry_time,
+            "exit_time": exit_time.isoformat() if hasattr(exit_time, "isoformat") else exit_time,
+            "entry_price": position.entry_price,
+            "exit_price": executed_exit,
+            "raw_entry_price": raw_entry,
+            "raw_exit_price": exit_price,
+            "qty": position.quantity,
+            "quantity": position.quantity,
+            "notional": notional,
+            "entry_fee": position.entry_fee,
+            "exit_fee": fill.fee,
+            "fee": fee,
+            "fees": fee,
+            "gross_pnl": raw_gross_pnl,
+            "execution_gross_pnl": execution_gross_pnl,
+            "slippage_cost": slippage_cost,
+            "funding": funding,
+            "net_pnl": net_pnl,
+            "return_pct": net_pnl / max(notional, 1e-12),
+            "net_bps": net_pnl / max(notional, 1e-12) * 10_000.0,
             "entry_reason": position.entry_reason,
-            "strategy_bucket": _strategy_bucket(position.entry_reason),
+            "strategy_bucket": strategy_bucket,
             "reason": reason,
+            "exit_reason": reason,
             "bars": index - position.entry_index,
             "scale_ins": position.scale_ins,
+            "mfe": position.mfe,
+            "mae": position.mae,
+            "hold_minutes": hold_minutes,
+            "avg_hold_minutes": hold_minutes,
+            "entry_order_type": position.entry_order_type,
+            "exit_order_type": fill.order_type,
+            "entry_liquidity": position.entry_liquidity,
+            "exit_liquidity": fill.liquidity,
+            "signal_time": position.signal_time.isoformat() if hasattr(position.signal_time, "isoformat") else position.signal_time,
+            "signal_available_time": position.signal_available_time.isoformat() if hasattr(position.signal_available_time, "isoformat") else position.signal_available_time,
+            "skip_reason": "",
         }
     )
     return cash
 
 
-def _entry_execution_price(config: Any, price: float, direction: Direction) -> float:
-    slip = max(0.0, config.risk.estimated_slippage_bps) / 10_000.0
-    return price * (1.0 + slip) if direction == Direction.LONG else price * (1.0 - slip)
+def _exit_order_type(reason: str) -> str:
+    normalized = reason.lower()
+    if "stop_loss" in normalized or "liquidation" in normalized:
+        return "stop_market"
+    if "take_profit" in normalized:
+        return "take_profit_market"
+    return "market"
 
 
-def _exit_execution_price(config: Any, price: float, direction: Direction) -> float:
-    slip = max(0.0, config.risk.estimated_slippage_bps) / 10_000.0
-    return price * (1.0 - slip) if direction == Direction.LONG else price * (1.0 + slip)
+def _hold_minutes(entry_time: Any, exit_time: Any) -> float:
+    if hasattr(entry_time, "timestamp") and hasattr(exit_time, "timestamp"):
+        return max(0.0, (exit_time - entry_time).total_seconds() / 60.0)
+    return 0.0
 
 
-def _fee(config: Any, notional: float) -> float:
-    return abs(notional) * max(0.0, config.risk.estimated_fee_bps) / 10_000.0
+def _funding_for_position(execution_config: BacktestExecutionConfig, position: PortfolioPosition, exit_time: Any) -> float:
+    if not execution_config.funding_enabled:
+        return 0.0
+    if execution_config.funding_default_rate == 0:
+        return 0.0
+    if not hasattr(position.entry_time, "timestamp") or not hasattr(exit_time, "timestamp"):
+        return 0.0
+    # No bundled funding history exists yet. This preserves the accounting path
+    # for tests and future data loaders without inventing exchange data.
+    return funding_cashflow(position.direction, abs(position.quantity * position.entry_price), [])
+
+
+def _update_position_excursion(position: PortfolioPosition, candle: Candle) -> None:
+    if position.direction == Direction.LONG:
+        mfe = max(0.0, (candle.high - position.entry_price) * position.quantity)
+        mae = min(0.0, (candle.low - position.entry_price) * position.quantity)
+    else:
+        mfe = max(0.0, (position.entry_price - candle.low) * position.quantity)
+        mae = min(0.0, (position.entry_price - candle.high) * position.quantity)
+    position.mfe = max(position.mfe, mfe)
+    position.mae = min(position.mae, mae)
 
 
 def _summary(
@@ -1793,6 +2464,8 @@ def _summary(
     first: Candle,
     last: Candle,
     monthly_stats: dict[str, dict[str, Any]] | None = None,
+    include_trades: bool = False,
+    execution_stats: BacktestExecutionStats | None = None,
 ) -> dict[str, Any]:
     wins = [trade for trade in trades if trade["net_pnl"] > 0]
     losses = [trade for trade in trades if trade["net_pnl"] <= 0]
@@ -1806,9 +2479,14 @@ def _summary(
     period_days = (last.timestamp - first.timestamp).total_seconds() / 86_400.0
     net_return = (final_equity / starting_equity - 1.0) * 100.0
     monthly = net_return / (period_days / 30.4375) if period_days > 0 else 0.0
-    return {
+    payload = {
         "initial_equity": starting_equity,
         "final_equity": final_equity,
+        "gross_pnl": sum(float(trade.get("gross_pnl", 0.0)) for trade in trades),
+        "fee": sum(float(trade.get("fee", trade.get("fees", 0.0))) for trade in trades),
+        "slippage_cost": sum(float(trade.get("slippage_cost", 0.0)) for trade in trades),
+        "funding": sum(float(trade.get("funding", 0.0)) for trade in trades),
+        "net_pnl": sum(float(trade.get("net_pnl", 0.0)) for trade in trades),
         "net_return_pct": net_return,
         "monthly_return_pct": monthly,
         "max_drawdown_pct": max_drawdown * 100.0,
@@ -1825,7 +2503,14 @@ def _summary(
         "strategy_buckets": _strategy_bucket_summary(trades),
         "entry_reasons": _entry_reason_summary(trades),
         "monthly": _monthly_summary(monthly_stats or {}),
+        "same_bar_tp_sl_conflict_count": 0 if execution_stats is None else execution_stats.same_bar_tp_sl_conflict_count,
+        "limit_touch_count": 0 if execution_stats is None else execution_stats.limit_touch_count,
+        "limit_filled_count": 0 if execution_stats is None else execution_stats.limit_filled_count,
+        "enhanced_summary": _enhanced_summary(trades, execution_stats),
     }
+    if include_trades:
+        payload["trades"] = trades
+    return payload
 
 
 def _monthly_summary(monthly_stats: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1879,10 +2564,125 @@ def _side_summary(trades: list[dict[str, Any]], direction: str) -> dict[str, Any
     }
 
 
+def _enhanced_summary(trades: list[dict[str, Any]], execution_stats: BacktestExecutionStats | None = None) -> dict[str, Any]:
+    return {
+        "overall": _enhanced_group_summary("overall", trades, execution_stats=execution_stats),
+        "by_strategy": _group_by(trades, ("strategy",)),
+        "by_strategy_side": _group_by(trades, ("strategy", "side")),
+        "by_strategy_symbol": _group_by(trades, ("strategy", "symbol")),
+        "by_strategy_side_symbol": _group_by(trades, ("strategy", "side", "symbol")),
+        "by_hour": _group_by_time(trades, "hour"),
+        "by_weekday": _group_by_time(trades, "weekday"),
+        "long_only": _enhanced_group_summary("long_only", [trade for trade in trades if _trade_side(trade) == "LONG"]),
+        "short_only": _enhanced_group_summary("short_only", [trade for trade in trades if _trade_side(trade) == "SHORT"]),
+    }
+
+
+def _group_by(trades: list[dict[str, Any]], fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for trade in trades:
+        key = tuple(str(trade.get(field, "")) for field in fields)
+        groups.setdefault(key, []).append(trade)
+    output = []
+    for key in sorted(groups):
+        row = _enhanced_group_summary("|".join(key), groups[key])
+        for field, value in zip(fields, key):
+            row[field] = value
+        output.append(row)
+    return output
+
+
+def _group_by_time(trades: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for trade in trades:
+        parsed = _parse_trade_time(trade.get("entry_time"))
+        if parsed is None:
+            key = "unknown"
+        elif kind == "hour":
+            key = f"{parsed.hour:02d}"
+        else:
+            key = str(parsed.weekday())
+        groups.setdefault(key, []).append(trade)
+    return [_enhanced_group_summary(key, groups[key]) for key in sorted(groups)]
+
+
+def _enhanced_group_summary(
+    name: str,
+    trades: list[dict[str, Any]],
+    execution_stats: BacktestExecutionStats | None = None,
+) -> dict[str, Any]:
+    wins = [trade for trade in trades if float(trade.get("net_pnl", 0.0)) > 0]
+    losses = [trade for trade in trades if float(trade.get("net_pnl", 0.0)) <= 0]
+    gross_profit = sum(float(trade.get("net_pnl", 0.0)) for trade in wins)
+    gross_loss = abs(sum(float(trade.get("net_pnl", 0.0)) for trade in losses))
+    avg_win = 0.0 if not wins else gross_profit / len(wins)
+    avg_loss = 0.0 if not losses else sum(float(trade.get("net_pnl", 0.0)) for trade in losses) / len(losses)
+    hold_minutes = [float(trade.get("hold_minutes", 0.0)) for trade in trades]
+    notionals = [float(trade.get("notional", 0.0)) for trade in trades]
+    total_notional = sum(notionals)
+    total_net = sum(float(trade.get("net_pnl", 0.0)) for trade in trades)
+    total_mfe = sum(float(trade.get("mfe", 0.0)) for trade in trades)
+    maker_fills = sum(1 for trade in trades for field in ("entry_liquidity", "exit_liquidity") if trade.get(field) == "maker")
+    taker_fills = sum(1 for trade in trades for field in ("entry_liquidity", "exit_liquidity") if trade.get(field) == "taker")
+    total_fills = max(1, maker_fills + taker_fills)
+    return {
+        "name": name,
+        "strategy": "" if name == "overall" else name,
+        "side": "",
+        "symbol": "",
+        "trade_count": len(trades),
+        "trades": len(trades),
+        "win_rate": 0.0 if not trades else len(wins) / len(trades) * 100.0,
+        "win_rate_pct": 0.0 if not trades else len(wins) / len(trades) * 100.0,
+        "gross_pnl": sum(float(trade.get("gross_pnl", 0.0)) for trade in trades),
+        "fee": sum(float(trade.get("fee", trade.get("fees", 0.0))) for trade in trades),
+        "slippage_cost": sum(float(trade.get("slippage_cost", 0.0)) for trade in trades),
+        "funding": sum(float(trade.get("funding", 0.0)) for trade in trades),
+        "net_pnl": total_net,
+        "profit_factor": None if gross_loss == 0 else gross_profit / gross_loss,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "avg_win_loss_ratio": None if avg_loss == 0 else avg_win / abs(avg_loss),
+        "max_win": max((float(trade.get("net_pnl", 0.0)) for trade in trades), default=0.0),
+        "max_loss": min((float(trade.get("net_pnl", 0.0)) for trade in trades), default=0.0),
+        "avg_hold_minutes": 0.0 if not hold_minutes else sum(hold_minutes) / len(hold_minutes),
+        "median_hold_minutes": 0.0 if not hold_minutes else statistics.median(hold_minutes),
+        "avg_mfe": 0.0 if not trades else total_mfe / len(trades),
+        "avg_mae": 0.0 if not trades else sum(float(trade.get("mae", 0.0)) for trade in trades) / len(trades),
+        "mfe_to_final_pnl_ratio": None if total_net == 0 else total_mfe / abs(total_net),
+        "same_bar_tp_sl_conflict_count": 0 if execution_stats is None else execution_stats.same_bar_tp_sl_conflict_count,
+        "limit_touch_count": 0 if execution_stats is None else execution_stats.limit_touch_count,
+        "limit_filled_count": 0 if execution_stats is None else execution_stats.limit_filled_count,
+        "maker_fill_rate": maker_fills / total_fills * 100.0,
+        "taker_ratio": taker_fills / total_fills * 100.0,
+        "net_bps": 0.0 if total_notional <= 0 else total_net / total_notional * 10_000.0,
+        "expectancy_per_trade": 0.0 if not trades else total_net / len(trades),
+    }
+
+
+def _trade_side(trade: dict[str, Any]) -> str:
+    return str(trade.get("side", trade.get("direction", "")))
+
+
+def _parse_trade_time(value: Any) -> Any:
+    if hasattr(value, "hour"):
+        return value
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
 def _strategy_bucket(entry_reason: str) -> str:
     reason = entry_reason.lower()
+    if "mtf_4h_rsi_regime_pullback" in reason:
+        return "mtf_4h_rsi_regime_pullback"
     if "macro_event" in reason:
         return "macro_event"
+    if "fast_breakout" in reason:
+        return "fast_breakout"
     if "startup_breakout" in reason:
         return "startup_breakout"
     if "super_volume" in reason:
@@ -1936,9 +2736,31 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.live.json")
     parser.add_argument("--data-dir", default="data/binance_15m_90d")
+    parser.add_argument("--entry-timing-data-dir", default=None)
+    parser.add_argument("--execution-timing-data-dir", default=None)
     parser.add_argument("--initial-equity", type=float, default=None)
+    parser.add_argument("--include-trades", action="store_true")
+    parser.add_argument("--trade-start", default=None, help="UTC ISO timestamp; data before this is used only for warmup")
+    parser.add_argument("--trade-end", default=None, help="UTC ISO timestamp")
     args = parser.parse_args()
-    print(json.dumps(run_portfolio_backtest(args.config, args.data_dir, args.initial_equity), indent=2, ensure_ascii=False))
+    trade_start = parse_timestamp(args.trade_start) if args.trade_start else None
+    trade_end = parse_timestamp(args.trade_end) if args.trade_end else None
+    print(
+        json.dumps(
+            run_portfolio_backtest(
+                args.config,
+                args.data_dir,
+                args.initial_equity,
+                entry_timing_data_dir=args.entry_timing_data_dir,
+                execution_timing_data_dir=args.execution_timing_data_dir,
+                include_trades=args.include_trades,
+                trade_start=trade_start,
+                trade_end=trade_end,
+            ),
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

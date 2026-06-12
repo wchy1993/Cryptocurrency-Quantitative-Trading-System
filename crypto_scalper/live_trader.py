@@ -15,6 +15,13 @@ from .live_config import LiveAppConfig
 from .macro_events import MacroEvent, load_macro_events
 from .market_filters import MultiTimeframeFilter, TimeframeSignal
 from .models import Candle, Direction, Signal
+from .mtf_4h_rsi_regime import (
+    MTF_REASON_TOKEN,
+    Mtf4hRsiRegimePullbackStrategy,
+    funding_at,
+    load_auxiliary_features,
+    oi_change_at,
+)
 from .risk import signal_risk_weight
 from .strategy import VolatilityBreakoutScalper
 
@@ -205,6 +212,8 @@ class BinanceAutoTrader:
         self._session_peak_pnl = 0.0
         self._indicator_reversal_loss_streak = 0
         self._indicator_reversal_pause_until = 0.0
+        self._accounted_trade_ids: set[str] = set()
+        self._mtf_aux_feature_cache: tuple[float, dict[str, dict[str, object]]] | None = None
         self.stats = SessionStats(datetime.now(), config.risk.starting_capital_usdt)
         self._last_stats_log_ts = 0.0
 
@@ -412,6 +421,7 @@ class BinanceAutoTrader:
             self._profit_states.pop(symbol, None)
             if not self.config.trading.dry_run:
                 self._cancel_all_symbol_orders(symbol)
+                self._sync_closed_symbol_trade_pnl(symbol, "position_closed_on_exchange")
             self._mark_symbol_reentry_cooldown(symbol, "position_closed_on_exchange")
 
     def _cleanup_orphan_symbol_orders(self, active_symbols: set[str]) -> None:
@@ -751,6 +761,11 @@ class BinanceAutoTrader:
         )
 
     def _entry_candidate(self, symbol: str) -> EntryCandidate | None:
+        if getattr(self.config.strategy, "mtf_4h_rsi_regime_enabled", False):
+            candidate = self._mtf_4h_rsi_regime_entry_candidate(symbol)
+            if candidate is not None or getattr(self.config.strategy, "mtf_disable_legacy_strategies", False):
+                return candidate
+
         candles = self._closed_candles(symbol)
         if len(candles) < VolatilityBreakoutScalper(self.config.strategy).warmup_bars:
             self.log(f"{symbol}: K 线不足，等待")
@@ -762,6 +777,9 @@ class BinanceAutoTrader:
         if signal.direction == Direction.FLAT:
             indicator_signal = self._indicator_reversal_signal(candles)
             if indicator_signal.direction == Direction.FLAT:
+                fast_candidate = self._fast_breakout_entry_candidate(symbol)
+                if fast_candidate:
+                    return fast_candidate
                 self.log(f"{symbol}: 无开仓信号 ({signal.reason}; {indicator_signal.reason})")
                 return None
             else:
@@ -788,6 +806,13 @@ class BinanceAutoTrader:
         if adjusted_signal is not signal:
             signal = adjusted_signal
             rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles)
+        adjusted_signal = self._strong_market_adjusted_signal(signal, rank_score)
+        if adjusted_signal is None:
+            self.log(f"{symbol}: 强多头行情空头过滤拒绝 ({signal.reason})")
+            return None
+        if adjusted_signal is not signal:
+            signal = adjusted_signal
+            rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles)
         adjusted_signal = self._btc_market_adjusted_signal(signal, rank_score, momentum_pct, volume_ratio)
         if adjusted_signal is None:
             self.log(f"{symbol}: BTC大盘方向过滤拒绝 {signal.direction.name} ({signal.reason})")
@@ -795,12 +820,196 @@ class BinanceAutoTrader:
         if adjusted_signal is not signal:
             signal = adjusted_signal
             rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles)
-        return EntryCandidate(symbol, signal, candles[-1], rank_score, momentum_pct, volume_ratio, filter_reason)
+        adjusted_signal = self._trend_reference_adjusted_signal(symbol, signal)
+        if adjusted_signal is None:
+            self.log(f"{symbol}: 1h趋势方向保护拒绝 {signal.direction.name} ({signal.reason})")
+            return None
+        if adjusted_signal is not signal:
+            signal = adjusted_signal
+            rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles)
+        adjusted_signal = _ordinary_breakout_adjusted_signal(self.config, signal, rank_score)
+        if adjusted_signal is None:
+            self.log(f"{symbol}: 普通突破质量过滤拒绝 {signal.direction.name} ({signal.reason}, rank={rank_score:.2f})")
+            return None
+        if adjusted_signal is not signal:
+            signal = adjusted_signal
+            rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles)
+        candidate = EntryCandidate(symbol, signal, candles[-1], rank_score, momentum_pct, volume_ratio, filter_reason)
+        quality_guard_reason = _entry_quality_guard_reason(self.config, candidate)
+        if quality_guard_reason:
+            self.log(f"{symbol}: 开仓质量过滤拒绝 {signal.direction.name} ({quality_guard_reason})")
+            return None
+        return candidate
+
+    def _mtf_4h_rsi_regime_entry_candidate(self, symbol: str) -> EntryCandidate | None:
+        strategy_config = self.config.strategy
+        if not getattr(strategy_config, "mtf_4h_rsi_regime_enabled", False):
+            return None
+        if not _mtf_symbol_allowed(self.config, symbol):
+            return None
+        regime_timeframe = _valid_mtf_timeframe(getattr(strategy_config, "mtf_regime_timeframe", "4h"), "4h")
+        trigger_timeframe = _valid_mtf_timeframe(getattr(strategy_config, "mtf_trigger_timeframe", "15m"), "15m")
+        try:
+            candles_trigger = self._closed_candles_for_timeframe(symbol, trigger_timeframe, 220)
+            candles_30m = self._closed_candles_for_timeframe(symbol, "30m", 160)
+            candles_1h = self._closed_candles_for_timeframe(symbol, "1h", 160)
+            candles_regime = self._closed_candles_for_timeframe(symbol, regime_timeframe, 180)
+            btc_1h = self._closed_candles_for_timeframe("BTCUSDT", "1h", 80)
+            btc_4h = self._closed_candles_for_timeframe("BTCUSDT", "4h", 80)
+        except Exception as exc:
+            self.log(f"{symbol}: MTF策略数据不可用 ({exc})")
+            return None
+        if not candles_trigger or not candles_30m or not candles_1h or not candles_regime or not btc_1h or not btc_4h:
+            return None
+
+        timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
+        aux = self._mtf_aux_features().get(symbol, {})
+        mtf_strategy = Mtf4hRsiRegimePullbackStrategy(self.config)
+        decision = mtf_strategy.build_signal(
+            symbol,
+            candles_trigger,
+            candles_30m,
+            candles_1h,
+            candles_regime,
+            btc_1h,
+            btc_4h,
+            oi_change_at(aux, timestamp),
+            funding_at(aux, timestamp, float(getattr(self.config.risk, "funding_default_rate", 0.0))),
+            candles_regime=candles_regime,
+            candles_trigger=candles_trigger,
+            regime_timeframe=regime_timeframe,
+            trigger_timeframe=trigger_timeframe,
+        )
+        if (
+            decision.signal is None
+            and getattr(strategy_config, "mtf_secondary_2h_enabled", False)
+            and regime_timeframe != "2h"
+        ):
+            try:
+                candles_secondary_regime = self._closed_candles_for_timeframe(symbol, "2h", 180)
+            except Exception:
+                candles_secondary_regime = []
+            if candles_secondary_regime:
+                decision = mtf_strategy.build_signal(
+                    symbol,
+                    candles_trigger,
+                    candles_30m,
+                    candles_1h,
+                    candles_secondary_regime,
+                    btc_1h,
+                    btc_4h,
+                    oi_change_at(aux, timestamp),
+                    funding_at(aux, timestamp, float(getattr(self.config.risk, "funding_default_rate", 0.0))),
+                    candles_regime=candles_secondary_regime,
+                    candles_trigger=candles_trigger,
+                    regime_timeframe="2h",
+                    trigger_timeframe=trigger_timeframe,
+                )
+        if decision.signal is None or decision.candle is None:
+            return None
+        rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(decision.signal, decision.rank_candles)
+        candidate = EntryCandidate(symbol, decision.signal, decision.candle, rank_score, momentum_pct, volume_ratio, "mtf_4h_rsi_regime")
+        self.log(
+            f"{symbol}: MTF {regime_timeframe}/{trigger_timeframe} RSI候选 {decision.signal.direction.name} rank={rank_score:.2f} "
+            f"动能={momentum_pct * 100:+.2f}% reason={decision.signal.reason}"
+        )
+        return candidate
+
+    def _mtf_aux_features(self) -> dict[str, dict[str, object]]:
+        now = time.time()
+        cached = self._mtf_aux_feature_cache
+        if cached and now - cached[0] < 600.0:
+            return cached[1]
+        features = load_auxiliary_features(
+            tuple(self.config.trading.symbols),
+            str(getattr(self.config.strategy, "mtf_oi_data_dir", "data/binance_oi_taker_5m")),
+            str(getattr(self.config.strategy, "mtf_funding_data_dir", "data/binance_oi_flush_funding")),
+        )
+        self._mtf_aux_feature_cache = (now, features)
+        return features
+
+    def _fast_breakout_entry_candidate(self, symbol: str) -> EntryCandidate | None:
+        strategy = self.config.strategy
+        if not getattr(strategy, "fast_breakout_enabled", False):
+            return None
+
+        timeframe = str(getattr(strategy, "fast_breakout_timeframe", "5m"))
+        limit = max(
+            80,
+            int(getattr(strategy, "fast_breakout_channel_period", 18))
+            + int(getattr(strategy, "fast_breakout_volume_period", 24))
+            + self.config.strategy.atr_period
+            + 10,
+        )
+        try:
+            candles = self._closed_candles_for_timeframe(symbol, timeframe, limit)
+        except Exception as exc:
+            self.log(f"{symbol}: 5m早期突破数据不可用 ({exc})")
+            return None
+        if not candles:
+            return None
+
+        signal = _fast_breakout_signal_for_candles(self.config, candles)
+        if signal.direction == Direction.FLAT:
+            return None
+
+        allowed, filter_reason = self._passes_multi_timeframe_filter(symbol, signal.direction)
+        if not allowed:
+            self.log(f"{symbol}: 5m早期突破多周期过滤拒绝 {signal.direction.name} ({filter_reason})")
+            return None
+        rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles)
+        adjusted_signal = self._weak_market_adjusted_signal(signal, rank_score)
+        if adjusted_signal is None:
+            self.log(f"{symbol}: 5m早期突破弱势行情过滤拒绝 ({signal.reason})")
+            return None
+        if adjusted_signal is not signal:
+            signal = adjusted_signal
+            rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles)
+        adjusted_signal = self._strong_market_adjusted_signal(signal, rank_score)
+        if adjusted_signal is None:
+            self.log(f"{symbol}: 5m早期突破强多头行情空头过滤拒绝 ({signal.reason})")
+            return None
+        if adjusted_signal is not signal:
+            signal = adjusted_signal
+            rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles)
+        adjusted_signal = self._btc_market_adjusted_signal(signal, rank_score, momentum_pct, volume_ratio)
+        if adjusted_signal is None:
+            self.log(f"{symbol}: 5m早期突破BTC大盘方向过滤拒绝 {signal.direction.name} ({signal.reason})")
+            return None
+        if adjusted_signal is not signal:
+            signal = adjusted_signal
+            rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles)
+        adjusted_signal = self._trend_reference_adjusted_signal(symbol, signal)
+        if adjusted_signal is None:
+            self.log(f"{symbol}: 5m早期突破1h趋势方向保护拒绝 {signal.direction.name} ({signal.reason})")
+            return None
+        if adjusted_signal is not signal:
+            signal = adjusted_signal
+            rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles)
+
+        candidate = EntryCandidate(symbol, signal, candles[-1], rank_score, momentum_pct, volume_ratio, filter_reason)
+        quality_guard_reason = _entry_quality_guard_reason(self.config, candidate)
+        if quality_guard_reason:
+            self.log(f"{symbol}: 5m早期突破开仓质量过滤拒绝 {signal.direction.name} ({quality_guard_reason})")
+            return None
+        self.log(
+            f"{symbol}: 5m早期突破候选 {signal.direction.name} rank={rank_score:.2f} "
+            f"动能={momentum_pct * 100:+.2f}% 量能={volume_ratio:.2f}x ({signal.reason})"
+        )
+        return candidate
 
     def _open_entry_candidate(self, candidate: EntryCandidate, account: AccountSnapshot) -> bool:
         chase_guard_reason = self._super_volume_chase_guard_reason(candidate)
         if chase_guard_reason:
             self.log(f"{candidate.symbol}: 跳过强突破追价开仓 ({chase_guard_reason})")
+            return False
+        timing_guard_reason = self._entry_timing_guard_reason(candidate)
+        if timing_guard_reason:
+            self.log(f"{candidate.symbol}: 跳过15m进场过滤 ({timing_guard_reason})")
+            return False
+        execution_guard_reason = self._entry_execution_guard_reason(candidate)
+        if execution_guard_reason:
+            self.log(f"{candidate.symbol}: 跳过5m执行确认 ({execution_guard_reason})")
             return False
 
         execution_price = self._entry_execution_reference_price(candidate)
@@ -846,6 +1055,108 @@ class BinanceAutoTrader:
             f"latest={latest:.6g} signal_close={signal_close:.6g} "
             f"追价={chase_pct * 100:.2f}% > {max_chase * 100:.2f}%"
         )
+
+    def _entry_timing_guard_reason(self, candidate: EntryCandidate) -> str | None:
+        if MTF_REASON_TOKEN in candidate.signal.reason:
+            return None
+        strategy = self.config.strategy
+        if not getattr(strategy, "entry_timing_filter_enabled", False):
+            return None
+
+        timeframe = str(getattr(strategy, "entry_timing_timeframe", "15m"))
+        fast_period = max(2, int(getattr(strategy, "entry_timing_rsi_fast_period", 6)))
+        mid_period = max(fast_period, int(getattr(strategy, "entry_timing_rsi_mid_period", 12)))
+        limit = max(80, mid_period + 10)
+        try:
+            candles = self.client.klines(candidate.symbol, timeframe, limit)
+        except Exception as exc:
+            self.log(f"{candidate.symbol}: 15m进场过滤数据不可用 ({exc})")
+            return None
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(milliseconds=interval_to_milliseconds(timeframe))
+        candles = [candle for candle in candles if candle.timestamp <= cutoff]
+        if len(candles) < mid_period + 3:
+            return None
+
+        closes = [candle.close for candle in candles]
+        fast_rsi = rsi(closes, fast_period)[-1]
+        mid_rsi = rsi(closes, mid_period)[-1]
+        latest = closes[-1]
+        signal_close = candidate.candle.close
+        if latest <= 0 or signal_close <= 0:
+            return None
+
+        direction = candidate.signal.direction
+        chase_pct = (latest / signal_close - 1.0) * direction.value
+        max_chase = max(0.0, float(getattr(strategy, "entry_timing_max_chase_pct", 0.010)))
+        if chase_pct > max_chase:
+            return (
+                f"{timeframe}_chase latest={latest:.6g} signal_close={signal_close:.6g} "
+                f"追价={chase_pct * 100:.2f}% > {max_chase * 100:.2f}%"
+            )
+
+        reversal_pct = (latest / candles[-2].close - 1.0) * direction.value if candles[-2].close > 0 else 0.0
+        max_reversal = max(0.0, float(getattr(strategy, "entry_timing_reversal_pct", 0.006)))
+        if reversal_pct < -max_reversal:
+            return f"{timeframe}_短线反向={reversal_pct * 100:.2f}% < -{max_reversal * 100:.2f}%"
+
+        if direction == Direction.LONG:
+            fast_ceiling = float(getattr(strategy, "entry_timing_long_rsi_fast_ceiling", 82.0))
+            mid_ceiling = float(getattr(strategy, "entry_timing_long_rsi_mid_ceiling", 76.0))
+            if fast_rsi >= fast_ceiling and mid_rsi >= mid_ceiling:
+                return f"{timeframe}_long_rsi_hot rsi{fast_period}={fast_rsi:.1f} rsi{mid_period}={mid_rsi:.1f}"
+        elif direction == Direction.SHORT:
+            fast_floor = float(getattr(strategy, "entry_timing_short_rsi_fast_floor", 18.0))
+            mid_floor = float(getattr(strategy, "entry_timing_short_rsi_mid_floor", 24.0))
+            if fast_rsi <= fast_floor and mid_rsi <= mid_floor:
+                return f"{timeframe}_short_rsi_cold rsi{fast_period}={fast_rsi:.1f} rsi{mid_period}={mid_rsi:.1f}"
+        return None
+
+    def _entry_execution_guard_reason(self, candidate: EntryCandidate) -> str | None:
+        if MTF_REASON_TOKEN in candidate.signal.reason:
+            return None
+        strategy = self.config.strategy
+        if not getattr(strategy, "entry_execution_filter_enabled", False):
+            return None
+        if getattr(strategy, "entry_execution_filter_trend_only", True) and not _is_trend_entry_reason(candidate.signal.reason):
+            return None
+
+        timeframe = str(getattr(strategy, "entry_execution_timeframe", "5m"))
+        fast_period = max(2, int(getattr(strategy, "entry_execution_rsi_fast_period", 6)))
+        mid_period = max(fast_period, int(getattr(strategy, "entry_execution_rsi_mid_period", 12)))
+        limit = max(80, mid_period + 10)
+        try:
+            candles = self.client.klines(candidate.symbol, timeframe, limit)
+        except Exception as exc:
+            self.log(f"{candidate.symbol}: 5m执行确认数据不可用 ({exc})")
+            return None
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(milliseconds=interval_to_milliseconds(timeframe))
+        candles = [candle for candle in candles if candle.timestamp <= cutoff]
+        if len(candles) < mid_period + 3:
+            return None
+
+        return _entry_execution_guard_reason_for_candles(self.config, candidate, candles)
+
+    def _trend_reference_adjusted_signal(self, symbol: str, signal: Signal) -> Signal | None:
+        strategy = self.config.strategy
+        if not getattr(strategy, "trend_reference_filter_enabled", False):
+            return signal
+        if signal.direction == Direction.FLAT or not _is_trend_entry_reason(signal.reason):
+            return signal
+
+        timeframe = str(getattr(strategy, "trend_reference_timeframe", "1h"))
+        lookback = max(1, int(getattr(strategy, "trend_reference_lookback_bars", 6)))
+        limit = max(strategy.slow_ema + lookback + 5, strategy.atr_period + lookback + 5, 120)
+        try:
+            candles = self._closed_candles_for_timeframe(symbol, timeframe, limit)
+        except Exception as exc:
+            self.log(f"{symbol}: 1h趋势方向保护数据不可用 ({exc})")
+            return signal
+        adjusted, reason = _trend_reference_adjusted_signal_for_candles(self.config, signal, candles)
+        if adjusted is None:
+            self.log(f"{symbol}: 1h趋势方向保护拒绝 {signal.direction.name} ({reason})")
+        elif adjusted is not signal:
+            self.log(f"{symbol}: 1h趋势方向保护降仓 {signal.direction.name} ({reason})")
+        return adjusted
 
     def _entry_rank_metrics(self, signal: Signal, candles: list[Candle]) -> tuple[float, float, float]:
         candle = candles[-1]
@@ -894,6 +1205,35 @@ class BinanceAutoTrader:
             max_holding_bars=signal.max_holding_bars,
         )
 
+    def _strong_market_adjusted_signal(self, signal: Signal, rank_score: float) -> Signal | None:
+        strategy = self.config.strategy
+        if signal.direction != Direction.SHORT or not getattr(strategy, "strong_market_short_filter_enabled", False):
+            return signal
+
+        regime = self._market_regime()
+        strong = (
+            regime.breadth_pct >= max(0.0, min(1.0, float(getattr(strategy, "strong_market_breadth_threshold", 0.58))))
+            and regime.avg_return_pct >= float(getattr(strategy, "strong_market_avg_return_threshold", 0.006)) * 100.0
+        )
+        if not strong:
+            return signal
+
+        min_rank = max(0.0, float(getattr(strategy, "strong_market_short_min_rank_score", 6.2)))
+        is_exceptional = "super_volume" in signal.reason or "startup_breakout" in signal.reason
+        if not is_exceptional and rank_score < min_rank:
+            return None
+
+        multiplier = max(0.0, min(1.0, float(getattr(strategy, "strong_market_short_risk_multiplier", 0.45))))
+        return Signal(
+            signal.direction,
+            signal.confidence,
+            f"{signal.reason}_strong_market_short_guard {regime.reason}",
+            signal.stop_loss_pct,
+            signal.take_profit_pct,
+            risk_multiplier=signal.risk_multiplier * multiplier,
+            max_holding_bars=signal.max_holding_bars,
+        )
+
     def _market_regime(self) -> MarketRegime:
         now = time.time()
         cached = self._market_regime_cache
@@ -901,13 +1241,18 @@ class BinanceAutoTrader:
             return cached[1]
 
         strategy = self.config.strategy
-        if not getattr(strategy, "weak_market_long_filter_enabled", False):
+        if not (
+            getattr(strategy, "weak_market_long_filter_enabled", False)
+            or getattr(strategy, "strong_market_short_filter_enabled", False)
+        ):
             regime = MarketRegime(False, 1.0, 0.0, "weak_market_disabled")
             self._market_regime_cache = (now, regime)
             return regime
 
         symbols = tuple(self.config.trading.entry_symbols or self.config.trading.symbols)
-        lookback = max(1, int(getattr(strategy, "weak_market_lookback_bars", 48)))
+        weak_lookback = int(getattr(strategy, "weak_market_lookback_bars", 48))
+        strong_lookback = int(getattr(strategy, "strong_market_lookback_bars", weak_lookback))
+        lookback = max(1, weak_lookback, strong_lookback)
         limit = max(strategy.slow_ema + lookback + 5, lookback + 5, 120)
         constructive = 0
         valid = 0
@@ -998,15 +1343,27 @@ class BinanceAutoTrader:
         symbol = str(getattr(strategy, "btc_market_symbol", "BTCUSDT")).upper()
         timeframe = str(getattr(strategy, "btc_market_timeframe", self.config.trading.timeframe))
         lookback = max(1, int(getattr(strategy, "btc_market_lookback_bars", 12)))
-        limit = max(self.config.strategy.slow_ema + lookback + 5, self.config.strategy.atr_period + lookback + 5, 120)
+        state = self._btc_market_state_for_timeframe(symbol, timeframe, lookback)
+        if getattr(strategy, "btc_market_confirmation_enabled", False):
+            confirmation = self._btc_market_state_for_timeframe(
+                symbol,
+                str(getattr(strategy, "btc_market_confirmation_timeframe", "8h")),
+                max(1, int(getattr(strategy, "btc_market_confirmation_lookback_bars", 2))),
+            )
+            state = _combine_btc_market_states(state, confirmation)
+        self._btc_market_state_cache = (now, state)
+        return state
+
+    def _btc_market_state_for_timeframe(self, symbol: str, timeframe: str, lookback: int) -> BtcMarketState:
+        strategy = self.config.strategy
+        ema_period = max(2, int(getattr(strategy, "btc_market_ema_period", self.config.strategy.slow_ema)))
+        limit = max(ema_period + lookback + 5, self.config.strategy.atr_period + lookback + 5, 120)
         candles = self._closed_candles_for_timeframe(symbol, timeframe, limit)
-        if len(candles) <= lookback or len(candles) < max(self.config.strategy.slow_ema, self.config.strategy.atr_period):
-            state = BtcMarketState(Direction.FLAT, 0.0, 0.0, "btc_market_warmup")
-            self._btc_market_state_cache = (now, state)
-            return state
+        if len(candles) <= lookback or len(candles) < max(ema_period, self.config.strategy.atr_period):
+            return BtcMarketState(Direction.FLAT, 0.0, 0.0, f"btc_{timeframe}_warmup")
 
         closes = [candle.close for candle in candles]
-        slow = ema(closes, self.config.strategy.slow_ema)
+        slow = ema(closes, ema_period)
         atr_values = atr(candles, self.config.strategy.atr_period)
         current = closes[-1]
         previous = closes[-1 - lookback]
@@ -1026,9 +1383,7 @@ class BinanceAutoTrader:
         else:
             direction = Direction.FLAT
             label = "btc_neutral"
-        state = BtcMarketState(direction, return_pct * 100.0, slope_atr, f"{label} ret={return_pct * 100:.2f}% slope_atr={slope_atr:.2f}")
-        self._btc_market_state_cache = (now, state)
-        return state
+        return BtcMarketState(direction, return_pct * 100.0, slope_atr, f"{label}_{timeframe} ret={return_pct * 100:.2f}% slope_atr={slope_atr:.2f}")
 
     def _indicator_reversal_signal(self, candles: list[Candle]) -> Signal:
         config = self.config.filters
@@ -1227,6 +1582,11 @@ class BinanceAutoTrader:
         if profit_exit_reason:
             self.log(f"{symbol}: 盈利保护触发，准备平仓 ({profit_exit_reason})")
             self._exit_position(symbol, position, profit_exit_reason)
+            return
+        account_loss_reason = self._account_loss_exit_reason(position, candles[-1].close, account)
+        if account_loss_reason:
+            self.log(f"{symbol}: 单仓账户亏损保护触发，准备平仓 ({account_loss_reason})")
+            self._exit_position(symbol, position, account_loss_reason)
             return
         trend_loss_reason = self._trend_loss_exit_reason(position, candles[-1].close)
         if trend_loss_reason:
@@ -1504,6 +1864,7 @@ class BinanceAutoTrader:
         notional = float(quantity) * candle.close
         margin = notional / leverage
         action = f"补仓({scale_label})" if scale_in and scale_label else "补仓" if scale_in else "开仓"
+        opened_at = datetime.now(timezone.utc)
         self.log(
             f"{symbol}: {action} {signal.direction.name} 仓位≈{notional:.2f}U "
             f"倍率={leverage}x 保证金≈{margin:.2f}U "
@@ -1534,7 +1895,10 @@ class BinanceAutoTrader:
                 existing.stop_price = merged_stop
                 existing.take_profit_price = merged_take_profit
                 existing.scale_ins += 1
-                existing.last_checked_time = max(existing.last_checked_time, candle.timestamp)
+                existing.last_checked_time = max(
+                    existing.last_checked_time,
+                    self._latest_closed_candle_timestamp(symbol, candle.timestamp),
+                )
                 if signal.direction == Direction.LONG:
                     existing.best_price = max(existing.best_price, candle.close)
                 else:
@@ -1553,14 +1917,14 @@ class BinanceAutoTrader:
                 stop_price=stop,
                 take_profit_price=take_profit,
                 max_holding_bars=signal.max_holding_bars or self.config.strategy.max_holding_bars,
-                entry_time=candle.timestamp,
-                last_checked_time=candle.timestamp,
+                entry_time=opened_at,
+                last_checked_time=self._latest_closed_candle_timestamp(symbol, candle.timestamp),
                 best_price=candle.close,
                 leverage=leverage,
                 entry_reason=signal.reason,
             )
             self._entry_reasons[symbol] = signal.reason
-            self._position_opened_at[symbol] = candle.timestamp
+            self._position_opened_at[symbol] = opened_at
             self._known_active_symbols.add(symbol)
             self.log(f"{symbol}: dry-run 已记录虚拟仓 stop={stop:.6g} take_profit={take_profit:.6g}")
             return
@@ -1575,7 +1939,7 @@ class BinanceAutoTrader:
         self._known_active_symbols.add(symbol)
         if not scale_in:
             self._entry_reasons[symbol] = signal.reason
-            self._position_opened_at[symbol] = candle.timestamp
+            self._position_opened_at[symbol] = opened_at
         if self.config.trading.use_protective_orders:
             self._place_protective_orders(symbol, signal, quantity, entry_price)
 
@@ -1594,7 +1958,8 @@ class BinanceAutoTrader:
         self._cancel_all_symbol_orders(symbol)
         self._mark_symbol_reentry_cooldown(symbol, reason)
         entry_reason = position.entry_reason or self._entry_reasons.get(symbol, "")
-        self._record_indicator_reversal_result(position.unrealized_pnl, entry_reason)
+        if not self._sync_closed_symbol_trade_pnl(symbol, reason, entry_reason=entry_reason):
+            self._record_indicator_reversal_result(position.unrealized_pnl, entry_reason)
         self._scale_in_counts.pop(symbol, None)
         self._last_scale_in_ts.pop(symbol, None)
         self._known_active_symbols.discard(symbol)
@@ -1624,6 +1989,60 @@ class BinanceAutoTrader:
         self._known_active_symbols.discard(symbol)
         self.log(f"{symbol}: dry-run 虚拟平仓 exit={exit_price:.6g} pnl={pnl:+.4f}U reason={reason}")
         self._log_session_stats(self.snapshot_account(), force=True)
+
+    def _sync_closed_symbol_trade_pnl(self, symbol: str, reason: str, entry_reason: str | None = None) -> bool:
+        if self.config.trading.dry_run:
+            return False
+        if not hasattr(self.client, "user_trades"):
+            return False
+        since_ms = int(self.stats.started_at.timestamp() * 1000) - 60_000
+        try:
+            trades = self.client.user_trades(symbol=symbol, limit=1000, start_time=max(0, since_ms))
+        except BinanceApiError as exc:
+            self.log(f"{symbol}: 同步平仓成交盈亏失败 ({exc})")
+            return False
+
+        grouped: dict[str, float] = {}
+        commissions: dict[str, float] = {}
+        for trade in trades:
+            realized = _float_value(trade.get("realizedPnl"))
+            commission = _float_value(trade.get("commission"))
+            trade_id = f"{symbol}:{trade.get('id', '')}:{trade.get('orderId', '')}:{trade.get('time', '')}"
+            if trade_id in self._accounted_trade_ids or abs(realized) <= 0:
+                continue
+            self._accounted_trade_ids.add(trade_id)
+            order_id = str(trade.get("orderId", trade.get("id", "")))
+            grouped[order_id] = grouped.get(order_id, 0.0) + realized
+            if str(trade.get("commissionAsset", "")).upper() == "USDT":
+                commissions[order_id] = commissions.get(order_id, 0.0) + commission
+
+        if not grouped:
+            return False
+
+        total_net = 0.0
+        closed_count = 0
+        wins = 0
+        losses = 0
+        for order_id, gross_pnl in grouped.items():
+            net_pnl = gross_pnl - commissions.get(order_id, 0.0)
+            total_net += net_pnl
+            closed_count += 1
+            if net_pnl > 0:
+                wins += 1
+            else:
+                losses += 1
+            if entry_reason:
+                self._record_indicator_reversal_result(net_pnl, entry_reason)
+
+        self.stats.closed_trades += closed_count
+        self.stats.winning_trades += wins
+        self.stats.losing_trades += losses
+        self.stats.realized_pnl += total_net
+        self.log(
+            f"{symbol}: 已同步交易所平仓盈亏 {total_net:+.4f}U "
+            f"平仓订单={closed_count} reason={reason}"
+        )
+        return True
 
     def _place_protective_orders(self, symbol: str, signal: Signal, quantity: str, entry_price: float) -> None:
         rules = self.client.symbol_rules(symbol)
@@ -1810,6 +2229,32 @@ class BinanceAutoTrader:
         if current_profit > -abs(loss_pct):
             return None
         return f"trend_loss_guard loss={current_profit * 100:.3f}% bars={self._position_bars_held(position)}"
+
+    def _account_loss_exit_reason(
+        self,
+        position: LivePosition | SimPosition,
+        mark_price: float,
+        account: AccountSnapshot,
+    ) -> str | None:
+        strategy = self.config.strategy
+        if not getattr(strategy, "account_loss_guard_enabled", False):
+            return None
+        if account.equity <= 0:
+            return None
+        min_bars = max(0, int(getattr(strategy, "account_loss_guard_min_bars", 1)))
+        bars_held = self._position_bars_held(position)
+        if bars_held < min_bars:
+            return None
+
+        quantity = float(getattr(position, "quantity", 0.0) or 0.0)
+        entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
+        direction = getattr(position, "direction", Direction.FLAT)
+        pnl = direction.value * quantity * (mark_price - entry_price)
+        loss_pct = pnl / account.equity
+        threshold = abs(float(getattr(strategy, "account_loss_guard_pct", 0.012)))
+        if threshold <= 0 or loss_pct > -threshold:
+            return None
+        return f"account_loss_guard loss={loss_pct * 100:.2f}% pnl={pnl:+.4f}U bars={bars_held}"
 
     def _stale_position_exit_reason(self, position: LivePosition | SimPosition, mark_price: float) -> str | None:
         strategy = self.config.strategy
@@ -2074,7 +2519,9 @@ class BinanceAutoTrader:
         if account.available_balance < self.config.risk.min_available_balance_usdt:
             return "0", "available_balance_too_low"
 
-        remaining_margin = account.equity * self.config.risk.max_account_margin_usage_pct - account.initial_margin
+        account_margin_pct = _account_margin_limit_pct(self.config, signal=signal)
+        symbol_margin_pct = _symbol_margin_limit_pct(self.config, signal)
+        remaining_margin = account.equity * account_margin_pct - account.initial_margin
         if remaining_margin <= 0:
             return "0", "margin_usage_limit"
 
@@ -2085,7 +2532,7 @@ class BinanceAutoTrader:
             return "0", "soft_drawdown_stop"
         risk_notional = account.equity * self.config.risk.risk_per_trade_pct * risk_weight * drawdown_multiplier / signal.stop_loss_pct
         leverage = max(self.config.trading.leverage, 1)
-        symbol_margin_notional = account.equity * self.config.risk.max_symbol_margin_pct * leverage * drawdown_multiplier
+        symbol_margin_notional = account.equity * symbol_margin_pct * leverage * drawdown_multiplier
         policy_notional_cap = self.config.risk.max_position_notional_usdt
         if policy_notional_cap <= 0:
             policy_notional_cap = float("inf")
@@ -2162,7 +2609,7 @@ class BinanceAutoTrader:
             return False
         total_pnl = account.equity - self.stats.starting_equity
         self._session_peak_pnl = max(self._session_peak_pnl, total_pnl)
-        if account.initial_margin_usage_pct >= self.config.risk.max_account_margin_usage_pct:
+        if account.initial_margin_usage_pct >= _account_margin_limit_pct(self.config):
             self.log("保证金占用已达到上限，暂停开仓")
             return False
         if account.equity <= self._day_start_equity * (1.0 - self.config.risk.max_daily_loss_pct):
@@ -2219,6 +2666,15 @@ class BinanceAutoTrader:
     def _closed_candles(self, symbol: str) -> list[Candle]:
         candles = self.client.klines(symbol, self.config.trading.timeframe, self.config.trading.kline_limit)
         return candles[:-1] if len(candles) > 1 else candles
+
+    def _latest_closed_candle_timestamp(self, symbol: str, fallback: datetime) -> datetime:
+        try:
+            candles = self._closed_candles(symbol)
+        except Exception:
+            return fallback
+        if not candles:
+            return fallback
+        return max(fallback, candles[-1].timestamp)
 
     def _passes_multi_timeframe_filter(self, symbol: str, direction: Direction) -> tuple[bool, str]:
         if not self.config.filters.enabled:
@@ -2449,6 +2905,309 @@ def _is_trend_entry_reason(reason: str) -> bool:
 
 def _is_indicator_reversal_entry_reason(reason: str) -> bool:
     return reason.lower().startswith("indicator_")
+
+
+def _entry_quality_guard_reason(config: LiveAppConfig, candidate: EntryCandidate) -> str | None:
+    strategy = config.strategy
+    if not getattr(strategy, "indicator_min_rank_guard_enabled", False):
+        return None
+    if not _is_indicator_reversal_entry_reason(candidate.signal.reason):
+        return None
+    min_rank = max(0.0, float(getattr(strategy, "indicator_min_rank_score", 3.0)))
+    if candidate.rank_score >= min_rank:
+        return None
+    return f"indicator_rank={candidate.rank_score:.2f} < {min_rank:.2f}"
+
+
+def _ordinary_breakout_adjusted_signal(config: LiveAppConfig, signal: Signal, rank_score: float) -> Signal | None:
+    normalized = signal.reason.lower()
+    ordinary = normalized.startswith("long_breakout") or normalized.startswith("short_breakdown")
+    if not ordinary or "super_volume" in normalized or "startup_breakout" in normalized:
+        return signal
+    if not getattr(config.strategy, "ordinary_breakout_enabled", True):
+        return None
+    min_rank = max(0.0, float(getattr(config.strategy, "ordinary_breakout_min_rank_score", 0.0)))
+    if rank_score < min_rank:
+        return None
+    multiplier = max(0.0, min(1.0, float(getattr(config.strategy, "ordinary_breakout_risk_multiplier", 1.0))))
+    if multiplier >= 0.999:
+        return signal
+    return replace(
+        signal,
+        risk_multiplier=signal.risk_multiplier * multiplier,
+        reason=f"{signal.reason}_ordinary_breakout_risk{multiplier:.2f}",
+    )
+
+
+def _fast_breakout_signal_for_candles(config: LiveAppConfig, candles: list[Candle]) -> Signal:
+    strategy = config.strategy
+    if not getattr(strategy, "fast_breakout_enabled", False):
+        return Signal(Direction.FLAT, 0.0, "fast_breakout_disabled", 0.0, 0.0)
+
+    channel_period = max(3, int(getattr(strategy, "fast_breakout_channel_period", 18)))
+    volume_period = max(3, int(getattr(strategy, "fast_breakout_volume_period", 24)))
+    fast_period = max(2, int(getattr(strategy, "entry_execution_rsi_fast_period", 6)))
+    mid_period = max(fast_period, int(getattr(strategy, "entry_execution_rsi_mid_period", 12)))
+    minimum = max(channel_period, volume_period, strategy.atr_period, mid_period) + 3
+    if len(candles) < minimum:
+        return Signal(Direction.FLAT, 0.0, "fast_breakout_warmup", 0.0, 0.0)
+
+    index = len(candles) - 1
+    candle = candles[-1]
+    highs = [item.high for item in candles]
+    lows = [item.low for item in candles]
+    closes = [item.close for item in candles]
+    atr_values = atr(candles, strategy.atr_period)
+    atr_value = atr_values[-2] if len(atr_values) >= 2 else atr_values[-1]
+    if candle.close <= 0 or atr_value <= 0:
+        return Signal(Direction.FLAT, 0.0, "fast_breakout_zero_atr", 0.0, 0.0)
+
+    atr_pct = atr_value / candle.close
+    if atr_pct < strategy.min_atr_pct:
+        return Signal(Direction.FLAT, 0.0, "fast_breakout_volatility_too_low", 0.0, 0.0)
+    if strategy.max_atr_pct > 0 and atr_pct > strategy.max_atr_pct:
+        return Signal(Direction.FLAT, 0.0, "fast_breakout_volatility_too_high", 0.0, 0.0)
+
+    average_volume = sum(item.volume for item in candles[-volume_period - 1:-1]) / volume_period
+    if average_volume <= 0:
+        return Signal(Direction.FLAT, 0.0, "fast_breakout_zero_volume", 0.0, 0.0)
+    volume_ratio = candle.volume / average_volume
+    min_volume = max(0.0, float(getattr(strategy, "fast_breakout_min_volume_ratio", 2.5)))
+    if volume_ratio < min_volume:
+        return Signal(Direction.FLAT, 0.0, "fast_breakout_volume_too_low", 0.0, 0.0)
+
+    upper_channel = rolling_high(highs, index, channel_period)
+    lower_channel = rolling_low(lows, index, channel_period)
+    long_breakout = candle.close - upper_channel
+    short_breakout = lower_channel - candle.close
+    min_breakout = atr_value * max(0.0, float(getattr(strategy, "fast_breakout_min_breakout_atr", 0.30)))
+    min_body = atr_value * max(0.0, float(getattr(strategy, "fast_breakout_min_body_atr", 0.35)))
+    candle_range = max(candle.high - candle.low, 1e-12)
+    max_adverse_wick = max(0.0, min(1.0, float(getattr(strategy, "fast_breakout_max_adverse_wick_pct", 0.50))))
+    fast_rsi = rsi(closes, fast_period)[-1]
+    mid_rsi = rsi(closes, mid_period)[-1]
+
+    def build(direction: Direction, breakout_distance: float, body: float, wick_pct: float) -> Signal:
+        breakout_score = min(1.0, max(0.0, breakout_distance / max(atr_value, 1e-12)))
+        body_score = min(1.0, max(0.0, body / max(atr_value, 1e-12)))
+        volume_score = min(1.0, max(0.0, (volume_ratio - min_volume) / max(min_volume, 1e-12)))
+        quality = max(0.65, min(1.0, 0.58 + breakout_score * 0.18 + body_score * 0.14 + volume_score * 0.10))
+        bias = strategy.long_risk_bias if direction == Direction.LONG else strategy.short_risk_bias
+        if bias <= 0:
+            return Signal(Direction.FLAT, 0.0, "fast_breakout_direction_disabled", 0.0, 0.0)
+        stop_pct = max(atr_pct * max(0.1, float(getattr(strategy, "fast_breakout_stop_loss_atr", 0.85))), 0.0008)
+        take_profit_pct = max(
+            atr_pct * max(0.1, float(getattr(strategy, "fast_breakout_take_profit_atr", 1.10))),
+            stop_pct * 1.05,
+        )
+        side = "long" if direction == Direction.LONG else "short"
+        risk = max(0.0, min(1.5, quality * max(0.0, float(getattr(strategy, "fast_breakout_risk_multiplier", 0.55))) * bias))
+        return Signal(
+            direction=direction,
+            confidence=quality,
+            reason=(
+                f"{side}_fast_breakout_super_volume volume={volume_ratio:.2f}x "
+                f"wick={wick_pct:.2f} rsi{fast_period}={fast_rsi:.1f} rsi{mid_period}={mid_rsi:.1f}"
+            ),
+            stop_loss_pct=stop_pct,
+            take_profit_pct=take_profit_pct,
+            risk_multiplier=risk,
+            max_holding_bars=max(1, int(getattr(strategy, "fast_breakout_max_holding_bars", 2))),
+        )
+
+    long_body = candle.close - candle.open
+    upper_wick_pct = (candle.high - max(candle.open, candle.close)) / candle_range
+    if (
+        long_breakout >= min_breakout
+        and long_body >= min_body
+        and upper_wick_pct <= max_adverse_wick
+        and fast_rsi < float(getattr(strategy, "fast_breakout_long_rsi_fast_ceiling", 86.0))
+        and mid_rsi < float(getattr(strategy, "fast_breakout_long_rsi_mid_ceiling", 80.0))
+    ):
+        return build(Direction.LONG, long_breakout, long_body, upper_wick_pct)
+
+    short_body = candle.open - candle.close
+    lower_wick_pct = (min(candle.open, candle.close) - candle.low) / candle_range
+    if (
+        strategy.allow_short
+        and short_breakout >= min_breakout
+        and short_body >= min_body
+        and lower_wick_pct <= max_adverse_wick
+        and fast_rsi > float(getattr(strategy, "fast_breakout_short_rsi_fast_floor", 14.0))
+        and mid_rsi > float(getattr(strategy, "fast_breakout_short_rsi_mid_floor", 20.0))
+    ):
+        return build(Direction.SHORT, short_breakout, short_body, lower_wick_pct)
+
+    return Signal(Direction.FLAT, 0.0, "fast_breakout_no_breakout", 0.0, 0.0)
+
+
+def _entry_execution_guard_reason_for_candles(config: LiveAppConfig, candidate: EntryCandidate, candles: list[Candle]) -> str | None:
+    strategy = config.strategy
+    fast_period = max(2, int(getattr(strategy, "entry_execution_rsi_fast_period", 6)))
+    mid_period = max(fast_period, int(getattr(strategy, "entry_execution_rsi_mid_period", 12)))
+    if len(candles) < mid_period + 3:
+        return None
+
+    window = candles[-max(80, mid_period + 10):]
+    latest_candle = window[-1]
+    latest = latest_candle.close
+    signal_close = candidate.candle.close
+    if latest <= 0 or signal_close <= 0:
+        return None
+
+    direction = candidate.signal.direction
+    chase_pct = (latest / signal_close - 1.0) * direction.value
+    max_chase = max(0.0, float(getattr(strategy, "entry_execution_max_chase_pct", 0.004)))
+    if chase_pct > max_chase:
+        return f"5m_chase {chase_pct * 100:.2f}% > {max_chase * 100:.2f}%"
+
+    previous_close = window[-2].close
+    reversal_pct = (latest / previous_close - 1.0) * direction.value if previous_close > 0 else 0.0
+    max_reversal = max(0.0, float(getattr(strategy, "entry_execution_reversal_pct", 0.003)))
+    if reversal_pct < -max_reversal:
+        return f"5m_reversal {reversal_pct * 100:.2f}% < -{max_reversal * 100:.2f}%"
+
+    candle_range = max(latest_candle.high - latest_candle.low, 1e-12)
+    max_adverse_wick = max(0.0, min(1.0, float(getattr(strategy, "entry_execution_max_adverse_wick_pct", 0.55))))
+    if direction == Direction.LONG:
+        upper_wick_pct = (latest_candle.high - max(latest_candle.open, latest_candle.close)) / candle_range
+        if upper_wick_pct > max_adverse_wick:
+            return f"5m_upper_wick {upper_wick_pct:.2f} > {max_adverse_wick:.2f}"
+    elif direction == Direction.SHORT:
+        lower_wick_pct = (min(latest_candle.open, latest_candle.close) - latest_candle.low) / candle_range
+        if lower_wick_pct > max_adverse_wick:
+            return f"5m_lower_wick {lower_wick_pct:.2f} > {max_adverse_wick:.2f}"
+
+    closes = [candle.close for candle in window]
+    fast_rsi = rsi(closes, fast_period)[-1]
+    mid_rsi = rsi(closes, mid_period)[-1]
+    if direction == Direction.LONG:
+        fast_ceiling = float(getattr(strategy, "entry_execution_long_rsi_fast_ceiling", 84.0))
+        mid_ceiling = float(getattr(strategy, "entry_execution_long_rsi_mid_ceiling", 78.0))
+        if fast_rsi >= fast_ceiling and mid_rsi >= mid_ceiling:
+            return f"5m_long_rsi_hot rsi{fast_period}={fast_rsi:.1f} rsi{mid_period}={mid_rsi:.1f}"
+    elif direction == Direction.SHORT:
+        fast_floor = float(getattr(strategy, "entry_execution_short_rsi_fast_floor", 16.0))
+        mid_floor = float(getattr(strategy, "entry_execution_short_rsi_mid_floor", 22.0))
+        if fast_rsi <= fast_floor and mid_rsi <= mid_floor:
+            return f"5m_short_rsi_cold rsi{fast_period}={fast_rsi:.1f} rsi{mid_period}={mid_rsi:.1f}"
+    return None
+
+
+def _trend_reference_adjusted_signal_for_candles(
+    config: LiveAppConfig,
+    signal: Signal,
+    candles: list[Candle],
+) -> tuple[Signal | None, str | None]:
+    strategy = config.strategy
+    lookback = max(1, int(getattr(strategy, "trend_reference_lookback_bars", 6)))
+    minimum = max(strategy.slow_ema, strategy.atr_period, lookback + 1)
+    if len(candles) < minimum:
+        return signal, None
+
+    closes = [candle.close for candle in candles]
+    slow_values = ema(closes, strategy.slow_ema)
+    atr_values = atr(candles, strategy.atr_period)
+    current_close = closes[-1]
+    current_slow = slow_values[-1]
+    atr_value = max(atr_values[-1], 1e-12)
+    slope_lookback = min(lookback, len(slow_values) - 1)
+    slope_atr = (slow_values[-1] - slow_values[-1 - slope_lookback]) / atr_value
+    buffer = max(0.0, float(getattr(strategy, "trend_reference_buffer_atr", 0.08))) * atr_value
+    slope_threshold = max(0.0, float(getattr(strategy, "trend_reference_slope_atr", 0.04)))
+
+    opposite = False
+    if signal.direction == Direction.LONG:
+        opposite = current_close < current_slow - buffer and slope_atr <= -slope_threshold
+    elif signal.direction == Direction.SHORT:
+        opposite = current_close > current_slow + buffer and slope_atr >= slope_threshold
+    if not opposite:
+        return signal, None
+
+    reason = (
+        f"1h_opposite close={current_close:.6g} slow={current_slow:.6g} "
+        f"slope_atr={slope_atr:.2f}"
+    )
+    normalized = signal.reason.lower()
+    is_exceptional = "super_volume" in normalized or "startup_breakout" in normalized
+    if not is_exceptional:
+        return None, reason
+
+    multiplier = max(0.0, min(1.0, float(getattr(strategy, "trend_reference_super_volume_risk_multiplier", 0.60))))
+    return replace(
+        signal,
+        risk_multiplier=signal.risk_multiplier * multiplier,
+        reason=f"{signal.reason}_1h_reference_risk{multiplier:.2f}",
+    ), reason
+
+
+def _combine_btc_market_states(primary: BtcMarketState, confirmation: BtcMarketState) -> BtcMarketState:
+    if primary.direction == Direction.FLAT:
+        return primary
+    if confirmation.direction == primary.direction:
+        return BtcMarketState(
+            primary.direction,
+            primary.return_pct,
+            primary.slope_atr,
+            f"{primary.reason}; confirm={confirmation.reason}",
+        )
+    return BtcMarketState(
+        Direction.FLAT,
+        primary.return_pct,
+        primary.slope_atr,
+        f"btc_mixed primary={primary.reason}; confirm={confirmation.reason}",
+    )
+
+
+def _float_value(value: object) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _valid_mtf_timeframe(value: object, default: str) -> str:
+    timeframe = str(value or default).strip().lower()
+    try:
+        interval_to_milliseconds(timeframe)
+    except ValueError:
+        return default
+    return timeframe
+
+
+def _mtf_symbol_allowed(config: LiveAppConfig, symbol: str) -> bool:
+    mode = str(getattr(config.strategy, "mtf_symbols_mode", "configured")).lower()
+    symbols = tuple(config.trading.symbols)
+    if mode == "top30":
+        return symbol in set(symbols[:30])
+    if mode == "top50":
+        return symbol in set(symbols[:50])
+    return True
+
+
+def _account_margin_limit_pct(config: LiveAppConfig, signal: Signal | None = None) -> float:
+    base = max(0.0, float(config.risk.max_account_margin_usage_pct))
+    strategy = config.strategy
+    mtf_override = max(0.0, float(getattr(strategy, "mtf_account_margin_usage_pct", 0.0)))
+    if signal is not None:
+        if MTF_REASON_TOKEN in str(signal.reason) and mtf_override > 0:
+            return mtf_override
+        return base
+    if (
+        bool(getattr(strategy, "mtf_4h_rsi_regime_enabled", False))
+        and bool(getattr(strategy, "mtf_disable_legacy_strategies", False))
+        and mtf_override > 0
+    ):
+        return mtf_override
+    return base
+
+
+def _symbol_margin_limit_pct(config: LiveAppConfig, signal: Signal) -> float:
+    base = max(0.0, float(config.risk.max_symbol_margin_pct))
+    if MTF_REASON_TOKEN not in str(signal.reason):
+        return base
+    override = max(0.0, float(getattr(config.strategy, "mtf_symbol_margin_pct", 0.0)))
+    return override if override > 0 else base
 
 
 def _scale_fraction(base_fraction: float, scale_count: int) -> float:
