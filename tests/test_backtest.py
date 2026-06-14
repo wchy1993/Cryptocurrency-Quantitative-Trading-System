@@ -169,6 +169,36 @@ class BacktestSmokeTests(unittest.TestCase):
         self.assertGreater(boosted.take_profit_pct, normal.take_profit_pct)
         self.assertEqual(boosted.max_holding_bars, 6)
 
+    def test_super_volume_breakout_can_disable_short_startups(self) -> None:
+        candles = _super_volume_breakdown_candles()
+        config = StrategyConfig(
+            fast_ema=3,
+            slow_ema=5,
+            atr_period=5,
+            channel_period=5,
+            volume_period=5,
+            min_atr_pct=0.0,
+            max_atr_pct=0.2,
+            min_volume_ratio=1.0,
+            breakout_buffer_atr=0.0,
+            ema_gap_atr=0.0,
+            stop_loss_atr=1.0,
+            take_profit_atr=1.2,
+            ordinary_breakout_enabled=False,
+            super_volume_breakout_enabled=True,
+            super_volume_allow_short=False,
+            super_volume_min_ratio=2.0,
+            super_volume_min_breakout_atr=0.2,
+            super_volume_min_body_atr=0.1,
+        )
+        strategy = VolatilityBreakoutScalper(config)
+        strategy.prepare(candles)
+
+        signal = strategy.signal(len(candles) - 1, candles)
+
+        self.assertEqual(signal.direction, Direction.FLAT)
+        self.assertNotIn("super_volume", signal.reason)
+
     def test_rsi_reversal_signal_can_be_disabled(self) -> None:
         candles = _rsi_reversal_candles()
         config = StrategyConfig(
@@ -221,6 +251,19 @@ def _super_volume_breakout_candles() -> list[Candle]:
         candles.append(Candle(start + timedelta(minutes=15 * index), open_price, close_price + 0.15, open_price - 0.15, close_price, 1000.0))
         price = close_price
     candles.append(Candle(start + timedelta(minutes=15 * 20), price, price + 3.3, price - 0.1, price + 3.0, 6000.0))
+    return candles
+
+
+def _super_volume_breakdown_candles() -> list[Candle]:
+    start = datetime(2025, 1, 1)
+    candles: list[Candle] = []
+    price = 100.0
+    for index in range(20):
+        open_price = price
+        close_price = price - 0.08
+        candles.append(Candle(start + timedelta(minutes=15 * index), open_price, open_price + 0.15, close_price - 0.15, close_price, 1000.0))
+        price = close_price
+    candles.append(Candle(start + timedelta(minutes=15 * 20), price, price + 0.1, price - 3.3, price - 3.0, 6000.0))
     return candles
 
 

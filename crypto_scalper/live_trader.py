@@ -1077,6 +1077,10 @@ class BinanceAutoTrader:
         if len(candles) < mid_period + 3:
             return None
 
+        reclaim_reason = _indicator_long_reclaim_guard_reason_for_candles(self.config, candidate, candles, timeframe)
+        if reclaim_reason:
+            return reclaim_reason
+
         closes = [candle.close for candle in candles]
         fast_rsi = rsi(closes, fast_period)[-1]
         mid_rsi = rsi(closes, mid_period)[-1]
@@ -1687,6 +1691,11 @@ class BinanceAutoTrader:
             self.log(f"{symbol}: 单仓账户亏损保护触发，准备平仓 ({account_loss_reason})")
             self._exit_position(symbol, position, account_loss_reason)
             return
+        fail_fast_reason = self._indicator_long_fail_fast_exit_reason(position, candles[-1].close)
+        if fail_fast_reason:
+            self.log(f"{symbol}: 指标多头快速失败退出，准备平仓 ({fail_fast_reason})")
+            self._exit_position(symbol, position, fail_fast_reason)
+            return
         trend_loss_reason = self._trend_loss_exit_reason(position, candles[-1].close)
         if trend_loss_reason:
             self.log(f"{symbol}: 趋势单亏损保护触发，准备平仓 ({trend_loss_reason})")
@@ -1930,15 +1939,20 @@ class BinanceAutoTrader:
                             exit_price = candle.close
                             reason = profit_reason
                         else:
-                            trend_loss_reason = self._trend_loss_exit_reason(position, candle.close)
-                            if trend_loss_reason:
+                            fail_fast_reason = self._indicator_long_fail_fast_exit_reason(position, candle.close)
+                            if fail_fast_reason:
                                 exit_price = candle.close
-                                reason = trend_loss_reason
+                                reason = fail_fast_reason
                             else:
-                                stale_reason = self._stale_position_exit_reason(position, candle.close)
-                                if stale_reason:
+                                trend_loss_reason = self._trend_loss_exit_reason(position, candle.close)
+                                if trend_loss_reason:
                                     exit_price = candle.close
-                                    reason = stale_reason
+                                    reason = trend_loss_reason
+                                else:
+                                    stale_reason = self._stale_position_exit_reason(position, candle.close)
+                                    if stale_reason:
+                                        exit_price = candle.close
+                                        reason = stale_reason
 
                 if exit_price is None and position.max_holding_bars > 0 and position.bars_held >= position.max_holding_bars:
                     exit_price = candle.close
@@ -2328,6 +2342,52 @@ class BinanceAutoTrader:
         if current_profit > -abs(loss_pct):
             return None
         return f"trend_loss_guard loss={current_profit * 100:.3f}% bars={self._position_bars_held(position)}"
+
+    def _indicator_long_fail_fast_exit_reason(self, position: LivePosition | SimPosition, mark_price: float) -> str | None:
+        strategy = self.config.strategy
+        if not getattr(strategy, "indicator_long_fail_fast_enabled", False):
+            return None
+        if getattr(position, "direction", Direction.FLAT) != Direction.LONG:
+            return None
+        entry_reason = str(getattr(position, "entry_reason", ""))
+        if not _is_indicator_reversal_entry_reason(entry_reason):
+            return None
+
+        entry_time = getattr(position, "entry_time", None) or getattr(position, "opened_at", None)
+        checked_time = getattr(position, "last_checked_time", None)
+        if checked_time is None:
+            checked_time = datetime.now(timezone.utc).replace(tzinfo=None)
+        if entry_time is None or checked_time is None:
+            return None
+        try:
+            hold_minutes = max(0.0, (checked_time - entry_time).total_seconds() / 60.0)
+        except TypeError:
+            return None
+        fail_fast_minutes = max(1, int(getattr(strategy, "indicator_long_fail_fast_minutes", 120)))
+        if hold_minutes < fail_fast_minutes:
+            return None
+
+        quantity = abs(float(getattr(position, "quantity", 0.0) or 0.0))
+        entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
+        stop_price = float(getattr(position, "stop_price", 0.0) or 0.0)
+        best_price = getattr(position, "best_price", None)
+        if best_price is None:
+            state = self._profit_states.get(getattr(position, "symbol", ""))
+            best_price = state.best_price if state is not None else entry_price
+        best_price = float(best_price or entry_price)
+        risk_cash = max(0.0, entry_price - stop_price) * quantity
+        if risk_cash <= 0:
+            return None
+        mfe_cash = max(0.0, best_price - entry_price) * quantity
+        min_r = max(0.0, float(getattr(strategy, "indicator_long_fail_fast_min_r", 0.25)))
+        if mfe_cash >= risk_cash * min_r:
+            return None
+        current_profit = _directional_profit_pct(Direction.LONG, entry_price, mark_price)
+        return (
+            f"indicator_long_fail_fast hold={hold_minutes:.0f}m "
+            f"mfe_r={mfe_cash / risk_cash:.2f} < {min_r:.2f} "
+            f"profit={current_profit * 100:.3f}%"
+        )
 
     def _account_loss_exit_reason(
         self,
@@ -3181,6 +3241,10 @@ def _entry_execution_guard_reason_for_candles(config: LiveAppConfig, candidate: 
     if len(candles) < mid_period + 3:
         return None
 
+    reclaim_reason = _indicator_long_reclaim_guard_reason_for_candles(config, candidate, candles, str(getattr(strategy, "entry_execution_timeframe", "5m")))
+    if reclaim_reason:
+        return reclaim_reason
+
     window = candles[-max(80, mid_period + 10):]
     latest_candle = window[-1]
     latest = latest_candle.close
@@ -3224,6 +3288,37 @@ def _entry_execution_guard_reason_for_candles(config: LiveAppConfig, candidate: 
         mid_floor = float(getattr(strategy, "entry_execution_short_rsi_mid_floor", 22.0))
         if fast_rsi <= fast_floor and mid_rsi <= mid_floor:
             return f"5m_short_rsi_cold rsi{fast_period}={fast_rsi:.1f} rsi{mid_period}={mid_rsi:.1f}"
+    return None
+
+
+def _indicator_long_reclaim_guard_reason_for_candles(
+    config: LiveAppConfig,
+    candidate: EntryCandidate,
+    candles: list[Candle],
+    timeframe: str,
+) -> str | None:
+    strategy = config.strategy
+    if not getattr(strategy, "indicator_long_reclaim_filter_enabled", False):
+        return None
+    if candidate.signal.direction != Direction.LONG:
+        return None
+    if not _is_indicator_reversal_entry_reason(candidate.signal.reason):
+        return None
+    ema_period = max(2, int(getattr(strategy, "indicator_long_reclaim_ema_period", 9)))
+    if len(candles) < ema_period + 3:
+        return None
+    window = candles[-max(ema_period + 10, 40):]
+    latest = window[-1]
+    closes = [candle.close for candle in window]
+    ema_values = ema(closes, ema_period)
+    reclaim_level = ema_values[-1]
+    if latest.close < reclaim_level:
+        return f"{timeframe}_indicator_long_no_reclaim close={latest.close:.6g} ema{ema_period}={reclaim_level:.6g}"
+    candle_range = max(latest.high - latest.low, 1e-12)
+    close_position = (latest.close - latest.low) / candle_range
+    min_close_position = max(0.0, min(1.0, float(getattr(strategy, "indicator_long_reclaim_min_close_position", 0.55))))
+    if close_position < min_close_position:
+        return f"{timeframe}_indicator_long_weak_close close_pos={close_position:.2f} < {min_close_position:.2f}"
     return None
 
 

@@ -60,6 +60,7 @@ class StrategyConfig:
     super_volume_confidence_boost: float = 0.15
     super_volume_risk_multiplier: float = 1.35
     super_volume_take_profit_multiplier: float = 1.35
+    super_volume_allow_short: bool = True
     super_volume_live_chase_guard_enabled: bool = False
     super_volume_max_entry_chase_pct: float = 0.006
     super_volume_max_holding_bars: int = 0
@@ -191,6 +192,12 @@ class StrategyConfig:
     indicator_reversal_loss_pause_enabled: bool = False
     indicator_reversal_loss_pause_losses: int = 2
     indicator_reversal_loss_pause_bars: int = 8
+    indicator_long_reclaim_filter_enabled: bool = False
+    indicator_long_reclaim_ema_period: int = 9
+    indicator_long_reclaim_min_close_position: float = 0.55
+    indicator_long_fail_fast_enabled: bool = False
+    indicator_long_fail_fast_minutes: int = 120
+    indicator_long_fail_fast_min_r: float = 0.25
     indicator_min_rank_guard_enabled: bool = False
     indicator_min_rank_score: float = 3.0
     btc_market_filter_enabled: bool = False

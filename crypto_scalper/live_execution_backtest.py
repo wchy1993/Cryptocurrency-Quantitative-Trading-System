@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import bisect
 import json
+import sys
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -67,6 +69,8 @@ def run_execution_backtest(
     execution_data_dir: str,
     initial_equity: float | None = None,
     include_trades: bool = False,
+    compact: bool = False,
+    progress: bool = False,
     trade_start: Any = None,
     trade_end: Any = None,
     cost_experiment: str | None = None,
@@ -147,6 +151,8 @@ def run_execution_backtest(
         fast_breakout_candles_by_symbol=fast_breakout_candles,
         mtf_candles_by_timeframe=mtf_candles,
         include_trades=include_trades,
+        compact=compact,
+        progress=progress,
         trade_start=trade_start,
         trade_end=trade_end,
         cost_experiment=cost_experiment,
@@ -165,6 +171,8 @@ def run_execution_backtest_config(
     fast_breakout_candles_by_symbol: dict[str, list[Candle]] | None = None,
     mtf_candles_by_timeframe: dict[str, dict[str, list[Candle]]] | None = None,
     include_trades: bool = False,
+    compact: bool = False,
+    progress: bool = False,
     trade_start: Any = None,
     trade_end: Any = None,
     cost_experiment: str | None = None,
@@ -279,6 +287,7 @@ def run_execution_backtest_config(
     trades: list[dict[str, Any]] = []
     monthly_stats: dict[str, dict[str, Any]] = {}
     equity_curve = [starting_equity]
+    equity_timeline: list[tuple[Any, float]] = []
     reentry_block_until: dict[str, Any] = {}
     pending_entries: list[PendingEntry] = []
     indicator_reversal_loss_streak = 0
@@ -291,9 +300,24 @@ def run_execution_backtest_config(
     mtf_symbol_cooldown_until: dict[str, Any] = {}
     if mtf_candidate_cache is None:
         mtf_candidate_cache = {}
+    progress_started_at = time.monotonic()
+    next_progress_at = progress_started_at
+    progress_total = max(1, common_execution_length)
 
     for execution_index in range(common_execution_length):
         timestamp = execution_timestamps[execution_index]
+        if progress:
+            now = time.monotonic()
+            if now >= next_progress_at or execution_index == common_execution_length - 1:
+                pct = min(100.0, max(0.0, (execution_index + 1) / progress_total * 100.0))
+                elapsed = max(0.0, now - progress_started_at)
+                print(
+                    f"[backtest] {pct:5.1f}% time={timestamp} "
+                    f"trades={len(trades)} open={len(positions)} elapsed={elapsed:,.0f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                next_progress_at = now + 30.0
         if timestamp < first_trade_time:
             summary_first_candle = next(iter(execution_candles_by_symbol.values()))[execution_index]
             continue
@@ -344,6 +368,7 @@ def run_execution_backtest_config(
         )
         equity = _mark_equity(cash, positions, execution_candles_by_symbol, execution_index)
         equity_curve.append(equity)
+        equity_timeline.append((timestamp, equity))
         _record_monthly_equity(monthly_stats, timestamp, equity)
 
         if timestamp < next_entry_scan_time:
@@ -469,6 +494,7 @@ def run_execution_backtest_config(
         _record_monthly_closed_trades(monthly_stats, candle.timestamp, trades[closed_before:])
     final_equity = cash
     equity_curve.append(final_equity)
+    equity_timeline.append((last_candle.timestamp, final_equity))
     _record_monthly_equity(monthly_stats, last_candle.timestamp, final_equity)
     payload = _summary(
         starting_equity,
@@ -480,6 +506,8 @@ def run_execution_backtest_config(
         monthly_stats,
         include_trades=include_trades,
         execution_stats=execution_stats,
+        equity_timeline=equity_timeline,
+        compact=compact,
     )
     if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False):
         mtf_payload = dict(payload)
@@ -939,15 +967,20 @@ def _manage_positions_1m(
                     exit_price = candle.close
                     reason = account_loss_reason
                 else:
-                    trend_loss_reason = trader._trend_loss_exit_reason(sim, candle.close)
-                    if trend_loss_reason:
+                    fail_fast_reason = trader._indicator_long_fail_fast_exit_reason(sim, candle.close)
+                    if fail_fast_reason:
                         exit_price = candle.close
-                        reason = trend_loss_reason
+                        reason = fail_fast_reason
                     else:
-                        stale_reason = trader._stale_position_exit_reason(sim, candle.close)
-                        if stale_reason:
+                        trend_loss_reason = trader._trend_loss_exit_reason(sim, candle.close)
+                        if trend_loss_reason:
                             exit_price = candle.close
-                            reason = stale_reason
+                            reason = trend_loss_reason
+                        else:
+                            stale_reason = trader._stale_position_exit_reason(sim, candle.close)
+                            if stale_reason:
+                                exit_price = candle.close
+                                reason = stale_reason
 
         if exit_price is None:
             mtf_reason = _mtf_exit_reason_for_position(
@@ -1185,6 +1218,8 @@ def main() -> int:
     parser.add_argument("--execution-data-dir", default="data/binance_1m_live_replay")
     parser.add_argument("--initial-equity", type=float, default=None)
     parser.add_argument("--include-trades", action="store_true")
+    parser.add_argument("--compact", action="store_true", help="Skip heavy detailed report groups; keeps monthly, strategy, and drawdown summaries.")
+    parser.add_argument("--no-progress", action="store_true", help="Disable stderr progress updates.")
     parser.add_argument("--trade-start", default=None, help="UTC ISO timestamp; earlier data is warmup only")
     parser.add_argument("--trade-end", default=None, help="UTC ISO timestamp")
     parser.add_argument(
@@ -1212,6 +1247,8 @@ def main() -> int:
                 args.execution_data_dir,
                 initial_equity=args.initial_equity,
                 include_trades=args.include_trades,
+                compact=args.compact,
+                progress=not args.no_progress,
                 trade_start=trade_start,
                 trade_end=trade_end,
                 cost_experiment=args.cost_experiment,

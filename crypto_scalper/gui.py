@@ -39,7 +39,7 @@ STRATEGY_MODE_VALUES = (
     STRATEGY_MODE_MANUAL,
 )
 STRATEGY_MODE_SUMMARIES = {
-    STRATEGY_MODE_INDICATOR: "当前启用：indicator_reversal 多空分离版。20x/持仓4，risk 0.065，多头0.282/空头0.30，其它策略关闭。",
+    STRATEGY_MODE_INDICATOR: "当前启用：indicator_reversal 多空分离版。20x/持仓4，risk 0.065，多头0.282/空头0.34，其它策略关闭。",
     STRATEGY_MODE_SUPER_VOLUME: "启用强放量突破策略；适合捕捉高量能趋势启动，旧突破/回踩/反转策略保持关闭。",
     STRATEGY_MODE_MTF: "启用 MTF 多周期策略；旧策略关闭，由多周期信号单独筛选入场。",
     STRATEGY_MODE_OI_FLUSH: "启用 OI 去杠杆反弹策略；只做多，旧策略关闭。",
@@ -1414,19 +1414,20 @@ def _detect_strategy_mode(config: LiveAppConfig) -> str:
         return STRATEGY_MODE_MTF
     if getattr(strategy, "oi_flush_reversal_enabled", False):
         return STRATEGY_MODE_OI_FLUSH
-    if getattr(strategy, "super_volume_breakout_enabled", False) or getattr(strategy, "startup_breakout_enabled", False):
-        return STRATEGY_MODE_SUPER_VOLUME
     indicator_only = (
         config.filters.extreme_reversal_entry_enabled
         and getattr(strategy, "indicator_confirmed_cross_extreme_required_enabled", False)
         and getattr(strategy, "allow_short", False)
-        and not getattr(strategy, "super_volume_breakout_enabled", False)
         and not getattr(strategy, "ordinary_breakout_enabled", False)
         and not getattr(strategy, "pullback_reclaim_enabled", False)
         and not getattr(strategy, "fast_breakout_enabled", False)
         and not getattr(strategy, "rsi_reversal_enabled", False)
     )
-    return STRATEGY_MODE_INDICATOR if indicator_only else STRATEGY_MODE_MANUAL
+    if getattr(strategy, "super_volume_breakout_enabled", False) or getattr(strategy, "startup_breakout_enabled", False):
+        return STRATEGY_MODE_SUPER_VOLUME
+    if indicator_only:
+        return STRATEGY_MODE_INDICATOR
+    return STRATEGY_MODE_MANUAL
 
 
 def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfig:
@@ -1465,6 +1466,7 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
             entry_timing_filter_enabled=True,
             entry_execution_filter_enabled=True,
             entry_execution_filter_trend_only=False,
+            entry_execution_timeframe="5m",
             allow_short=True,
             short_risk_bias=1.05,
             indicator_reversal_size_multiplier=0.30,
@@ -1487,9 +1489,15 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
             indicator_confirmed_cross_extreme_guard_enabled=False,
             indicator_trend_guard_enabled=False,
             indicator_reference_guard_enabled=False,
-            indicator_reversal_loss_pause_enabled=True,
+            indicator_reversal_loss_pause_enabled=False,
             indicator_reversal_loss_pause_losses=2,
             indicator_reversal_loss_pause_bars=8,
+            indicator_long_reclaim_filter_enabled=False,
+            indicator_long_reclaim_ema_period=9,
+            indicator_long_reclaim_min_close_position=0.55,
+            indicator_long_fail_fast_enabled=False,
+            indicator_long_fail_fast_minutes=120,
+            indicator_long_fail_fast_min_r=0.25,
             indicator_min_rank_guard_enabled=False,
         )
         filters = replace(
@@ -1511,6 +1519,7 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
             mtf_4h_rsi_regime_enabled=False,
             mtf_disable_legacy_strategies=False,
             oi_flush_reversal_enabled=False,
+            super_volume_allow_short=False,
             entry_timing_filter_enabled=True,
             entry_execution_filter_enabled=True,
             entry_execution_filter_trend_only=False,

@@ -191,10 +191,30 @@ class ConservativeExecutionTests(unittest.TestCase):
         summary = _summary(160.0, 161.0, [160.0, 161.0], [trade], first, last, execution_stats=BacktestExecutionStats(same_bar_tp_sl_conflict_count=1))
 
         self.assertIn("enhanced_summary", summary)
+        self.assertIn("drawdown_analysis", summary)
         overall = summary["enhanced_summary"]["overall"]
         for field in ("gross_pnl", "fee", "slippage_cost", "funding", "net_pnl", "avg_mfe", "avg_mae", "maker_fill_rate", "taker_ratio", "expectancy_per_trade"):
             self.assertIn(field, overall)
         self.assertEqual(summary["same_bar_tp_sl_conflict_count"], 1)
+
+    def test_summary_records_drawdown_peak_and_trough(self) -> None:
+        first = _candle(datetime(2026, 1, 1), 100.0)
+        last = _candle(datetime(2026, 1, 1, 3), 101.0)
+        trade = _trade()
+        timeline = [
+            (datetime(2026, 1, 1), 100.0),
+            (datetime(2026, 1, 1, 1), 150.0),
+            (datetime(2026, 1, 1, 2), 90.0),
+            (datetime(2026, 1, 1, 3), 120.0),
+        ]
+
+        summary = _summary(100.0, 120.0, [point[1] for point in timeline], [trade], first, last, equity_timeline=timeline)
+
+        drawdown = summary["drawdown_analysis"]
+        self.assertAlmostEqual(drawdown["max_drawdown_pct"], 40.0)
+        self.assertEqual(drawdown["peak_time"], "2026-01-01T01:00:00")
+        self.assertEqual(drawdown["trough_time"], "2026-01-01T02:00:00")
+        self.assertAlmostEqual(drawdown["drawdown_usdt"], 60.0)
 
     def test_trade_log_contains_enhanced_fields(self) -> None:
         config = default_live_config()

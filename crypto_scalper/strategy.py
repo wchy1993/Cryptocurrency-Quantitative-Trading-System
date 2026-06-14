@@ -605,6 +605,8 @@ class VolatilityBreakoutScalper:
     ) -> bool:
         if not self.config.super_volume_breakout_enabled:
             return False
+        if direction == Direction.SHORT and not getattr(self.config, "super_volume_allow_short", True):
+            return False
         if breakout_distance <= 0 or atr_value <= 0 or average_volume <= 0:
             return False
         candle = self._candle_at(index)

@@ -5,6 +5,7 @@ import bisect
 import json
 import math
 import statistics
+from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -29,6 +30,7 @@ from .live_trader import (
     _entry_position_limit,
     _entry_quality_guard_reason,
     _fast_breakout_signal_for_candles,
+    _indicator_long_reclaim_guard_reason_for_candles,
     _indicator_side_float,
     _indicator_side_holding_bars,
     _is_trend_entry_reason,
@@ -256,6 +258,7 @@ def run_portfolio_backtest_config(
     reentry_block_until: dict[str, int] = {}
     trades: list[dict[str, Any]] = []
     equity_curve: list[float] = []
+    equity_timeline: list[tuple[Any, float]] = []
     monthly_stats: dict[str, dict[str, Any]] = {}
     indicator_reversal_loss_streak = 0
     indicator_reversal_pause_until = -1
@@ -281,6 +284,7 @@ def run_portfolio_backtest_config(
         if trade_start is not None and timestamp < trade_start:
             summary_first_candle = next(iter(candles_by_symbol.values()))[index]
             equity_curve.append(equity)
+            equity_timeline.append((timestamp, equity))
             continue
         if trade_end is not None and timestamp > trade_end:
             break
@@ -373,6 +377,7 @@ def run_portfolio_backtest_config(
         week_peak_equity = max(week_peak_equity, equity)
         trader._peak_equity = peak_equity
         equity_curve.append(equity)
+        equity_timeline.append((timestamp, equity))
         _record_monthly_equity(monthly_stats, timestamp, equity)
 
         if equity <= day_start_equity * (1.0 - config.risk.max_daily_loss_pct):
@@ -487,6 +492,7 @@ def run_portfolio_backtest_config(
         _record_monthly_closed_trades(monthly_stats, last_candle.timestamp, trades[closed_before:])
     final_equity = cash
     equity_curve.append(final_equity)
+    equity_timeline.append((last_candle.timestamp, final_equity))
     _record_monthly_equity(monthly_stats, last_candle.timestamp, final_equity)
     return _summary(
         starting_equity,
@@ -497,6 +503,7 @@ def run_portfolio_backtest_config(
         last_candle,
         monthly_stats,
         include_trades=include_trades,
+        equity_timeline=equity_timeline,
     )
 
 
@@ -1448,6 +1455,10 @@ def _entry_timing_guard_reason_for_candles(config: Any, candidate: EntryCandidat
     if len(candles) < mid_period + 3:
         return None
 
+    reclaim_reason = _indicator_long_reclaim_guard_reason_for_candles(config, candidate, candles, str(getattr(strategy, "entry_timing_timeframe", "15m")))
+    if reclaim_reason:
+        return reclaim_reason
+
     window = candles[-max(80, mid_period + 10):]
     closes = [candle.close for candle in window]
     latest = closes[-1]
@@ -2171,15 +2182,20 @@ def _manage_positions(
                     exit_price = candle.close
                     reason = account_loss_reason
                 else:
-                    trend_loss_reason = trader._trend_loss_exit_reason(sim, candle.close)
-                    if trend_loss_reason:
+                    fail_fast_reason = trader._indicator_long_fail_fast_exit_reason(sim, candle.close)
+                    if fail_fast_reason:
                         exit_price = candle.close
-                        reason = trend_loss_reason
+                        reason = fail_fast_reason
                     else:
-                        stale_reason = trader._stale_position_exit_reason(sim, candle.close)
-                        if stale_reason:
+                        trend_loss_reason = trader._trend_loss_exit_reason(sim, candle.close)
+                        if trend_loss_reason:
                             exit_price = candle.close
-                            reason = stale_reason
+                            reason = trend_loss_reason
+                        else:
+                            stale_reason = trader._stale_position_exit_reason(sim, candle.close)
+                            if stale_reason:
+                                exit_price = candle.close
+                                reason = stale_reason
 
         if exit_price is None and position.max_holding_bars > 0 and position.bars_held >= position.max_holding_bars:
             exit_price = candle.close
@@ -2568,16 +2584,15 @@ def _summary(
     monthly_stats: dict[str, dict[str, Any]] | None = None,
     include_trades: bool = False,
     execution_stats: BacktestExecutionStats | None = None,
+    equity_timeline: list[tuple[Any, float]] | None = None,
+    compact: bool = False,
 ) -> dict[str, Any]:
     wins = [trade for trade in trades if trade["net_pnl"] > 0]
     losses = [trade for trade in trades if trade["net_pnl"] <= 0]
     gross_profit = sum(trade["net_pnl"] for trade in wins)
     gross_loss = abs(sum(trade["net_pnl"] for trade in losses))
-    peak = starting_equity
-    max_drawdown = 0.0
-    for equity in equity_curve:
-        peak = max(peak, equity)
-        max_drawdown = max(max_drawdown, 0.0 if peak <= 0 else (peak - equity) / peak)
+    drawdown_analysis = _drawdown_analysis(starting_equity, equity_curve, trades, equity_timeline)
+    max_drawdown = float(drawdown_analysis["max_drawdown_pct"]) / 100.0
     period_days = (last.timestamp - first.timestamp).total_seconds() / 86_400.0
     net_return = (final_equity / starting_equity - 1.0) * 100.0
     monthly = net_return / (period_days / 30.4375) if period_days > 0 else 0.0
@@ -2592,6 +2607,7 @@ def _summary(
         "net_return_pct": net_return,
         "monthly_return_pct": monthly,
         "max_drawdown_pct": max_drawdown * 100.0,
+        "trade_count": len(trades),
         "total_trades": len(trades),
         "wins": len(wins),
         "losses": len(losses),
@@ -2603,16 +2619,154 @@ def _summary(
         "long": _side_summary(trades, "LONG"),
         "short": _side_summary(trades, "SHORT"),
         "strategy_buckets": _strategy_bucket_summary(trades),
-        "entry_reasons": _entry_reason_summary(trades),
+        "by_strategy_side": _drawdown_group_summary(trades),
+        "entry_reasons": [] if compact else _entry_reason_summary(trades),
         "monthly": _monthly_summary(monthly_stats or {}),
         "same_bar_tp_sl_conflict_count": 0 if execution_stats is None else execution_stats.same_bar_tp_sl_conflict_count,
         "limit_touch_count": 0 if execution_stats is None else execution_stats.limit_touch_count,
         "limit_filled_count": 0 if execution_stats is None else execution_stats.limit_filled_count,
-        "enhanced_summary": _enhanced_summary(trades, execution_stats),
+        "drawdown_analysis": drawdown_analysis,
+        "enhanced_summary": {} if compact else _enhanced_summary(trades, execution_stats),
     }
     if include_trades:
         payload["trades"] = trades
     return payload
+
+
+def _drawdown_analysis(
+    starting_equity: float,
+    equity_curve: list[float],
+    trades: list[dict[str, Any]],
+    equity_timeline: list[tuple[Any, float]] | None = None,
+) -> dict[str, Any]:
+    if equity_timeline:
+        points = [(timestamp, float(equity)) for timestamp, equity in equity_timeline]
+    else:
+        points = [(None, float(equity)) for equity in equity_curve]
+    if not points:
+        points = [(None, starting_equity)]
+
+    peak_time = points[0][0]
+    peak_equity = max(starting_equity, points[0][1])
+    max_peak_time = peak_time
+    max_peak_equity = peak_equity
+    trough_time = points[0][0]
+    trough_equity = points[0][1]
+    max_drawdown = 0.0
+
+    for timestamp, equity in points:
+        if equity > peak_equity:
+            peak_equity = equity
+            peak_time = timestamp
+        drawdown = 0.0 if peak_equity <= 0 else (peak_equity - equity) / peak_equity
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+            max_peak_time = peak_time
+            max_peak_equity = peak_equity
+            trough_time = timestamp
+            trough_equity = equity
+
+    interval_trades = _trades_closed_between(trades, max_peak_time, trough_time)
+    return {
+        "max_drawdown_pct": max_drawdown * 100.0,
+        "peak_time": _format_optional_time(max_peak_time),
+        "peak_equity": max_peak_equity,
+        "trough_time": _format_optional_time(trough_time),
+        "trough_equity": trough_equity,
+        "drawdown_usdt": max_peak_equity - trough_equity,
+        "peak_to_trough_minutes": _minutes_between(max_peak_time, trough_time),
+        "closed_trades_between_peak_and_trough": {
+            "trade_count": len(interval_trades),
+            "net_pnl": sum(float(trade.get("net_pnl", 0.0)) for trade in interval_trades),
+            "by_strategy_side": _drawdown_group_summary(interval_trades),
+            "worst_trades": _worst_drawdown_trades(interval_trades, limit=10),
+        },
+    }
+
+
+def _trades_closed_between(trades: list[dict[str, Any]], start: Any, end: Any) -> list[dict[str, Any]]:
+    if start is None or end is None:
+        return []
+    output = []
+    for trade in trades:
+        exit_time = _parse_trade_time(trade.get("exit_time"))
+        if exit_time is not None and start <= exit_time <= end:
+            output.append(trade)
+    return output
+
+
+def _drawdown_group_summary(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: {"trades": 0.0, "wins": 0.0, "losses": 0.0, "net_pnl": 0.0})
+    for trade in trades:
+        strategy = str(trade.get("strategy_bucket") or trade.get("strategy") or "")
+        side = str(trade.get("direction") or trade.get("side") or "")
+        key = (strategy, side)
+        net_pnl = float(trade.get("net_pnl", 0.0))
+        grouped[key]["trades"] += 1
+        grouped[key]["net_pnl"] += net_pnl
+        if net_pnl > 0:
+            grouped[key]["wins"] += 1
+        else:
+            grouped[key]["losses"] += 1
+    return [
+        {
+            "strategy": strategy,
+            "side": side,
+            "trades": int(values["trades"]),
+            "wins": int(values["wins"]),
+            "losses": int(values["losses"]),
+            "win_rate_pct": 0.0 if values["trades"] <= 0 else values["wins"] / values["trades"] * 100.0,
+            "net_pnl": values["net_pnl"],
+        }
+        for (strategy, side), values in sorted(grouped.items(), key=lambda item: item[1]["net_pnl"])
+    ]
+
+
+def _worst_drawdown_trades(trades: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
+    output = []
+    for trade in sorted(trades, key=lambda item: float(item.get("net_pnl", 0.0)))[:limit]:
+        output.append(
+            {
+                "symbol": trade.get("symbol", ""),
+                "strategy": trade.get("strategy_bucket") or trade.get("strategy") or "",
+                "side": trade.get("direction") or trade.get("side") or "",
+                "entry_time": trade.get("entry_time", ""),
+                "exit_time": trade.get("exit_time", ""),
+                "net_pnl": float(trade.get("net_pnl", 0.0)),
+                "exit_reason": trade.get("exit_reason") or trade.get("reason") or "",
+                "entry_reason": trade.get("entry_reason", ""),
+            }
+        )
+    return output
+
+
+def _parse_trade_time(value: Any) -> Any:
+    if value is None or hasattr(value, "year"):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return parse_timestamp(value)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return None
+    return None
+
+
+def _format_optional_time(value: Any) -> str:
+    if value is None:
+        return ""
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _minutes_between(start: Any, end: Any) -> float:
+    if start is None or end is None or not hasattr(end, "__sub__"):
+        return 0.0
+    try:
+        return max(0.0, (end - start).total_seconds() / 60.0)
+    except TypeError:
+        return 0.0
 
 
 def _monthly_summary(monthly_stats: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
