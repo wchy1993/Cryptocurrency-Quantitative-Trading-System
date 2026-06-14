@@ -1533,6 +1533,9 @@ class BinanceAutoTrader:
             guard_reason = self._indicator_trend_guard_reason(Direction.SHORT, closes, atr_values)
             if guard_reason:
                 return Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0)
+            close_position_multiplier, close_position_reason = self._indicator_short_close_position_adjustment(candle)
+            if close_position_multiplier <= 0:
+                return Signal(Direction.FLAT, 0.0, close_position_reason or "indicator_short_blocked_high_close_position", 0.0, 0.0)
             short_stop_pct = max(
                 atr_pct * _indicator_side_float(self.config.strategy, Direction.SHORT, "stop_loss_atr", self.config.strategy.stop_loss_atr),
                 0.0008,
@@ -1557,10 +1560,13 @@ class BinanceAutoTrader:
             return Signal(
                 Direction.SHORT,
                 0.7,
-                f"indicator_short_macd_dead_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
+                (
+                    f"indicator_short_macd_dead_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}"
+                    + (f" {close_position_reason}" if close_position_reason else "")
+                ),
                 short_stop_pct,
                 short_take_profit_pct,
-                risk_multiplier=short_risk_multiplier * self.config.strategy.short_risk_bias * short_size_multiplier,
+                risk_multiplier=short_risk_multiplier * self.config.strategy.short_risk_bias * short_size_multiplier * close_position_multiplier,
                 max_holding_bars=short_holding_bars,
             )
         if long_pre_cross:
@@ -1605,6 +1611,9 @@ class BinanceAutoTrader:
             guard_reason = self._indicator_trend_guard_reason(Direction.SHORT, closes, atr_values)
             if guard_reason:
                 return Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0)
+            close_position_multiplier, close_position_reason = self._indicator_short_close_position_adjustment(candle)
+            if close_position_multiplier <= 0:
+                return Signal(Direction.FLAT, 0.0, close_position_reason or "indicator_short_blocked_high_close_position", 0.0, 0.0)
             short_stop_pct = max(
                 atr_pct * _indicator_side_float(self.config.strategy, Direction.SHORT, "stop_loss_atr", self.config.strategy.stop_loss_atr),
                 0.0008,
@@ -1629,10 +1638,13 @@ class BinanceAutoTrader:
             return Signal(
                 Direction.SHORT,
                 0.45,
-                f"indicator_short_pre_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
+                (
+                    f"indicator_short_pre_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}"
+                    + (f" {close_position_reason}" if close_position_reason else "")
+                ),
                 short_stop_pct,
                 short_take_profit_pct,
-                risk_multiplier=short_pre_cross_multiplier * self.config.strategy.short_risk_bias * short_size_multiplier,
+                risk_multiplier=short_pre_cross_multiplier * self.config.strategy.short_risk_bias * short_size_multiplier * close_position_multiplier,
                 max_holding_bars=max(1, min(short_holding_bars, max(6, self.config.strategy.max_holding_bars // 2))),
             )
         return Signal(
@@ -1642,6 +1654,18 @@ class BinanceAutoTrader:
             0.0,
             0.0,
         )
+
+    def _indicator_short_close_position_adjustment(self, candle: Candle) -> tuple[float, str | None]:
+        threshold = float(getattr(self.config.strategy, "indicator_short_max_close_position", 0.0))
+        if threshold <= 0:
+            return 1.0, None
+        candle_range = max(candle.high - candle.low, 1e-12)
+        close_position = (candle.close - candle.low) / candle_range
+        if close_position <= threshold:
+            return 1.0, None
+        multiplier = max(0.0, min(1.0, float(getattr(self.config.strategy, "indicator_short_high_close_risk_multiplier", 1.0))))
+        reason = f"indicator_short_high_close_risk close_pos={close_position:.2f}>{threshold:.2f} mult={multiplier:.2f}"
+        return multiplier, reason
 
     def _manage_existing_position(self, symbol: str, position: LivePosition, account: AccountSnapshot) -> None:
         candles = self._closed_candles(symbol)

@@ -182,6 +182,8 @@ class StrategyConfig:
     indicator_short_take_profit_atr: float = 0.0
     indicator_long_max_holding_bars: int = 0
     indicator_short_max_holding_bars: int = 0
+    indicator_short_max_close_position: float = 0.0
+    indicator_short_high_close_risk_multiplier: float = 1.0
     indicator_long_confirmed_cross_risk_multiplier: float = 0.0
     indicator_short_confirmed_cross_risk_multiplier: float = 0.0
     indicator_long_pre_cross_risk_multiplier: float = 0.0

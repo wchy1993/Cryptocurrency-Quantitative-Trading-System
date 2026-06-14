@@ -723,6 +723,10 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                     if guard_reason:
                         signals.append(Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0))
                         continue
+                    close_position_multiplier, close_position_reason = _indicator_short_close_position_adjustment(config, candle)
+                    if close_position_multiplier <= 0:
+                        signals.append(Signal(Direction.FLAT, 0.0, close_position_reason or "indicator_short_blocked_high_close_position", 0.0, 0.0))
+                        continue
                     short_stop_pct = max(
                         atr_pct * _indicator_side_float(config.strategy, Direction.SHORT, "stop_loss_atr", config.strategy.stop_loss_atr),
                         0.0008,
@@ -746,10 +750,13 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                     signals.append(Signal(
                         Direction.SHORT,
                         0.7,
-                        f"indicator_short_macd_dead_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
+                        (
+                            f"indicator_short_macd_dead_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}"
+                            + (f" {close_position_reason}" if close_position_reason else "")
+                        ),
                         short_stop_pct,
                         short_take_profit_pct,
-                        risk_multiplier=short_risk_multiplier * config.strategy.short_risk_bias * short_size_multiplier,
+                        risk_multiplier=short_risk_multiplier * config.strategy.short_risk_bias * short_size_multiplier * close_position_multiplier,
                         max_holding_bars=_indicator_side_holding_bars(config.strategy, Direction.SHORT),
                     ))
             elif long_pre_cross:
@@ -798,6 +805,10 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                     if guard_reason:
                         signals.append(Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0))
                         continue
+                    close_position_multiplier, close_position_reason = _indicator_short_close_position_adjustment(config, candle)
+                    if close_position_multiplier <= 0:
+                        signals.append(Signal(Direction.FLAT, 0.0, close_position_reason or "indicator_short_blocked_high_close_position", 0.0, 0.0))
+                        continue
                     short_stop_pct = max(
                         atr_pct * _indicator_side_float(config.strategy, Direction.SHORT, "stop_loss_atr", config.strategy.stop_loss_atr),
                         0.0008,
@@ -822,10 +833,13 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                     signals.append(Signal(
                         Direction.SHORT,
                         0.45,
-                        f"indicator_short_pre_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
+                        (
+                            f"indicator_short_pre_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}"
+                            + (f" {close_position_reason}" if close_position_reason else "")
+                        ),
                         short_stop_pct,
                         short_take_profit_pct,
-                        risk_multiplier=short_pre_cross_multiplier * config.strategy.short_risk_bias * short_size_multiplier,
+                        risk_multiplier=short_pre_cross_multiplier * config.strategy.short_risk_bias * short_size_multiplier * close_position_multiplier,
                         max_holding_bars=max(1, min(short_holding_bars, max(6, config.strategy.max_holding_bars // 2))),
                     ))
             else:
@@ -862,6 +876,19 @@ def _indicator_trend_guard_reason(
     if direction == Direction.LONG and current_close < current_slow - buffer and slope_atr <= -slope_threshold:
         return f"indicator_long_blocked_30m_downtrend close={current_close:.6g} slow={current_slow:.6g} slope_atr={slope_atr:.2f}"
     return None
+
+
+def _indicator_short_close_position_adjustment(config: Any, candle: Candle) -> tuple[float, str | None]:
+    threshold = float(getattr(config.strategy, "indicator_short_max_close_position", 0.0))
+    if threshold <= 0:
+        return 1.0, None
+    candle_range = max(candle.high - candle.low, 1e-12)
+    close_position = (candle.close - candle.low) / candle_range
+    if close_position <= threshold:
+        return 1.0, None
+    multiplier = max(0.0, min(1.0, float(getattr(config.strategy, "indicator_short_high_close_risk_multiplier", 1.0))))
+    reason = f"indicator_short_high_close_risk close_pos={close_position:.2f}>{threshold:.2f} mult={multiplier:.2f}"
+    return multiplier, reason
 
 
 def _indicator_confirmed_cross_context_guard_reason(
