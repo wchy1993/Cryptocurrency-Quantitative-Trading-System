@@ -39,7 +39,7 @@ STRATEGY_MODE_VALUES = (
     STRATEGY_MODE_MANUAL,
 )
 STRATEGY_MODE_SUMMARIES = {
-    STRATEGY_MODE_INDICATOR: "当前启用：indicator_reversal 稳定版。只做多，要求极端 RSI/KDJ 后确认交叉，其它策略关闭。",
+    STRATEGY_MODE_INDICATOR: "当前启用：indicator_reversal 多空分离版。20x/持仓4，risk 0.065，多头0.282/空头0.30，其它策略关闭。",
     STRATEGY_MODE_SUPER_VOLUME: "启用强放量突破策略；适合捕捉高量能趋势启动，旧突破/回踩/反转策略保持关闭。",
     STRATEGY_MODE_MTF: "启用 MTF 多周期策略；旧策略关闭，由多周期信号单独筛选入场。",
     STRATEGY_MODE_OI_FLUSH: "启用 OI 去杠杆反弹策略；只做多，旧策略关闭。",
@@ -682,8 +682,10 @@ class TradingApp(tk.Tk):
         mode = self._selected_strategy_mode()
         self._update_strategy_mode_summary()
         if mode == STRATEGY_MODE_INDICATOR:
-            self.allow_short.set(False)
-            self.short_risk_bias.set("0.0")
+            self.allow_short.set(True)
+            self.short_risk_bias.set("1.05")
+            self.risk_per_trade.set("0.065")
+            self.max_open_positions.set("4")
             self.spike_trade_enabled.set(False)
             self.rsi_reversal_enabled.set(False)
             self.entry_scan_seconds.set("300")
@@ -1417,7 +1419,7 @@ def _detect_strategy_mode(config: LiveAppConfig) -> str:
     indicator_only = (
         config.filters.extreme_reversal_entry_enabled
         and getattr(strategy, "indicator_confirmed_cross_extreme_required_enabled", False)
-        and not getattr(strategy, "allow_short", False)
+        and getattr(strategy, "allow_short", False)
         and not getattr(strategy, "super_volume_breakout_enabled", False)
         and not getattr(strategy, "ordinary_breakout_enabled", False)
         and not getattr(strategy, "pullback_reclaim_enabled", False)
@@ -1434,6 +1436,7 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
     strategy = config.strategy
     filters = config.filters
     trading = config.trading
+    risk = config.risk
     disable_legacy_breakout = {
         "super_volume_breakout_enabled": False,
         "startup_breakout_enabled": False,
@@ -1454,13 +1457,29 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
             trend_reference_filter_enabled=False,
             btc_market_filter_enabled=False,
             weak_market_long_filter_enabled=False,
-            strong_market_short_filter_enabled=False,
+            strong_market_short_filter_enabled=True,
+            strong_market_breadth_threshold=0.58,
+            strong_market_avg_return_threshold=0.006,
+            strong_market_short_min_rank_score=6.20,
+            strong_market_short_risk_multiplier=0.45,
             entry_timing_filter_enabled=True,
             entry_execution_filter_enabled=True,
             entry_execution_filter_trend_only=False,
-            allow_short=False,
-            short_risk_bias=0.0,
+            allow_short=True,
+            short_risk_bias=1.05,
             indicator_reversal_size_multiplier=0.30,
+            indicator_long_size_multiplier=0.282,
+            indicator_short_size_multiplier=0.30,
+            indicator_long_stop_loss_atr=2.60,
+            indicator_short_stop_loss_atr=2.50,
+            indicator_long_take_profit_atr=1.60,
+            indicator_short_take_profit_atr=1.60,
+            indicator_long_max_holding_bars=18,
+            indicator_short_max_holding_bars=18,
+            indicator_long_confirmed_cross_risk_multiplier=0.45,
+            indicator_short_confirmed_cross_risk_multiplier=0.45,
+            indicator_long_pre_cross_risk_multiplier=0.35,
+            indicator_short_pre_cross_risk_multiplier=0.35,
             indicator_max_holding_bars=18,
             indicator_confirmed_cross_extreme_required_enabled=True,
             indicator_confirmed_cross_extreme_guard_enabled=False,
@@ -1479,7 +1498,8 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
             reversal_cross_lookback_bars=1,
             confirmed_cross_risk_multiplier=0.45,
         )
-        trading = replace(trading, super_volume_extra_slot_enabled=False)
+        trading = replace(trading, max_open_positions=4, super_volume_extra_slot_enabled=False)
+        risk = replace(risk, risk_per_trade_pct=0.065)
     elif mode == STRATEGY_MODE_SUPER_VOLUME:
         super_volume_flags = dict(disable_legacy_breakout)
         super_volume_flags["super_volume_breakout_enabled"] = True
@@ -1518,7 +1538,7 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
         filters = replace(filters, enabled=False, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False)
         trading = replace(trading, super_volume_extra_slot_enabled=False)
 
-    return replace(config, trading=trading, strategy=strategy, filters=filters)
+    return replace(config, trading=trading, strategy=strategy, filters=filters, risk=risk)
 
 
 def main() -> int:

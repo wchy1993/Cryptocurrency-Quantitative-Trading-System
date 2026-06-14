@@ -29,6 +29,8 @@ from .live_trader import (
     _entry_position_limit,
     _entry_quality_guard_reason,
     _fast_breakout_signal_for_candles,
+    _indicator_side_float,
+    _indicator_side_holding_bars,
     _is_trend_entry_reason,
     _ordinary_breakout_adjusted_signal,
     _scale_fraction,
@@ -571,13 +573,6 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
         k_values, d_values, _ = kdj(candles, filter_config.kdj_period)
         atr_values = atr(candles, config.strategy.atr_period)
         slow_values = ema(closes, config.strategy.slow_ema)
-        indicator_holding_bars = max(
-            1,
-            min(
-                config.strategy.max_holding_bars,
-                max(1, getattr(config.strategy, "indicator_max_holding_bars", config.strategy.max_holding_bars)),
-            ),
-        )
         indicator_size_multiplier = max(
             0.0,
             float(getattr(config.strategy, "indicator_reversal_size_multiplier", 1.0)),
@@ -589,8 +584,6 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                 continue
             candle = candles[index]
             atr_pct = max(atr_values[index] / max(candle.close, 1e-12), 0.0001)
-            stop_pct = max(atr_pct * config.strategy.stop_loss_atr, 0.0008)
-            take_profit_pct = max(atr_pct * config.strategy.take_profit_atr, stop_pct * 1.05)
 
             current_rsi = rsi_values[index]
             previous_rsi = rsi_values[index - 1]
@@ -669,14 +662,34 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                     if guard_reason:
                         signals.append(Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0))
                         continue
+                    long_stop_pct = max(
+                        atr_pct * _indicator_side_float(config.strategy, Direction.LONG, "stop_loss_atr", config.strategy.stop_loss_atr),
+                        0.0008,
+                    )
+                    long_take_profit_pct = max(
+                        atr_pct * _indicator_side_float(config.strategy, Direction.LONG, "take_profit_atr", config.strategy.take_profit_atr),
+                        long_stop_pct * 1.05,
+                    )
+                    long_size_multiplier = _indicator_side_float(
+                        config.strategy,
+                        Direction.LONG,
+                        "size_multiplier",
+                        indicator_size_multiplier,
+                    )
+                    long_risk_multiplier = _indicator_side_float(
+                        config.strategy,
+                        Direction.LONG,
+                        "confirmed_cross_risk_multiplier",
+                        filter_config.confirmed_cross_risk_multiplier,
+                    )
                     signals.append(Signal(
                         Direction.LONG,
                         0.7,
                         f"indicator_long_macd_golden_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
-                        stop_pct,
-                        take_profit_pct,
-                        risk_multiplier=filter_config.confirmed_cross_risk_multiplier * config.strategy.long_risk_bias * indicator_size_multiplier,
-                        max_holding_bars=indicator_holding_bars,
+                        long_stop_pct,
+                        long_take_profit_pct,
+                        risk_multiplier=long_risk_multiplier * config.strategy.long_risk_bias * long_size_multiplier,
+                        max_holding_bars=_indicator_side_holding_bars(config.strategy, Direction.LONG),
                     ))
             elif short_cross:
                 if config.strategy.short_risk_bias <= 0:
@@ -710,14 +723,34 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                     if guard_reason:
                         signals.append(Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0))
                         continue
+                    short_stop_pct = max(
+                        atr_pct * _indicator_side_float(config.strategy, Direction.SHORT, "stop_loss_atr", config.strategy.stop_loss_atr),
+                        0.0008,
+                    )
+                    short_take_profit_pct = max(
+                        atr_pct * _indicator_side_float(config.strategy, Direction.SHORT, "take_profit_atr", config.strategy.take_profit_atr),
+                        short_stop_pct * 1.05,
+                    )
+                    short_size_multiplier = _indicator_side_float(
+                        config.strategy,
+                        Direction.SHORT,
+                        "size_multiplier",
+                        indicator_size_multiplier,
+                    )
+                    short_risk_multiplier = _indicator_side_float(
+                        config.strategy,
+                        Direction.SHORT,
+                        "confirmed_cross_risk_multiplier",
+                        filter_config.confirmed_cross_risk_multiplier,
+                    )
                     signals.append(Signal(
                         Direction.SHORT,
                         0.7,
                         f"indicator_short_macd_dead_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
-                        stop_pct,
-                        take_profit_pct,
-                        risk_multiplier=filter_config.confirmed_cross_risk_multiplier * config.strategy.short_risk_bias * indicator_size_multiplier,
-                        max_holding_bars=indicator_holding_bars,
+                        short_stop_pct,
+                        short_take_profit_pct,
+                        risk_multiplier=short_risk_multiplier * config.strategy.short_risk_bias * short_size_multiplier,
+                        max_holding_bars=_indicator_side_holding_bars(config.strategy, Direction.SHORT),
                     ))
             elif long_pre_cross:
                 if config.strategy.long_risk_bias <= 0:
@@ -727,14 +760,35 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                     if guard_reason:
                         signals.append(Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0))
                         continue
+                    long_stop_pct = max(
+                        atr_pct * _indicator_side_float(config.strategy, Direction.LONG, "stop_loss_atr", config.strategy.stop_loss_atr),
+                        0.0008,
+                    )
+                    long_take_profit_pct = max(
+                        atr_pct * _indicator_side_float(config.strategy, Direction.LONG, "take_profit_atr", config.strategy.take_profit_atr),
+                        long_stop_pct * 1.05,
+                    )
+                    long_size_multiplier = _indicator_side_float(
+                        config.strategy,
+                        Direction.LONG,
+                        "size_multiplier",
+                        indicator_size_multiplier,
+                    )
+                    long_pre_cross_multiplier = _indicator_side_float(
+                        config.strategy,
+                        Direction.LONG,
+                        "pre_cross_risk_multiplier",
+                        filter_config.pre_cross_risk_multiplier,
+                    )
+                    long_holding_bars = _indicator_side_holding_bars(config.strategy, Direction.LONG)
                     signals.append(Signal(
                         Direction.LONG,
                         0.45,
                         f"indicator_long_pre_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
-                        stop_pct,
-                        take_profit_pct,
-                        risk_multiplier=filter_config.pre_cross_risk_multiplier * config.strategy.long_risk_bias * indicator_size_multiplier,
-                        max_holding_bars=max(1, min(indicator_holding_bars, max(6, config.strategy.max_holding_bars // 2))),
+                        long_stop_pct,
+                        long_take_profit_pct,
+                        risk_multiplier=long_pre_cross_multiplier * config.strategy.long_risk_bias * long_size_multiplier,
+                        max_holding_bars=max(1, min(long_holding_bars, max(6, config.strategy.max_holding_bars // 2))),
                     ))
             elif short_pre_cross:
                 if config.strategy.short_risk_bias <= 0:
@@ -744,14 +798,35 @@ def _build_indicator_reversal_cache(config: Any, candles_by_symbol: dict[str, li
                     if guard_reason:
                         signals.append(Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0))
                         continue
+                    short_stop_pct = max(
+                        atr_pct * _indicator_side_float(config.strategy, Direction.SHORT, "stop_loss_atr", config.strategy.stop_loss_atr),
+                        0.0008,
+                    )
+                    short_take_profit_pct = max(
+                        atr_pct * _indicator_side_float(config.strategy, Direction.SHORT, "take_profit_atr", config.strategy.take_profit_atr),
+                        short_stop_pct * 1.05,
+                    )
+                    short_size_multiplier = _indicator_side_float(
+                        config.strategy,
+                        Direction.SHORT,
+                        "size_multiplier",
+                        indicator_size_multiplier,
+                    )
+                    short_pre_cross_multiplier = _indicator_side_float(
+                        config.strategy,
+                        Direction.SHORT,
+                        "pre_cross_risk_multiplier",
+                        filter_config.pre_cross_risk_multiplier,
+                    )
+                    short_holding_bars = _indicator_side_holding_bars(config.strategy, Direction.SHORT)
                     signals.append(Signal(
                         Direction.SHORT,
                         0.45,
                         f"indicator_short_pre_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
-                        stop_pct,
-                        take_profit_pct,
-                        risk_multiplier=filter_config.pre_cross_risk_multiplier * config.strategy.short_risk_bias * indicator_size_multiplier,
-                        max_holding_bars=max(1, min(indicator_holding_bars, max(6, config.strategy.max_holding_bars // 2))),
+                        short_stop_pct,
+                        short_take_profit_pct,
+                        risk_multiplier=short_pre_cross_multiplier * config.strategy.short_risk_bias * short_size_multiplier,
+                        max_holding_bars=max(1, min(short_holding_bars, max(6, config.strategy.max_holding_bars // 2))),
                     ))
             else:
                 signals.append(no_signal)

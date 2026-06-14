@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .binance_client import BinanceApiError, BinanceFuturesClient
 from .data import interval_to_milliseconds
@@ -1415,15 +1415,6 @@ class BinanceAutoTrader:
         candle = candles[-1]
 
         atr_pct = max(atr_values[-1] / candle.close, 0.0001)
-        stop_pct = max(atr_pct * self.config.strategy.stop_loss_atr, 0.0008)
-        take_profit_pct = max(atr_pct * self.config.strategy.take_profit_atr, stop_pct * 1.05)
-        indicator_holding_bars = max(
-            1,
-            min(
-                self.config.strategy.max_holding_bars,
-                max(1, self.config.strategy.indicator_max_holding_bars),
-            ),
-        )
         indicator_size_multiplier = max(
             0.0,
             float(getattr(self.config.strategy, "indicator_reversal_size_multiplier", 1.0)),
@@ -1487,14 +1478,35 @@ class BinanceAutoTrader:
             guard_reason = self._indicator_trend_guard_reason(Direction.LONG, closes, atr_values)
             if guard_reason:
                 return Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0)
+            long_stop_pct = max(
+                atr_pct * _indicator_side_float(self.config.strategy, Direction.LONG, "stop_loss_atr", self.config.strategy.stop_loss_atr),
+                0.0008,
+            )
+            long_take_profit_pct = max(
+                atr_pct * _indicator_side_float(self.config.strategy, Direction.LONG, "take_profit_atr", self.config.strategy.take_profit_atr),
+                long_stop_pct * 1.05,
+            )
+            long_size_multiplier = _indicator_side_float(
+                self.config.strategy,
+                Direction.LONG,
+                "size_multiplier",
+                indicator_size_multiplier,
+            )
+            long_risk_multiplier = _indicator_side_float(
+                self.config.strategy,
+                Direction.LONG,
+                "confirmed_cross_risk_multiplier",
+                config.confirmed_cross_risk_multiplier,
+            )
+            long_holding_bars = _indicator_side_holding_bars(self.config.strategy, Direction.LONG)
             return Signal(
                 Direction.LONG,
                 0.7,
                 f"indicator_long_macd_golden_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
-                stop_pct,
-                take_profit_pct,
-                risk_multiplier=config.confirmed_cross_risk_multiplier * self.config.strategy.long_risk_bias * indicator_size_multiplier,
-                max_holding_bars=indicator_holding_bars,
+                long_stop_pct,
+                long_take_profit_pct,
+                risk_multiplier=long_risk_multiplier * self.config.strategy.long_risk_bias * long_size_multiplier,
+                max_holding_bars=long_holding_bars,
             )
         if short_cross:
             if self.config.strategy.short_risk_bias <= 0:
@@ -1521,14 +1533,35 @@ class BinanceAutoTrader:
             guard_reason = self._indicator_trend_guard_reason(Direction.SHORT, closes, atr_values)
             if guard_reason:
                 return Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0)
+            short_stop_pct = max(
+                atr_pct * _indicator_side_float(self.config.strategy, Direction.SHORT, "stop_loss_atr", self.config.strategy.stop_loss_atr),
+                0.0008,
+            )
+            short_take_profit_pct = max(
+                atr_pct * _indicator_side_float(self.config.strategy, Direction.SHORT, "take_profit_atr", self.config.strategy.take_profit_atr),
+                short_stop_pct * 1.05,
+            )
+            short_size_multiplier = _indicator_side_float(
+                self.config.strategy,
+                Direction.SHORT,
+                "size_multiplier",
+                indicator_size_multiplier,
+            )
+            short_risk_multiplier = _indicator_side_float(
+                self.config.strategy,
+                Direction.SHORT,
+                "confirmed_cross_risk_multiplier",
+                config.confirmed_cross_risk_multiplier,
+            )
+            short_holding_bars = _indicator_side_holding_bars(self.config.strategy, Direction.SHORT)
             return Signal(
                 Direction.SHORT,
                 0.7,
                 f"indicator_short_macd_dead_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
-                stop_pct,
-                take_profit_pct,
-                risk_multiplier=config.confirmed_cross_risk_multiplier * self.config.strategy.short_risk_bias * indicator_size_multiplier,
-                max_holding_bars=indicator_holding_bars,
+                short_stop_pct,
+                short_take_profit_pct,
+                risk_multiplier=short_risk_multiplier * self.config.strategy.short_risk_bias * short_size_multiplier,
+                max_holding_bars=short_holding_bars,
             )
         if long_pre_cross:
             if self.config.strategy.long_risk_bias <= 0:
@@ -1536,14 +1569,35 @@ class BinanceAutoTrader:
             guard_reason = self._indicator_trend_guard_reason(Direction.LONG, closes, atr_values)
             if guard_reason:
                 return Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0)
+            long_stop_pct = max(
+                atr_pct * _indicator_side_float(self.config.strategy, Direction.LONG, "stop_loss_atr", self.config.strategy.stop_loss_atr),
+                0.0008,
+            )
+            long_take_profit_pct = max(
+                atr_pct * _indicator_side_float(self.config.strategy, Direction.LONG, "take_profit_atr", self.config.strategy.take_profit_atr),
+                long_stop_pct * 1.05,
+            )
+            long_size_multiplier = _indicator_side_float(
+                self.config.strategy,
+                Direction.LONG,
+                "size_multiplier",
+                indicator_size_multiplier,
+            )
+            long_pre_cross_multiplier = _indicator_side_float(
+                self.config.strategy,
+                Direction.LONG,
+                "pre_cross_risk_multiplier",
+                config.pre_cross_risk_multiplier,
+            )
+            long_holding_bars = _indicator_side_holding_bars(self.config.strategy, Direction.LONG)
             return Signal(
                 Direction.LONG,
                 0.45,
                 f"indicator_long_pre_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
-                stop_pct,
-                take_profit_pct,
-                risk_multiplier=config.pre_cross_risk_multiplier * self.config.strategy.long_risk_bias * indicator_size_multiplier,
-                max_holding_bars=max(1, min(indicator_holding_bars, max(6, self.config.strategy.max_holding_bars // 2))),
+                long_stop_pct,
+                long_take_profit_pct,
+                risk_multiplier=long_pre_cross_multiplier * self.config.strategy.long_risk_bias * long_size_multiplier,
+                max_holding_bars=max(1, min(long_holding_bars, max(6, self.config.strategy.max_holding_bars // 2))),
             )
         if short_pre_cross:
             if self.config.strategy.short_risk_bias <= 0:
@@ -1551,14 +1605,35 @@ class BinanceAutoTrader:
             guard_reason = self._indicator_trend_guard_reason(Direction.SHORT, closes, atr_values)
             if guard_reason:
                 return Signal(Direction.FLAT, 0.0, guard_reason, 0.0, 0.0)
+            short_stop_pct = max(
+                atr_pct * _indicator_side_float(self.config.strategy, Direction.SHORT, "stop_loss_atr", self.config.strategy.stop_loss_atr),
+                0.0008,
+            )
+            short_take_profit_pct = max(
+                atr_pct * _indicator_side_float(self.config.strategy, Direction.SHORT, "take_profit_atr", self.config.strategy.take_profit_atr),
+                short_stop_pct * 1.05,
+            )
+            short_size_multiplier = _indicator_side_float(
+                self.config.strategy,
+                Direction.SHORT,
+                "size_multiplier",
+                indicator_size_multiplier,
+            )
+            short_pre_cross_multiplier = _indicator_side_float(
+                self.config.strategy,
+                Direction.SHORT,
+                "pre_cross_risk_multiplier",
+                config.pre_cross_risk_multiplier,
+            )
+            short_holding_bars = _indicator_side_holding_bars(self.config.strategy, Direction.SHORT)
             return Signal(
                 Direction.SHORT,
                 0.45,
                 f"indicator_short_pre_cross rsi={current_rsi:.1f} kdj={current_k:.1f}/{current_d:.1f}",
-                stop_pct,
-                take_profit_pct,
-                risk_multiplier=config.pre_cross_risk_multiplier * self.config.strategy.short_risk_bias * indicator_size_multiplier,
-                max_holding_bars=max(1, min(indicator_holding_bars, max(6, self.config.strategy.max_holding_bars // 2))),
+                short_stop_pct,
+                short_take_profit_pct,
+                risk_multiplier=short_pre_cross_multiplier * self.config.strategy.short_risk_bias * short_size_multiplier,
+                max_holding_bars=max(1, min(short_holding_bars, max(6, self.config.strategy.max_holding_bars // 2))),
             )
         return Signal(
             Direction.FLAT,
@@ -2907,11 +2982,45 @@ def _is_indicator_reversal_entry_reason(reason: str) -> bool:
     return reason.lower().startswith("indicator_")
 
 
+def _indicator_side_field(direction: Direction, suffix: str) -> str:
+    side = "long" if direction == Direction.LONG else "short"
+    return f"indicator_{side}_{suffix}"
+
+
+def _indicator_side_float(strategy: Any, direction: Direction, suffix: str, fallback: float) -> float:
+    value = getattr(strategy, _indicator_side_field(direction, suffix), 0.0)
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+    if numeric <= 0:
+        return float(fallback)
+    return numeric
+
+
+def _indicator_side_int(strategy: Any, direction: Direction, suffix: str, fallback: int) -> int:
+    value = getattr(strategy, _indicator_side_field(direction, suffix), 0)
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return int(fallback)
+    if numeric <= 0:
+        return int(fallback)
+    return numeric
+
+
+def _indicator_side_holding_bars(strategy: Any, direction: Direction) -> int:
+    fallback = int(getattr(strategy, "indicator_max_holding_bars", getattr(strategy, "max_holding_bars", 1)))
+    side_value = _indicator_side_int(strategy, direction, "max_holding_bars", fallback)
+    max_bars = int(getattr(strategy, "max_holding_bars", side_value))
+    return max(1, min(max_bars, max(1, side_value)))
+
+
 def _entry_quality_guard_reason(config: LiveAppConfig, candidate: EntryCandidate) -> str | None:
     strategy = config.strategy
-    if not getattr(strategy, "indicator_min_rank_guard_enabled", False):
-        return None
     if not _is_indicator_reversal_entry_reason(candidate.signal.reason):
+        return None
+    if not getattr(strategy, "indicator_min_rank_guard_enabled", False):
         return None
     min_rank = max(0.0, float(getattr(strategy, "indicator_min_rank_score", 3.0)))
     if candidate.rank_score >= min_rank:

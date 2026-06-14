@@ -38,7 +38,7 @@ class LiveConfigTests(unittest.TestCase):
 
         self.assertEqual(ordered, ["BTCUSDT", "BNBUSDT", "ETHUSDT", "SOLUSDT"])
 
-    def test_gui_indicator_strategy_mode_enables_only_stable_indicator_reversal(self) -> None:
+    def test_gui_indicator_strategy_mode_enables_only_indicator_reversal_risk0065(self) -> None:
         config = _config_with_strategy_mode(default_live_config(), STRATEGY_MODE_INDICATOR)
 
         self.assertTrue(config.filters.extreme_reversal_entry_enabled)
@@ -46,9 +46,21 @@ class LiveConfigTests(unittest.TestCase):
         self.assertFalse(config.filters.pre_cross_entry_enabled)
         self.assertTrue(config.strategy.indicator_confirmed_cross_extreme_required_enabled)
         self.assertEqual(config.strategy.indicator_reversal_size_multiplier, 0.30)
-        self.assertFalse(config.strategy.allow_short)
-        self.assertEqual(config.strategy.short_risk_bias, 0.0)
+        self.assertEqual(config.strategy.indicator_long_size_multiplier, 0.282)
+        self.assertEqual(config.strategy.indicator_short_size_multiplier, 0.30)
+        self.assertEqual(config.strategy.indicator_long_stop_loss_atr, 2.60)
+        self.assertEqual(config.strategy.indicator_short_stop_loss_atr, 2.50)
+        self.assertEqual(config.strategy.indicator_long_take_profit_atr, 1.60)
+        self.assertEqual(config.strategy.indicator_short_take_profit_atr, 1.60)
+        self.assertEqual(config.strategy.indicator_long_confirmed_cross_risk_multiplier, 0.45)
+        self.assertEqual(config.strategy.indicator_short_confirmed_cross_risk_multiplier, 0.45)
+        self.assertTrue(config.strategy.allow_short)
+        self.assertEqual(config.strategy.short_risk_bias, 1.05)
+        self.assertTrue(config.strategy.strong_market_short_filter_enabled)
+        self.assertEqual(config.strategy.strong_market_short_risk_multiplier, 0.45)
         self.assertFalse(config.strategy.super_volume_breakout_enabled)
+        self.assertEqual(config.trading.max_open_positions, 4)
+        self.assertEqual(config.risk.risk_per_trade_pct, 0.065)
         self.assertFalse(config.strategy.startup_breakout_enabled)
         self.assertFalse(config.strategy.ordinary_breakout_enabled)
         self.assertFalse(config.strategy.pullback_reclaim_enabled)
