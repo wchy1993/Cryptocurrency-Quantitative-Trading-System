@@ -127,6 +127,28 @@ class EntryCandidate:
     filter_reason: str
 
 
+@dataclass
+class VbpLiveBreakoutState:
+    symbol: str
+    breakout_time: datetime
+    breakout_level: float
+    consolidation_bottom: float
+    pullback_target: float
+    breakout_volume: float
+    breakout_close: float
+    tp2_price: float
+    touched_pullback: bool = False
+
+
+def _portfolio_bucket_from_reason(reason: str) -> str:
+    lowered = str(reason or "").lower()
+    if "vbp_" in lowered or "volume_breakout_pullback" in lowered:
+        return "vbp"
+    if "indicator_" in lowered or "macd_golden_cross" in lowered or "macd_dead_cross" in lowered:
+        return "indicator"
+    return "other"
+
+
 def _entry_position_limit(config: LiveAppConfig) -> int:
     base_limit = max(0, int(config.trading.max_open_positions))
     if not config.trading.super_volume_extra_slot_enabled:
@@ -200,6 +222,11 @@ class BinanceAutoTrader:
         self._known_active_symbols: set[str] = set()
         self._entry_reasons: dict[str, str] = {}
         self._position_opened_at: dict[str, datetime] = {}
+        self._portfolio_symbol_cooldown_until: dict[str, float] = {}
+        self._portfolio_btc_weak_cache: tuple[float, float] | None = None
+        self._vbp_watch_until: dict[str, datetime] = {}
+        self._vbp_breakouts: dict[str, VbpLiveBreakoutState] = {}
+        self._vbp_stats: dict[str, int] = {}
         self._last_entry_scan_ts = 0.0
         self._mtf_filter = MultiTimeframeFilter(config.filters)
         self._mtf_candle_cache: dict[tuple[str, str], tuple[float, list[Candle]]] = {}
@@ -212,10 +239,21 @@ class BinanceAutoTrader:
         self._session_peak_pnl = 0.0
         self._indicator_reversal_loss_streak = 0
         self._indicator_reversal_pause_until = 0.0
+        self._indicator_reversal_side_loss_streak: dict[Direction, int] = {
+            Direction.LONG: 0,
+            Direction.SHORT: 0,
+        }
+        self._indicator_reversal_side_pause_until: dict[Direction, float] = {
+            Direction.LONG: 0.0,
+            Direction.SHORT: 0.0,
+        }
         self._accounted_trade_ids: set[str] = set()
         self._mtf_aux_feature_cache: tuple[float, dict[str, dict[str, object]]] | None = None
+        self.short_guard_stats: dict[str, int] = {}
+        self.low_base_ignition_stats: dict[str, int] = {}
         self.stats = SessionStats(datetime.now(), config.risk.starting_capital_usdt)
         self._last_stats_log_ts = 0.0
+        self._last_position_diagnostics_log_ts: dict[str, float] = {}
 
     def run_forever(self, stop_event: threading.Event) -> None:
         self.validate_startup()
@@ -333,8 +371,26 @@ class BinanceAutoTrader:
                 candidate = self._entry_candidate(symbol)
                 if candidate:
                     candidates.append(candidate)
+                vbp_candidate = self._vbp_entry_candidate(symbol)
+                if vbp_candidate:
+                    candidates.append(vbp_candidate)
 
             candidates.sort(key=lambda item: item.rank_score, reverse=True)
+            deduped_candidates: list[EntryCandidate] = []
+            seen_candidate_symbols: set[str] = set()
+            for candidate in candidates:
+                if candidate.symbol in seen_candidate_symbols:
+                    continue
+                seen_candidate_symbols.add(candidate.symbol)
+                deduped_candidates.append(candidate)
+            candidates = deduped_candidates
+            if getattr(self.config.portfolio_control, "enabled", False):
+                adjusted_candidates: list[EntryCandidate] = []
+                for candidate in candidates:
+                    adjusted = self._portfolio_control_filter_candidate(candidate, account)
+                    if adjusted is not None:
+                        adjusted_candidates.append(adjusted)
+                candidates = adjusted_candidates
             if candidates:
                 preview = ", ".join(
                     f"{item.symbol}:{item.rank_score:.2f}/动能{item.directional_momentum_pct * 100:+.2f}%/量{item.volume_ratio:.2f}x"
@@ -372,45 +428,73 @@ class BinanceAutoTrader:
         return self._last_entry_scan_ts <= 0.0 or time.time() - self._last_entry_scan_ts >= interval
 
     def _indicator_reversal_entry_paused(self, symbol: str, signal: Signal) -> bool:
-        strategy = self.config.strategy
-        if not getattr(strategy, "indicator_reversal_loss_pause_enabled", False):
-            return False
         if not _is_indicator_reversal_entry_reason(signal.reason):
             return False
-        now = time.time()
-        if now >= self._indicator_reversal_pause_until:
+        direction = signal.direction
+        if direction not in (Direction.LONG, Direction.SHORT):
             return False
-        remaining = int(self._indicator_reversal_pause_until - now)
+        if not self._indicator_reversal_side_pause_enabled(direction):
+            return False
+        now = time.time()
+        pause_until = self._indicator_reversal_side_pause_until.get(direction, 0.0)
+        if now >= pause_until:
+            return False
+        remaining = int(pause_until - now)
+        side = "LONG" if direction == Direction.LONG else "SHORT"
         self.log(
-            f"{symbol}: 指标反转连亏临时暂停中，剩余约{max(1, remaining // 60)}分钟，"
-            f"跳过 {signal.direction.name} ({signal.reason})"
+            f"{symbol}: 指标反转{side}连亏临时暂停中，剩余约{max(1, remaining // 60)}分钟，"
+            f"跳过 {side} ({signal.reason})"
         )
         return True
 
     def _record_indicator_reversal_result(self, net_pnl: float, entry_reason: str) -> None:
-        strategy = self.config.strategy
-        if not getattr(strategy, "indicator_reversal_loss_pause_enabled", False):
-            return
         if not _is_indicator_reversal_entry_reason(entry_reason):
             return
+        direction = _indicator_reversal_direction_from_reason(entry_reason)
+        if direction not in (Direction.LONG, Direction.SHORT):
+            return
+        if not self._indicator_reversal_side_pause_enabled(direction):
+            return
+        side = "LONG" if direction == Direction.LONG else "SHORT"
 
         if net_pnl > 0:
-            if self._indicator_reversal_loss_streak > 0:
-                self.log("指标反转单盈利，连亏计数清零")
-            self._indicator_reversal_loss_streak = 0
+            if self._indicator_reversal_side_loss_streak.get(direction, 0) > 0:
+                self.log(f"指标反转{side}单盈利，{side}连亏计数清零")
+            self._indicator_reversal_side_loss_streak[direction] = 0
             return
 
-        self._indicator_reversal_loss_streak += 1
-        trigger_losses = max(1, int(getattr(strategy, "indicator_reversal_loss_pause_losses", 2)))
-        if self._indicator_reversal_loss_streak < trigger_losses:
-            self.log(f"指标反转单亏损，连亏={self._indicator_reversal_loss_streak}/{trigger_losses}")
+        self._indicator_reversal_side_loss_streak[direction] = self._indicator_reversal_side_loss_streak.get(direction, 0) + 1
+        trigger_losses = self._indicator_reversal_side_pause_losses(direction)
+        if self._indicator_reversal_side_loss_streak[direction] < trigger_losses:
+            self.log(f"指标反转{side}单亏损，{side}连亏={self._indicator_reversal_side_loss_streak[direction]}/{trigger_losses}")
             return
 
-        pause_bars = max(1, int(getattr(strategy, "indicator_reversal_loss_pause_bars", 8)))
+        pause_bars = self._indicator_reversal_side_pause_bars(direction)
         pause_seconds = pause_bars * max(1.0, interval_to_milliseconds(self.config.trading.timeframe) / 1000.0)
-        self._indicator_reversal_pause_until = max(self._indicator_reversal_pause_until, time.time() + pause_seconds)
-        self._indicator_reversal_loss_streak = 0
-        self.log(f"指标反转连续{trigger_losses}次亏损，临时暂停{pause_bars}根K线后自动恢复")
+        self._indicator_reversal_side_pause_until[direction] = max(
+            self._indicator_reversal_side_pause_until.get(direction, 0.0),
+            time.time() + pause_seconds,
+        )
+        self._indicator_reversal_side_loss_streak[direction] = 0
+        self.log(f"指标反转{side}连续{trigger_losses}次亏损，{side}临时暂停{pause_bars}根K线后自动恢复")
+
+    def _indicator_reversal_side_pause_enabled(self, direction: Direction) -> bool:
+        strategy = self.config.strategy
+        side = "long" if direction == Direction.LONG else "short"
+        side_attr = f"indicator_{side}_loss_pause_enabled"
+        if hasattr(strategy, side_attr):
+            return bool(getattr(strategy, side_attr))
+        return bool(getattr(strategy, "indicator_reversal_loss_pause_enabled", False))
+
+    def _indicator_reversal_side_pause_losses(self, direction: Direction) -> int:
+        strategy = self.config.strategy
+        side = "long" if direction == Direction.LONG else "short"
+        return max(1, int(getattr(strategy, f"indicator_{side}_loss_pause_losses", getattr(strategy, "indicator_reversal_loss_pause_losses", 2))))
+
+    def _indicator_reversal_side_pause_bars(self, direction: Direction) -> int:
+        strategy = self.config.strategy
+        side = "long" if direction == Direction.LONG else "short"
+        return max(1, int(getattr(strategy, f"indicator_{side}_loss_pause_bars", getattr(strategy, "indicator_reversal_loss_pause_bars", 8))))
 
     def _mark_observed_position_closures(self, active_symbols: set[str]) -> None:
         if not self._known_active_symbols:
@@ -761,6 +845,11 @@ class BinanceAutoTrader:
         )
 
     def _entry_candidate(self, symbol: str) -> EntryCandidate | None:
+        if getattr(self.config.strategy, "low_base_volume_ignition_enabled", False):
+            candidate = self._low_base_volume_ignition_entry_candidate(symbol)
+            if candidate is not None or getattr(self.config.strategy, "low_base_volume_ignition_disable_legacy", False):
+                return candidate
+
         if getattr(self.config.strategy, "mtf_4h_rsi_regime_enabled", False):
             candidate = self._mtf_4h_rsi_regime_entry_candidate(symbol)
             if candidate is not None or getattr(self.config.strategy, "mtf_disable_legacy_strategies", False):
@@ -791,6 +880,11 @@ class BinanceAutoTrader:
         reference_guard_reason = self._indicator_reference_guard_reason(symbol, signal)
         if reference_guard_reason:
             self.log(f"{symbol}: 1h 指标反转过滤拒绝 {signal.direction.name} ({reference_guard_reason})")
+            return None
+        short_guard_reason = self._indicator_short_guard_reason(symbol, signal, candles)
+        if short_guard_reason:
+            self._record_short_guard_reject(short_guard_reason)
+            self.log(f"{symbol}: 指标空头专用过滤拒绝 SHORT ({short_guard_reason})")
             return None
 
         allowed, filter_reason = self._passes_multi_timeframe_filter(symbol, signal.direction)
@@ -998,7 +1092,239 @@ class BinanceAutoTrader:
         )
         return candidate
 
+    def _vbp_entry_candidate(self, symbol: str) -> EntryCandidate | None:
+        vbp = self.config.vbp_strategy
+        if not getattr(vbp, "enabled", False):
+            return None
+        limit = max(
+            180,
+            int(vbp.structure_filter.consolidation_bars)
+            + int(vbp.universe.rank_window_minutes) * 3
+            + int(vbp.entry.timeout_bars)
+            + 20,
+        )
+        try:
+            candles = self._closed_candles_for_timeframe(symbol, "1m", limit)
+        except Exception as exc:
+            self._record_vbp_stat("reject_live_1m_unavailable")
+            self.log(f"{symbol}: VBP 1m数据不可用 ({exc})")
+            return None
+        if len(candles) < int(vbp.structure_filter.consolidation_bars) + 65:
+            self._record_vbp_stat("reject_live_warmup")
+            return None
+        now = candles[-1].timestamp
+        pending = self._vbp_breakouts.get(symbol)
+        if pending is not None:
+            return self._vbp_pending_candidate(symbol, candles, pending)
+
+        rvol_1h = self._vbp_live_rvol_1h(symbol, candles)
+        if rvol_1h >= float(vbp.universe.rvol_entry_threshold):
+            self._vbp_watch_until[symbol] = now + timedelta(minutes=max(1, int(vbp.universe.watchlist_ttl_minutes)))
+            self._record_vbp_stat("watchlist_added")
+            self.log(f"{symbol}: VBP加入观察池 rvol_1h={rvol_1h:.2f}x")
+        watch_until = self._vbp_watch_until.get(symbol)
+        if watch_until is None or now > watch_until:
+            return None
+
+        structure = self._vbp_live_consolidation(candles)
+        if structure is None:
+            self._record_vbp_stat("reject_not_consolidating_near_top")
+            return None
+        zone_top, zone_bottom = structure
+        if not self._vbp_live_daily_high_ok(symbol, candles[-1].close):
+            self._record_vbp_stat("reject_daily_high_zone")
+            self.log(f"{symbol}: VBP拒绝 daily_high_zone")
+            return None
+        funding_rate = float(getattr(self.config.risk, "funding_default_rate", 0.0))
+        if funding_rate > float(vbp.structure_filter.funding_rate_max):
+            self._record_vbp_stat("reject_funding_rate")
+            return None
+
+        candle = candles[-1]
+        previous_close = candles[-2].close
+        candle_rvol = self._vbp_live_rvol_1m(candles)
+        if candle_rvol < float(vbp.universe.rvol_trigger_threshold):
+            self._record_vbp_stat("reject_no_breakout_rvol")
+            return None
+        if not (previous_close <= zone_top and candle.close > zone_top):
+            self._record_vbp_stat("reject_no_zone_breakout")
+            return None
+
+        pullback_target = zone_top
+        if bool(vbp.entry.use_vwap_as_pullback_target):
+            pullback_target = max(zone_top, self._vbp_live_vwap(candles[-int(vbp.structure_filter.consolidation_bars):]))
+        tp2_price = self._vbp_live_tp2_price(candles, candle.close, zone_bottom)
+        self._vbp_breakouts[symbol] = VbpLiveBreakoutState(
+            symbol=symbol,
+            breakout_time=now,
+            breakout_level=zone_top,
+            consolidation_bottom=zone_bottom,
+            pullback_target=pullback_target,
+            breakout_volume=candle.volume,
+            breakout_close=candle.close,
+            tp2_price=tp2_price,
+        )
+        self._record_vbp_stat("breakout_detected")
+        self.log(
+            f"{symbol}: VBP突破确认 level={zone_top:.6g} bottom={zone_bottom:.6g} "
+            f"target={pullback_target:.6g} rvol_1m={candle_rvol:.2f}x rvol_1h={rvol_1h:.2f}x"
+        )
+        return None
+
+    def _vbp_pending_candidate(
+        self,
+        symbol: str,
+        candles: list[Candle],
+        pending: VbpLiveBreakoutState,
+    ) -> EntryCandidate | None:
+        vbp = self.config.vbp_strategy
+        candle = candles[-1]
+        age_bars = max(0, int((candle.timestamp - pending.breakout_time).total_seconds() // 60))
+        if age_bars <= 0:
+            return None
+        if age_bars > int(vbp.entry.timeout_bars):
+            self._vbp_breakouts.pop(symbol, None)
+            self._record_vbp_stat("pending_timeout")
+            self.log(f"{symbol}: VBP pending超时 age={age_bars}")
+            return None
+        if candle.close < pending.consolidation_bottom:
+            self._vbp_breakouts.pop(symbol, None)
+            self._record_vbp_stat("pending_failed_back_inside")
+            self.log(f"{symbol}: VBP失败 跌回整理区 bottom={pending.consolidation_bottom:.6g}")
+            return None
+
+        touched_target = candle.low <= pending.pullback_target <= candle.high or candle.low <= pending.pullback_target
+        pullback_volume_ok = candle.volume <= pending.breakout_volume * float(vbp.entry.pullback_volume_ratio)
+        if touched_target and not pullback_volume_ok:
+            self._vbp_breakouts.pop(symbol, None)
+            self._record_vbp_stat("pending_reject_high_volume_pullback")
+            self.log(
+                f"{symbol}: VBP拒绝 放量回踩 vol={candle.volume:.4g} "
+                f"breakout_vol={pending.breakout_volume:.4g}"
+            )
+            return None
+        if touched_target:
+            pending.touched_pullback = True
+            self._record_vbp_stat("pullback_touched")
+        if not pending.touched_pullback:
+            return None
+        if not (candle.close > candle.open and candle.close >= pending.pullback_target):
+            self._record_vbp_stat("pending_wait_bull_reclaim")
+            return None
+
+        entry_price = candle.close
+        stop_price = max(pending.consolidation_bottom, entry_price * (1.0 - float(vbp.exit.stop_loss_pct)))
+        stop_loss_pct = (entry_price - stop_price) / max(entry_price, 1e-12)
+        if stop_loss_pct <= 0:
+            self._vbp_breakouts.pop(symbol, None)
+            self._record_vbp_stat("reject_invalid_stop")
+            return None
+        risk = entry_price - stop_price
+        tp1_price = entry_price + risk * float(vbp.exit.tp1_rr_ratio)
+        tp2_price = max(pending.tp2_price, tp1_price + risk)
+        take_profit_pct = max((tp2_price - entry_price) / max(entry_price, 1e-12), stop_loss_pct * float(vbp.exit.tp1_rr_ratio))
+        reason = (
+            "vbp_volume_breakout_pullback "
+            f"level={pending.breakout_level:.8g} bottom={pending.consolidation_bottom:.8g} "
+            f"target={pending.pullback_target:.8g} "
+            f"tp1={tp1_price:.8g} tp1_ratio={float(vbp.exit.tp1_close_ratio):.3f} stop={stop_loss_pct * 100:.3f}%"
+        )
+        signal = Signal(
+            Direction.LONG,
+            0.75,
+            reason,
+            stop_loss_pct,
+            take_profit_pct,
+            risk_multiplier=float(vbp.position.size_multiplier),
+            max_holding_bars=max(1, int(vbp.entry.timeout_bars) * 4),
+        )
+        momentum_pct = candle.close / max(pending.breakout_close, 1e-12) - 1.0
+        volume_ratio = candle.volume / max(pending.breakout_volume, 1e-12)
+        rank_score = 5.0 + max(0.0, momentum_pct * 100.0) + max(0.0, 1.0 - volume_ratio)
+        self._vbp_breakouts.pop(symbol, None)
+        self._record_vbp_stat("entry_count")
+        self.log(
+            f"{symbol}: VBP入场确认 age={age_bars} pullback_target={pending.pullback_target:.6g} "
+            f"entry={entry_price:.6g} stop={stop_loss_pct * 100:.2f}%"
+        )
+        return EntryCandidate(symbol, signal, candle, rank_score, momentum_pct, volume_ratio, "vbp_volume_breakout_pullback")
+
+    def _vbp_live_consolidation(self, candles: list[Candle]) -> tuple[float, float] | None:
+        vbp = self.config.vbp_strategy
+        n_bars = max(2, int(vbp.structure_filter.consolidation_bars))
+        if len(candles) <= n_bars:
+            return None
+        window = candles[-n_bars - 1:-1]
+        top = max(item.high for item in window)
+        bottom = min(item.low for item in window)
+        close = candles[-1].close
+        if top <= bottom or close <= 0:
+            return None
+        threshold = float(vbp.structure_filter.consolidation_threshold_pct)
+        near_top = (top - close) / close <= threshold
+        inside = bottom <= close <= top * (1.0 + threshold)
+        if not (inside and near_top):
+            return None
+        return top, bottom
+
+    def _vbp_live_daily_high_ok(self, symbol: str, close: float) -> bool:
+        vbp = self.config.vbp_strategy
+        try:
+            daily = self._closed_candles_for_timeframe(symbol, "1d", max(10, int(vbp.structure_filter.daily_high_lookback_days) + 5))
+        except Exception:
+            self._record_vbp_stat("reject_daily_data_unavailable")
+            return False
+        lookback = max(7, int(vbp.structure_filter.daily_high_lookback_days))
+        if len(daily) < min(lookback, 7):
+            return False
+        window = daily[-lookback:]
+        high = max(item.high for item in window)
+        return close < high * float(vbp.structure_filter.daily_high_zone_pct)
+
+    def _vbp_live_rvol_1m(self, candles: list[Candle]) -> float:
+        window = candles[-61:-1]
+        if not window:
+            return 0.0
+        avg = sum(item.volume for item in window) / len(window)
+        return candles[-1].volume / max(avg, 1e-12)
+
+    def _vbp_live_rvol_1h(self, symbol: str, candles_1m: list[Candle]) -> float:
+        vbp = self.config.vbp_strategy
+        current_volume = sum(max(item.volume, 0.0) * max(item.close, 0.0) for item in candles_1m[-60:])
+        try:
+            hourly = self._closed_candles_for_timeframe(symbol, "1h", max(30, int(vbp.universe.rvol_lookback_days) * 24 + 2))
+        except Exception:
+            hourly = []
+        if len(hourly) < 24:
+            return 0.0
+        quote_volumes = [max(item.volume, 0.0) * max(item.close, 0.0) for item in hourly[:-1]]
+        if not quote_volumes:
+            return 0.0
+        average = sum(quote_volumes[-int(vbp.universe.rvol_lookback_days) * 24:]) / max(1, min(len(quote_volumes), int(vbp.universe.rvol_lookback_days) * 24))
+        return current_volume / max(average, 1e-12)
+
+    def _vbp_live_vwap(self, candles: list[Candle]) -> float:
+        volume = sum(max(item.volume, 0.0) for item in candles)
+        if volume <= 0:
+            return candles[-1].close if candles else 0.0
+        return sum(((item.high + item.low + item.close) / 3.0) * max(item.volume, 0.0) for item in candles) / volume
+
+    def _vbp_live_tp2_price(self, candles: list[Candle], entry_price: float, stop_price: float) -> float:
+        risk = max(entry_price - stop_price, entry_price * 0.005)
+        recent_high = max((item.high for item in candles), default=entry_price)
+        tp1_rr = float(self.config.vbp_strategy.exit.tp1_rr_ratio)
+        if recent_high > entry_price + risk * tp1_rr:
+            return recent_high
+        return entry_price + risk * max(tp1_rr * 1.5, 2.0)
+
+    def _record_vbp_stat(self, key: str) -> None:
+        self._vbp_stats[key] = self._vbp_stats.get(key, 0) + 1
+
     def _open_entry_candidate(self, candidate: EntryCandidate, account: AccountSnapshot) -> bool:
+        adjusted_candidate = self._portfolio_control_filter_candidate(candidate, account)
+        if adjusted_candidate is None:
+            return False
+        candidate = adjusted_candidate
         chase_guard_reason = self._super_volume_chase_guard_reason(candidate)
         if chase_guard_reason:
             self.log(f"{candidate.symbol}: 跳过强突破追价开仓 ({chase_guard_reason})")
@@ -1031,6 +1357,81 @@ class BinanceAutoTrader:
         )
         self._enter_position(candidate.symbol, candidate.signal, execution_candle, quantity)
         return True
+
+    def _portfolio_control_filter_candidate(self, candidate: EntryCandidate, account: AccountSnapshot) -> EntryCandidate | None:
+        control = self.config.portfolio_control
+        if not getattr(control, "enabled", False):
+            return candidate
+        now = time.time()
+        cooldown_until = self._portfolio_symbol_cooldown_until.get(candidate.symbol)
+        if cooldown_until is not None and now < cooldown_until:
+            self.log(f"{candidate.symbol}: 组合风控拒绝 symbol_cooldown")
+            return None
+        if bool(control.prevent_same_symbol_overlap) and candidate.symbol in account.positions:
+            self.log(f"{candidate.symbol}: 组合风控拒绝 same_symbol_overlap")
+            return None
+        max_open = max(0, int(control.max_open_positions))
+        if max_open > 0 and len(account.positions) >= max_open:
+            self.log(f"{candidate.symbol}: 组合风控拒绝 max_open_positions")
+            return None
+        bucket = _portfolio_bucket_from_reason(candidate.signal.reason)
+        if bucket == "vbp" and self._portfolio_live_bucket_count(account, "vbp") >= max(0, int(control.max_vbp_positions)):
+            self.log(f"{candidate.symbol}: 组合风控拒绝 max_vbp_positions")
+            return None
+        if bucket == "indicator" and self._portfolio_live_bucket_count(account, "indicator") >= max(0, int(control.max_indicator_positions)):
+            self.log(f"{candidate.symbol}: 组合风控拒绝 max_indicator_positions")
+            return None
+        if candidate.symbol not in {"BTCUSDT", "ETHUSDT"}:
+            max_alt = max(0, int(control.max_altcoin_positions))
+            if max_alt > 0 and self._portfolio_live_altcoin_count(account) >= max_alt:
+                self.log(f"{candidate.symbol}: 组合风控拒绝 max_altcoin_positions")
+                return None
+
+        multiplier = 1.0
+        if bucket == "vbp":
+            multiplier *= max(0.0, float(control.vbp_risk_multiplier))
+        elif bucket == "indicator":
+            multiplier *= max(0.0, float(control.indicator_risk_multiplier))
+        multiplier *= self._portfolio_live_btc_weak_multiplier()
+        if multiplier <= 0:
+            self.log(f"{candidate.symbol}: 组合风控拒绝 zero_risk")
+            return None
+        if multiplier < 0.999:
+            adjusted_signal = replace(candidate.signal, risk_multiplier=candidate.signal.risk_multiplier * multiplier)
+            return replace(candidate, signal=adjusted_signal)
+        return candidate
+
+    def _portfolio_live_bucket_count(self, account: AccountSnapshot, bucket: str) -> int:
+        count = 0
+        for symbol, position in account.positions.items():
+            reason = position.entry_reason or self._entry_reasons.get(symbol, "")
+            if _portfolio_bucket_from_reason(reason) == bucket:
+                count += 1
+        return count
+
+    def _portfolio_live_altcoin_count(self, account: AccountSnapshot) -> int:
+        return sum(1 for symbol in account.positions if symbol not in {"BTCUSDT", "ETHUSDT"})
+
+    def _portfolio_live_btc_weak_multiplier(self) -> float:
+        control = self.config.portfolio_control
+        if not getattr(control, "enabled", False) or not getattr(control, "btc_weak_risk_reduction_enabled", False):
+            return 1.0
+        now = time.time()
+        cached = self._portfolio_btc_weak_cache
+        if cached and now - cached[0] < 60.0:
+            return cached[1]
+        multiplier = 1.0
+        try:
+            candles = self.client.klines("BTCUSDT", "1m", 260)
+        except Exception:
+            candles = []
+        if len(candles) >= 241:
+            ret_1h = candles[-1].close / max(candles[-61].close, 1e-12) - 1.0
+            ret_4h = candles[-1].close / max(candles[-241].close, 1e-12) - 1.0
+            if ret_1h <= float(control.btc_weak_1h_return_pct) or ret_4h <= float(control.btc_weak_4h_return_pct):
+                multiplier = max(0.0, min(1.0, float(control.btc_weak_risk_multiplier)))
+        self._portfolio_btc_weak_cache = (now, multiplier)
+        return multiplier
 
     def _entry_execution_reference_price(self, candidate: EntryCandidate) -> float:
         latest = self._latest_close(candidate.symbol)
@@ -1161,6 +1562,405 @@ class BinanceAutoTrader:
         elif adjusted is not signal:
             self.log(f"{symbol}: 1h趋势方向保护降仓 {signal.direction.name} ({reason})")
         return adjusted
+
+    def _low_base_volume_ignition_entry_candidate(self, symbol: str) -> EntryCandidate | None:
+        strategy = self.config.strategy
+        if not getattr(strategy, "low_base_volume_ignition_enabled", False):
+            return None
+        try:
+            candles_30m = self._closed_candles_for_timeframe(symbol, "30m", 260)
+        except Exception:
+            self._record_low_base_reject("reject_data_unavailable")
+            return None
+        if len(candles_30m) < 120:
+            self._record_low_base_reject("reject_warmup")
+            return None
+        closes_30 = [item.close for item in candles_30m]
+        highs_30 = [item.high for item in candles_30m]
+        lows_30 = [item.low for item in candles_30m]
+        volumes_30 = [item.volume for item in candles_30m]
+        ma25_30 = _sma_values(closes_30, 25)
+        ma99_30 = _sma_values(closes_30, 99)
+        atr_30 = atr(candles_30m, self.config.strategy.atr_period)
+        rsi14_30 = rsi(closes_30, 14)
+        rsi6_30 = rsi(closes_30, 6)
+        _, _, hist_30 = macd(closes_30, self.config.filters.macd_fast, self.config.filters.macd_slow, self.config.filters.macd_signal)
+        ignition_index, _, _ = self._low_base_find_recent_ignition(
+            candles_30m,
+            highs_30,
+            lows_30,
+            closes_30,
+            volumes_30,
+            ma25_30,
+            ma99_30,
+            atr_30,
+            rsi14_30,
+            rsi6_30,
+            hist_30,
+        )
+        if ignition_index is None:
+            self._record_low_base_reject("reject_no_volume_ignition")
+            return None
+        try:
+            candles_15m = self._closed_candles_for_timeframe(symbol, "15m", 220)
+            lookback_days = max(10, int(getattr(strategy, "low_base_range_lookback_days", 30)))
+            candles_1h = self._closed_candles_for_timeframe(symbol, "1h", min(1500, lookback_days * 24 + 80))
+            candles_4h = self._closed_candles_for_timeframe(symbol, "4h", 120)
+            btc_15m = self._closed_candles_for_timeframe("BTCUSDT", "15m", 80)
+            btc_1h = self._closed_candles_for_timeframe("BTCUSDT", "1h", 120)
+            btc_4h = self._closed_candles_for_timeframe("BTCUSDT", "4h", 80)
+        except Exception:
+            self._record_low_base_reject("reject_data_unavailable")
+            return None
+        result = self._low_base_volume_ignition_signal(symbol, candles_1h, candles_4h, candles_30m, candles_15m, btc_15m, btc_1h, btc_4h)
+        if result is None:
+            return None
+        signal, candidate_candle = result
+        rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles_30m)
+        return EntryCandidate(symbol, signal, candidate_candle, rank_score, momentum_pct, volume_ratio, "low_base_volume_ignition_long")
+
+    def _low_base_volume_ignition_signal(
+        self,
+        symbol: str,
+        candles_1h: list[Candle],
+        candles_4h: list[Candle],
+        candles_30m: list[Candle],
+        candles_15m: list[Candle],
+        btc_15m: list[Candle],
+        btc_1h: list[Candle],
+        btc_4h: list[Candle],
+    ) -> tuple[Signal, Candle] | None:
+        strategy = self.config.strategy
+        if len(candles_1h) < 240 or len(candles_4h) < 20 or len(candles_30m) < 120 or len(candles_15m) < 120:
+            self._record_low_base_reject("reject_warmup")
+            return None
+        if self._low_base_btc_reject_reason(btc_15m, btc_1h, btc_4h):
+            self._record_low_base_reject("reject_btc")
+            return None
+        relative_reason = self._low_base_relative_strength_reject_reason(candles_1h, candles_4h, btc_1h, btc_4h)
+        if relative_reason:
+            self._record_low_base_reject(relative_reason)
+            return None
+        breadth_reason = self._low_base_market_breadth_reject_reason()
+        if breadth_reason:
+            self._record_low_base_reject(breadth_reason)
+            return None
+
+        close_1h = candles_1h[-1].close
+        highs_1h = [item.high for item in candles_1h]
+        lows_1h = [item.low for item in candles_1h]
+        range_low = min(lows_1h)
+        range_high = max(highs_1h)
+        range_width = max(range_high - range_low, 1e-12)
+        low_position = (close_1h - range_low) / range_width
+        if low_position > float(getattr(strategy, "low_base_position_max", 0.55)):
+            self._record_low_base_reject("reject_not_low_base")
+            return None
+
+        closes_30 = [item.close for item in candles_30m]
+        highs_30 = [item.high for item in candles_30m]
+        lows_30 = [item.low for item in candles_30m]
+        volumes_30 = [item.volume for item in candles_30m]
+        ma7_30 = _sma_values(closes_30, 7)
+        ma25_30 = _sma_values(closes_30, 25)
+        ma99_30 = _sma_values(closes_30, 99)
+        atr_30 = atr(candles_30m, self.config.strategy.atr_period)
+        rsi14_30 = rsi(closes_30, 14)
+        rsi6_30 = rsi(closes_30, 6)
+        _, _, hist_30 = macd(closes_30, self.config.filters.macd_fast, self.config.filters.macd_slow, self.config.filters.macd_signal)
+
+        pump_lookback = min(max(2, int(getattr(strategy, "low_base_recent_pump_lookback_30m", 48))), len(closes_30) - 1)
+        recent_return = closes_30[-1] / max(closes_30[-1 - pump_lookback], 1e-12) - 1.0
+        if recent_return > float(getattr(strategy, "low_base_recent_pump_return", 0.12)):
+            self._record_low_base_reject("reject_recent_pump")
+            return None
+        if abs(closes_30[-1] - ma25_30[-1]) / max(ma25_30[-1], 1e-12) > float(getattr(strategy, "low_base_max_distance_ma25_pct", 0.05)):
+            self._record_low_base_reject("reject_too_far_from_ma")
+            return None
+
+        ignition_index, breakout_level, base_score = self._low_base_find_recent_ignition(
+            candles_30m,
+            highs_30,
+            lows_30,
+            closes_30,
+            volumes_30,
+            ma25_30,
+            ma99_30,
+            atr_30,
+            rsi14_30,
+            rsi6_30,
+            hist_30,
+        )
+        if ignition_index is None or breakout_level is None:
+            self._record_low_base_reject("reject_no_volume_ignition")
+            return None
+
+        trigger = self._low_base_trigger_mode(candles_15m, candles_30m[ignition_index], breakout_level)
+        if trigger is None:
+            self._record_low_base_reject("reject_no_entry_trigger")
+            return None
+        mode, trigger_candle, stop_anchor = trigger
+
+        closes_15 = [item.close for item in candles_15m]
+        ma7_15 = _sma_values(closes_15, 7)
+        ma25_15 = _sma_values(closes_15, 25)
+        atr_15 = atr(candles_15m, self.config.strategy.atr_period)
+        entry = trigger_candle.close
+        if atr_15[-1] > 0 and (entry - ma7_15[-1]) / atr_15[-1] > float(getattr(strategy, "low_base_max_distance_ma7_atr", 2.5)):
+            self._record_low_base_reject("reject_direct_entry_overextended")
+            return None
+        buffer = float(getattr(strategy, "low_base_structure_stop_buffer_atr", 0.2)) * atr_15[-1]
+        stop_level = min(stop_anchor, breakout_level, ma25_15[-1]) - buffer
+        stop_pct = (entry - stop_level) / max(entry, 1e-12)
+        max_stop = float(getattr(strategy, "low_base_max_initial_stop_pct", 0.025))
+        if stop_pct <= 0.002 or stop_pct > max_stop:
+            self._record_low_base_reject("reject_stop_distance")
+            return None
+        take_profit_pct = stop_pct * max(1.8, float(getattr(strategy, "low_base_min_reward_risk", 1.8)))
+
+        score = base_score
+        score += 1.5 if mode == "pullback_reclaim_v2" else (0.8 if mode == "flag_breakout_v2" else 0.3)
+        score += 1.0 if closes_30[ignition_index] > ma99_30[ignition_index] else 0.0
+        score += min(2.0, volumes_30[ignition_index] / max(sum(volumes_30[max(0, ignition_index - 30):ignition_index]) / max(1, min(30, ignition_index)), 1e-12) - 1.0)
+        score += 1.0 if hist_30[ignition_index] > hist_30[ignition_index - 1] else 0.0
+        score -= 1.0 if rsi6_30[ignition_index] > float(getattr(strategy, "low_base_rsi6_overheat_block", 88.0)) - 5.0 else 0.0
+        if score < float(getattr(strategy, "low_base_quality_score_threshold", 6.0)):
+            self._record_low_base_reject("reject_low_quality_score")
+            return None
+
+        risk_multiplier = float(getattr(strategy, "low_base_risk_multiplier", 0.55))
+        if score >= float(getattr(strategy, "low_base_high_score_threshold", 9.0)):
+            risk_multiplier = float(getattr(strategy, "low_base_high_score_risk_multiplier", 0.75))
+        signal = Signal(
+            Direction.LONG,
+            min(1.0, 0.55 + score / 20.0),
+            f"low_base_volume_ignition_long {mode} score={score:.1f} level={breakout_level:.8g} stop={stop_pct * 100:.2f}%",
+            stop_pct,
+            take_profit_pct,
+            risk_multiplier=risk_multiplier,
+            max_holding_bars=max(1, int(getattr(strategy, "low_base_max_holding_bars", 32))),
+        )
+        return signal, trigger_candle
+
+    def _record_low_base_reject(self, reason: str) -> None:
+        self.low_base_ignition_stats[reason] = self.low_base_ignition_stats.get(reason, 0) + 1
+
+    def _low_base_btc_reject_reason(self, btc_15m: list[Candle], btc_1h: list[Candle], btc_4h: list[Candle]) -> str | None:
+        strategy = self.config.strategy
+        if len(btc_15m) >= 5:
+            ret_15m = btc_15m[-1].close / max(btc_15m[-5].close, 1e-12) - 1.0
+            if ret_15m <= float(getattr(strategy, "low_base_btc_15m_drop_block", -0.008)):
+                return "reject_btc_fast_drop"
+        if len(btc_1h) >= 30:
+            closes = [item.close for item in btc_1h]
+            ret_1h = btc_1h[-1].close / max(btc_1h[-2].close, 1e-12) - 1.0
+            ema9 = ema(closes, 9)
+            ema21 = ema(closes, 21)
+            _, _, hist = macd(closes, self.config.filters.macd_fast, self.config.filters.macd_slow, self.config.filters.macd_signal)
+            if ret_1h <= float(getattr(strategy, "low_base_btc_1h_drop_block", -0.015)):
+                return "reject_btc_fast_drop"
+            if bool(getattr(strategy, "low_base_btc_require_1h_not_bear", True)) and closes[-1] < ema21[-1] and ema9[-1] < ema21[-1] and hist[-1] < hist[-2]:
+                return "reject_btc_1h_bear"
+        if len(btc_4h) >= 30 and bool(getattr(strategy, "low_base_btc_require_4h_not_crash", True)):
+            closes = [item.close for item in btc_4h]
+            ema21 = ema(closes, 21)
+            if closes[-1] < ema21[-1] and closes[-1] / max(closes[-4].close if hasattr(closes[-4], "close") else closes[-4], 1e-12) - 1.0 < -0.025:
+                return "reject_btc_4h_crash"
+        return None
+
+    def _low_base_relative_strength_reject_reason(
+        self,
+        candles_1h: list[Candle],
+        candles_4h: list[Candle],
+        btc_1h: list[Candle],
+        btc_4h: list[Candle],
+    ) -> str | None:
+        strategy = self.config.strategy
+        if not bool(getattr(strategy, "low_base_relative_strength_enabled", False)):
+            return None
+        if len(candles_1h) < 2 or len(candles_4h) < 2 or len(btc_1h) < 2 or len(btc_4h) < 2:
+            return "reject_relative_strength_data"
+        symbol_ret_1h = candles_1h[-1].close / max(candles_1h[-2].close, 1e-12) - 1.0
+        btc_ret_1h = btc_1h[-1].close / max(btc_1h[-2].close, 1e-12) - 1.0
+        symbol_ret_4h = candles_4h[-1].close / max(candles_4h[-2].close, 1e-12) - 1.0
+        btc_ret_4h = btc_4h[-1].close / max(btc_4h[-2].close, 1e-12) - 1.0
+        if symbol_ret_1h - btc_ret_1h < float(getattr(strategy, "low_base_min_relative_1h", 0.0015)):
+            return "reject_relative_strength_1h"
+        if symbol_ret_4h - btc_ret_4h < float(getattr(strategy, "low_base_min_relative_4h", 0.0025)):
+            return "reject_relative_strength_4h"
+        return None
+
+    def _low_base_market_breadth_reject_reason(self) -> str | None:
+        strategy = self.config.strategy
+        if not bool(getattr(strategy, "low_base_market_breadth_enabled", False)):
+            return None
+        symbols = tuple(getattr(self.config.trading, "symbols", ()))[:100]
+        checked = 0
+        up_1h = 0
+        up_15m = 0
+        above_ema21 = 0
+        returns_1h = []
+        for symbol in symbols:
+            try:
+                candles_1h = self._closed_candles_for_timeframe(symbol, "1h", 25)
+                candles_15m = self._closed_candles_for_timeframe(symbol, "15m", 6)
+            except Exception:
+                continue
+            if len(candles_1h) < 22 or len(candles_15m) < 2:
+                continue
+            checked += 1
+            ret_1h = candles_1h[-1].close / max(candles_1h[-2].close, 1e-12) - 1.0
+            ret_15m = candles_15m[-1].close / max(candles_15m[-2].close, 1e-12) - 1.0
+            returns_1h.append(ret_1h)
+            up_1h += 1 if ret_1h > 0 else 0
+            up_15m += 1 if ret_15m > 0 else 0
+            above_ema21 += 1 if candles_1h[-1].close > ema([item.close for item in candles_1h], 21)[-1] else 0
+        if checked < 20:
+            return None
+        if up_1h / checked < float(getattr(strategy, "low_base_market_breadth_min_1h_up_pct", 0.45)):
+            return "reject_market_breadth_1h"
+        if up_15m / checked < float(getattr(strategy, "low_base_market_breadth_min_15m_up_pct", 0.42)):
+            return "reject_market_breadth_15m"
+        if above_ema21 / checked < float(getattr(strategy, "low_base_market_breadth_min_ema21_pct", 0.42)):
+            return "reject_market_breadth_ema21"
+        if sum(returns_1h) / max(1, len(returns_1h)) < float(getattr(strategy, "low_base_market_breadth_min_avg_1h_return", -0.003)):
+            return "reject_market_breadth_avg_return"
+        return None
+
+    def _low_base_find_recent_ignition(
+        self,
+        candles: list[Candle],
+        highs: list[float],
+        lows: list[float],
+        closes: list[float],
+        volumes: list[float],
+        ma25: list[float],
+        ma99: list[float],
+        atr_values: list[float],
+        rsi14_values: list[float],
+        rsi6_values: list[float],
+        hist: list[float],
+    ) -> tuple[int | None, float | None, float]:
+        strategy = self.config.strategy
+        breakout_lookback = max(12, int(getattr(strategy, "low_base_breakout_lookback_30m", 36)))
+        base_lookback = max(12, int(getattr(strategy, "low_base_lookback_bars_30m", 48)))
+        for index in range(len(candles) - 1, max(110, len(candles) - 10), -1):
+            if index <= max(breakout_lookback, base_lookback, 100):
+                continue
+            base_start = index - base_lookback
+            breakout_start = index - breakout_lookback
+            base_high = max(highs[base_start:index])
+            base_low = min(lows[base_start:index])
+            base_range = (base_high - base_low) / max(closes[index], 1e-12)
+            if base_range > float(getattr(strategy, "low_base_max_range_pct", 0.08)):
+                continue
+            if bool(getattr(strategy, "low_base_atr_contraction_required", True)):
+                recent_atr = sum(atr_values[index - 10:index]) / 10
+                previous_atr = sum(atr_values[index - 40:index - 10]) / 30
+                if previous_atr > 0 and recent_atr > previous_atr * 1.10:
+                    continue
+            if bool(getattr(strategy, "low_base_volume_contraction_required", False)):
+                recent_vol = sum(volumes[index - 10:index]) / 10
+                previous_vol = sum(volumes[index - 40:index - 10]) / 30
+                if previous_vol > 0 and recent_vol > previous_vol * 1.15:
+                    continue
+            breakout_level = max(highs[breakout_start:index])
+            volume_avg = sum(volumes[index - 30:index]) / 30
+            volume_ratio = volumes[index] / max(volume_avg, 1e-12)
+            candle = candles[index]
+            candle_range = max(candle.high - candle.low, 1e-12)
+            close_position = (candle.close - candle.low) / candle_range
+            upper_wick = (candle.high - max(candle.open, candle.close)) / candle_range
+            if candle.close <= breakout_level:
+                continue
+            if volume_ratio < float(getattr(strategy, "low_base_volume_multiplier_min", 2.0)):
+                continue
+            if close_position < float(getattr(strategy, "low_base_close_position_min", 0.70)):
+                continue
+            if upper_wick > float(getattr(strategy, "low_base_upper_wick_max_ratio", 0.45)):
+                continue
+            if bool(getattr(strategy, "low_base_require_close_above_ma25", True)) and candle.close < ma25[index]:
+                continue
+            if bool(getattr(strategy, "low_base_require_close_above_ma99", False)) and candle.close < ma99[index]:
+                continue
+            if bool(getattr(strategy, "low_base_macd_hist_expand_required", True)) and not (hist[index] > hist[index - 1] and hist[index] > hist[index - 2]):
+                continue
+            if rsi14_values[index] < float(getattr(strategy, "low_base_rsi14_min", 55.0)):
+                continue
+            if rsi14_values[index] > float(getattr(strategy, "low_base_rsi14_max", 78.0)) or rsi6_values[index] > float(getattr(strategy, "low_base_rsi6_overheat_block", 88.0)):
+                continue
+            score = 3.0
+            score += 1.0 if base_range <= float(getattr(strategy, "low_base_max_range_pct", 0.08)) * 0.75 else 0.0
+            score += 1.0 if ma25[index] >= ma25[index - 4] else 0.0
+            ma7_values = _sma_values(closes[: index + 1], 7)
+            score += 1.0 if len(ma7_values) >= 4 and ma7_values[-1] >= ma7_values[-4] else 0.0
+            score += 1.0 if volume_ratio >= float(getattr(strategy, "low_base_volume_multiplier_min", 2.0)) * 1.25 else 0.0
+            score += 1.0 if close_position >= 0.80 else 0.0
+            return index, breakout_level, score
+        return None, None, 0.0
+
+    def _low_base_trigger_mode(self, candles_15m: list[Candle], ignition_candle: Candle, breakout_level: float) -> tuple[str, Candle, float] | None:
+        strategy = self.config.strategy
+        post = [item for item in candles_15m if item.timestamp >= ignition_candle.timestamp]
+        if len(post) < 2:
+            return None
+        closes = [item.close for item in candles_15m]
+        volumes = [item.volume for item in candles_15m]
+        ma7 = _sma_values(closes, 7)
+        ma25 = _sma_values(closes, 25)
+        current = candles_15m[-1]
+        candle_range = max(current.high - current.low, 1e-12)
+        close_position = (current.close - current.low) / candle_range
+        volume_avg = sum(volumes[-25:-1]) / max(1, min(24, len(volumes) - 1))
+        volume_ratio = current.volume / max(volume_avg, 1e-12)
+
+        if bool(getattr(strategy, "low_base_pullback_enabled", True)) and bool(getattr(strategy, "low_base_pullback_v2_enabled", False)) and len(post) >= 4:
+            pullback_low = min(item.low for item in post)
+            recent_lows = [item.low for item in candles_15m[-3:]]
+            low_not_breaking = recent_lows[-1] >= min(recent_lows[:-1]) * 0.998
+            touched_support = min(item.low for item in post[-4:]) <= max(breakout_level, ma7[-1], ma25[-1]) * 1.006
+            held_level = pullback_low >= breakout_level * (1.0 - float(getattr(strategy, "low_base_pullback_max_depth_pct", 0.025)))
+            reclaimed = current.close >= max(breakout_level, ma7[-1])
+            quiet_pullback = volume_ratio <= float(getattr(strategy, "low_base_pullback_volume_max_ratio", 1.2))
+            strong_candle = current.close > current.open and close_position >= float(getattr(strategy, "low_base_pullback_reclaim_close_position_min", 0.60))
+            if touched_support and held_level and low_not_breaking and reclaimed and quiet_pullback and strong_candle:
+                return "pullback_reclaim_v2", current, pullback_low
+
+        if bool(getattr(strategy, "low_base_pullback_enabled", True)) and not bool(getattr(strategy, "low_base_pullback_v2_enabled", False)) and len(post) >= 3:
+            pullback_low = min(item.low for item in post)
+            held_level = pullback_low >= breakout_level * (1.0 - float(getattr(strategy, "low_base_pullback_max_depth_pct", 0.025)))
+            reclaimed = current.close >= max(breakout_level, ma7[-1])
+            quiet_pullback = volume_ratio <= float(getattr(strategy, "low_base_pullback_volume_max_ratio", 1.2)) or current.close > current.open
+            if held_level and reclaimed and quiet_pullback and close_position >= float(getattr(strategy, "low_base_pullback_reclaim_close_position_min", 0.60)):
+                return "pullback_reclaim", current, pullback_low
+
+        if bool(getattr(strategy, "low_base_flag_enabled", True)):
+            min_bars = max(2, int(getattr(strategy, "low_base_flag_bars_min", 3)))
+            max_bars = max(min_bars, int(getattr(strategy, "low_base_flag_bars_max", 8)))
+            flag = post[-max_bars:]
+            if len(flag) >= min_bars:
+                previous = flag[:-1]
+                flag_high = max(item.high for item in previous)
+                flag_low = min(item.low for item in previous)
+                flag_range = (flag_high - flag_low) / max(current.close, 1e-12)
+                if (
+                    flag_range <= float(getattr(strategy, "low_base_flag_max_range_pct", 0.04))
+                    and current.close > flag_high
+                    and min(item.low for item in flag) >= min(ma7[-1], ma25[-1]) * 0.995
+                    and volume_ratio >= float(getattr(strategy, "low_base_flag_breakout_volume_multiplier", 1.5))
+                ):
+                    return "flag_breakout_v2", current, flag_low
+
+        if bool(getattr(strategy, "low_base_direct_entry_enabled", True)) and candles_15m[-1].timestamp <= ignition_candle.timestamp:
+            return None
+        if bool(getattr(strategy, "low_base_direct_entry_enabled", True)) and len(post) <= 3:
+            if (
+                current.close > breakout_level
+                and volume_ratio >= float(getattr(strategy, "low_base_direct_entry_volume_multiplier_min", 3.0))
+                and close_position >= float(getattr(strategy, "low_base_direct_entry_close_position_min", 0.80))
+            ):
+                return "direct_ignition", current, min(item.low for item in post)
+        return None
 
     def _entry_rank_metrics(self, signal: Signal, candles: list[Candle]) -> tuple[float, float, float]:
         candle = candles[-1]
@@ -1301,6 +2101,18 @@ class BinanceAutoTrader:
         state = self._btc_market_state()
         if state.direction == Direction.FLAT or state.direction == signal.direction:
             return signal
+
+        if (
+            signal.direction == Direction.LONG
+            and state.direction == Direction.SHORT
+            and getattr(strategy, "btc_counter_trend_reduce_only_enabled", False)
+        ):
+            multiplier = max(0.0, min(1.0, float(getattr(strategy, "btc_weak_long_risk_multiplier", getattr(strategy, "btc_counter_trend_risk_multiplier", 0.45)))))
+            return replace(
+                signal,
+                risk_multiplier=signal.risk_multiplier * multiplier,
+                reason=f"{signal.reason}_btc_weak_long_reduce {state.reason}",
+            )
 
         is_exceptional = "super_volume" in signal.reason or "startup_breakout" in signal.reason
         if getattr(strategy, "btc_counter_trend_super_volume_only", True) and not is_exceptional:
@@ -1671,43 +2483,312 @@ class BinanceAutoTrader:
         reason = f"indicator_short_high_close_risk close_pos={close_position:.2f}>{threshold:.2f} mult={multiplier:.2f}"
         return multiplier, reason
 
+    def _record_short_guard_reject(self, reason: str) -> None:
+        key = reason.split()[0]
+        self.short_guard_stats[key] = self.short_guard_stats.get(key, 0) + 1
+
+    def _indicator_short_guard_reason(self, symbol: str, signal: Signal, signal_candles: list[Candle]) -> str | None:
+        strategy = self.config.strategy
+        if not getattr(strategy, "indicator_short_guard_enabled", False):
+            return None
+        if signal.direction != Direction.SHORT:
+            return None
+        reason = signal.reason.lower()
+        if not reason.startswith("indicator_short_"):
+            return None
+        if "indicator_short_pre_cross" in reason:
+            if getattr(strategy, "indicator_short_confirmed_only", False) or not getattr(strategy, "indicator_short_pre_cross_enabled", True):
+                return "short_reject_pre_cross"
+        if getattr(strategy, "indicator_short_confirmed_only", False) and "indicator_short_macd_dead_cross" not in reason:
+            return "short_reject_not_confirmed_cross"
+
+        if getattr(strategy, "indicator_short_btc_month_guard_enabled", False) and self._indicator_short_btc_month_bull_reason():
+            return "short_reject_btc_bull_month"
+        if getattr(strategy, "indicator_short_btc_guard_enabled", True) and self._indicator_short_btc_bull_reason():
+            return "short_reject_btc_bull"
+        if getattr(strategy, "indicator_short_require_btc_bear_enabled", False) and not self._indicator_short_btc_bear_confirmed():
+            return "short_reject_btc_not_bear"
+
+        if getattr(strategy, "indicator_short_funding_guard_enabled", False):
+            funding_reason = self._indicator_short_funding_reject_reason(symbol, signal_candles[-1].timestamp)
+            if funding_reason:
+                return funding_reason
+
+        candles_15m = self._safe_closed_candles_for_timeframe(symbol, "15m", 140)
+        if getattr(strategy, "indicator_short_15m_guard_enabled", True):
+            reason_15m = self._indicator_short_15m_bear_reject_reason(candles_15m)
+            if reason_15m:
+                return reason_15m
+
+        candles_30m = self._safe_closed_candles_for_timeframe(symbol, "30m", 140)
+        if getattr(strategy, "indicator_short_30m_guard_enabled", True):
+            reason_30m = self._indicator_short_30m_bear_reject_reason(candles_30m)
+            if reason_30m:
+                return reason_30m
+
+        overextended_reason = self._indicator_short_overextended_reject_reason(candles_15m, candles_30m)
+        if overextended_reason:
+            return overextended_reason
+
+        retest_reason = self._indicator_short_retest_reject_reason(candles_15m)
+        if retest_reason:
+            return retest_reason
+        return None
+
+    def _safe_closed_candles_for_timeframe(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
+        try:
+            return self._closed_candles_for_timeframe(symbol, timeframe, limit)
+        except Exception:
+            return []
+
+    def _indicator_short_btc_month_bull_reason(self) -> str | None:
+        strategy = self.config.strategy
+        btc_symbol = str(getattr(strategy, "btc_market_symbol", "BTCUSDT")).upper()
+        timeframe = str(getattr(strategy, "indicator_short_btc_month_timeframe", "1h"))
+        lookback = max(2, int(getattr(strategy, "indicator_short_btc_month_lookback_bars", 720)))
+        ema_period = max(2, int(getattr(strategy, "indicator_short_btc_month_ema_period", 21)))
+        candles = self._safe_closed_candles_for_timeframe(btc_symbol, timeframe, lookback + ema_period + 8)
+        if len(candles) <= lookback + ema_period:
+            return None
+        closes = [item.close for item in candles]
+        recent_return = closes[-1] / max(closes[-1 - lookback], 1e-12) - 1.0
+        threshold = float(getattr(strategy, "indicator_short_btc_month_return_threshold", 0.04))
+        ema_fast = ema(closes, 9)
+        ema_slow = ema(closes, ema_period)
+        slow_lookback = min(24, len(ema_slow) - 1)
+        trend_bull = closes[-1] > ema_slow[-1] and ema_fast[-1] > ema_slow[-1] and ema_slow[-1] > ema_slow[-1 - slow_lookback]
+        if recent_return >= threshold or trend_bull:
+            return f"btc_month_bull return={recent_return * 100:.2f}%"
+        return None
+
+    def _indicator_short_btc_bull_reason(self) -> str | None:
+        strategy = self.config.strategy
+        btc_symbol = str(getattr(strategy, "btc_market_symbol", "BTCUSDT")).upper()
+        fast_timeframe = str(getattr(strategy, "indicator_short_btc_fast_timeframe", "4h"))
+        slow_timeframe = str(getattr(strategy, "indicator_short_btc_slow_timeframe", "8h"))
+        candles_fast = self._safe_closed_candles_for_timeframe(btc_symbol, fast_timeframe, 80)
+        candles_slow = self._safe_closed_candles_for_timeframe(btc_symbol, slow_timeframe, 80)
+        if self._indicator_short_btc_frame_bullish(
+            candles_fast,
+            float(getattr(strategy, "indicator_short_btc_15m_bull_return_pct", 0.003)),
+            int(getattr(strategy, "indicator_short_btc_breakout_lookback", 8)),
+        ):
+            return f"btc_{fast_timeframe}_bull"
+        if self._indicator_short_btc_frame_bullish(
+            candles_slow,
+            float(getattr(strategy, "indicator_short_btc_1h_bull_return_pct", 0.006)),
+            int(getattr(strategy, "indicator_short_btc_breakout_lookback", 8)),
+        ):
+            return f"btc_{slow_timeframe}_bull"
+        return None
+
+    def _indicator_short_btc_frame_bullish(self, candles: list[Candle], return_threshold: float, breakout_lookback: int) -> bool:
+        if len(candles) < 35:
+            return False
+        closes = [item.close for item in candles]
+        highs = [item.high for item in candles]
+        ema9 = ema(closes, 9)
+        ema21 = ema(closes, 21)
+        _, _, hist = macd(closes, self.config.filters.macd_fast, self.config.filters.macd_slow, self.config.filters.macd_signal)
+        current_return = closes[-1] / max(closes[-2], 1e-12) - 1.0
+        ema_bull = closes[-1] > ema21[-1] and ema9[-1] > ema21[-1]
+        macd_expanding = hist[-1] > 0 and hist[-1] > hist[-2]
+        lookback = max(2, min(breakout_lookback, len(highs) - 1))
+        breakout = closes[-1] > max(highs[-1 - lookback:-1])
+        return current_return >= return_threshold or ema_bull or macd_expanding or breakout
+
+    def _indicator_short_btc_bear_confirmed(self) -> bool:
+        strategy = self.config.strategy
+        btc_symbol = str(getattr(strategy, "btc_market_symbol", "BTCUSDT")).upper()
+        fast_timeframe = str(getattr(strategy, "indicator_short_btc_fast_timeframe", "4h"))
+        slow_timeframe = str(getattr(strategy, "indicator_short_btc_slow_timeframe", "8h"))
+        candles_fast = self._safe_closed_candles_for_timeframe(btc_symbol, fast_timeframe, 80)
+        candles_slow = self._safe_closed_candles_for_timeframe(btc_symbol, slow_timeframe, 80)
+        threshold = float(getattr(strategy, "indicator_short_btc_bear_return_pct", -0.004))
+        return (
+            self._indicator_short_btc_frame_bearish(candles_fast, threshold)
+            or self._indicator_short_btc_frame_bearish(candles_slow, threshold)
+        )
+
+    def _indicator_short_btc_frame_bearish(self, candles: list[Candle], return_threshold: float) -> bool:
+        if len(candles) < 35:
+            return False
+        closes = [item.close for item in candles]
+        ema9 = ema(closes, 9)
+        ema21 = ema(closes, 21)
+        _, _, hist = macd(closes, self.config.filters.macd_fast, self.config.filters.macd_slow, self.config.filters.macd_signal)
+        current_return = closes[-1] / max(closes[-2], 1e-12) - 1.0
+        ema_bear = closes[-1] < ema21[-1] and ema9[-1] < ema21[-1]
+        macd_weak = hist[-1] < 0 and hist[-1] <= hist[-2]
+        return current_return <= return_threshold or (ema_bear and macd_weak)
+
+    def _indicator_short_funding_reject_reason(self, symbol: str, timestamp: datetime) -> str | None:
+        features = self._mtf_aux_features().get(symbol, {})
+        funding_rate = funding_at(features, timestamp, float(getattr(self.config.risk, "funding_default_rate", 0.0)))
+        threshold = float(getattr(self.config.strategy, "indicator_short_min_funding_rate", -0.0002))
+        if funding_rate < threshold:
+            return f"short_reject_funding_too_negative funding={funding_rate:.6g}<{threshold:.6g}"
+        return None
+
+    def _indicator_short_15m_bear_reject_reason(self, candles: list[Candle]) -> str | None:
+        if len(candles) < 110:
+            return "short_reject_15m_not_bear insufficient_data"
+        closes = [item.close for item in candles]
+        highs = [item.high for item in candles]
+        lows = [item.low for item in candles]
+        ema21 = ema(closes, 21)
+        ma7 = _sma_values(closes, 7)
+        ma99 = _sma_values(closes, 99)
+        confirmations = 0
+        confirmations += int(closes[-1] < ema21[-1])
+        confirmations += int(closes[-1] < ma99[-1])
+        confirmations += int(ma7[-1] < ma99[-1])
+        confirmations += int(ma7[-1] < ma7[-4])
+        confirmations += int(highs[-1] < max(highs[-5:-1]))
+        confirmations += int(closes[-1] < min(lows[-5:-1]))
+        minimum = max(1, int(getattr(self.config.strategy, "indicator_short_15m_min_bear_confirmations", 2)))
+        if confirmations < minimum:
+            return f"short_reject_15m_not_bear confirmations={confirmations}<{minimum}"
+        return None
+
+    def _indicator_short_30m_bear_reject_reason(self, candles: list[Candle]) -> str | None:
+        if len(candles) < 40:
+            return "short_reject_30m_not_bear insufficient_data"
+        closes = [item.close for item in candles]
+        highs = [item.high for item in candles]
+        ema21 = ema(closes, 21)
+        rsi14 = rsi(closes, 14)
+        _, _, hist = macd(closes, self.config.filters.macd_fast, self.config.filters.macd_slow, self.config.filters.macd_signal)
+        confirmations = 0
+        confirmations += int(hist[-1] < hist[-2])
+        confirmations += int(hist[-1] < hist[-2] < hist[-3])
+        confirmations += int(closes[-1] < ema21[-1])
+        confirmations += int(rsi14[-1] < 50.0 or rsi14[-1] < rsi14[-2])
+        confirmations += int(highs[-1] <= max(highs[-7:-1]))
+        minimum = max(1, int(getattr(self.config.strategy, "indicator_short_30m_min_bear_confirmations", 2)))
+        if confirmations < minimum:
+            return f"short_reject_30m_not_bear confirmations={confirmations}<{minimum}"
+        return None
+
+    def _indicator_short_overextended_reject_reason(self, candles_15m: list[Candle], candles_30m: list[Candle]) -> str | None:
+        strategy = self.config.strategy
+        if len(candles_15m) < 110 or len(candles_30m) < 30:
+            return None
+        closes_15 = [item.close for item in candles_15m]
+        ma7_15 = _sma_values(closes_15, 7)
+        if ma7_15[-1] > 0 and (ma7_15[-1] - closes_15[-1]) / ma7_15[-1] > float(getattr(strategy, "indicator_short_max_distance_ma7_pct", 0.012)):
+            return "short_reject_too_far_from_ma ma7"
+        closes_30 = [item.close for item in candles_30m]
+        ma25_30 = _sma_values(closes_30, 25)
+        if ma25_30[-1] > 0 and (ma25_30[-1] - closes_30[-1]) / ma25_30[-1] > float(getattr(strategy, "indicator_short_max_distance_30m_ma25_pct", 0.018)):
+            return "short_reject_too_far_from_ma ma25_30m"
+        if rsi(closes_15, 6)[-1] <= float(getattr(strategy, "indicator_short_15m_rsi6_floor", 24.0)):
+            return "short_reject_rsi_oversold 15m"
+        if rsi(closes_30, 6)[-1] <= float(getattr(strategy, "indicator_short_30m_rsi6_floor", 26.0)):
+            return "short_reject_rsi_oversold 30m"
+        red_bars = max(1, int(getattr(strategy, "indicator_short_consecutive_red_bars", 3)))
+        recent = candles_15m[-red_bars:]
+        touched_retest = any(item.high >= ma7_15[-1] * (1.0 - float(getattr(strategy, "indicator_short_retest_touch_pct", 0.003))) for item in recent)
+        if all(item.close < item.open for item in recent) and not touched_retest:
+            return "short_reject_consecutive_red_no_retest"
+        candle = candles_15m[-1]
+        candle_range = max(candle.high - candle.low, 1e-12)
+        lower_wick = (min(candle.open, candle.close) - candle.low) / candle_range
+        if lower_wick >= float(getattr(strategy, "indicator_short_lower_wick_ratio", 0.45)):
+            return "short_reject_lower_wick_support"
+        support_lookback = max(2, int(getattr(strategy, "indicator_short_support_lookback", 8)))
+        support = min(item.low for item in candles_15m[-support_lookback - 1:-1])
+        if candle.close <= support * (1.0 + float(getattr(strategy, "indicator_short_near_support_pct", 0.003))):
+            return "short_reject_near_support"
+        return None
+
+    def _indicator_short_retest_reject_reason(self, candles: list[Candle]) -> str | None:
+        if not bool(getattr(self.config.strategy, "indicator_short_retest_guard_enabled", True)):
+            return None
+        if len(candles) < 110:
+            return "short_waiting_retest_reject insufficient_data"
+        mode = str(getattr(self.config.strategy, "indicator_short_ma_mode", "retest_after_cross")).lower()
+        closes = [item.close for item in candles]
+        highs = [item.high for item in candles]
+        lows = [item.low for item in candles]
+        ma7 = _sma_values(closes, 7)
+        ma99 = _sma_values(closes, 99)
+        candle = candles[-1]
+        touch_pct = float(getattr(self.config.strategy, "indicator_short_retest_touch_pct", 0.003))
+        close_pos = (candle.close - candle.low) / max(candle.high - candle.low, 1e-12)
+        weak_close = close_pos <= float(getattr(self.config.strategy, "indicator_short_max_close_position", 0.50))
+        ma7_reject = candle.high >= ma7[-1] * (1.0 - touch_pct) and candle.close < ma7[-1] and candle.close < candle.open and weak_close
+        ma99_reject = candle.high >= ma99[-1] * (1.0 - touch_pct) and candle.close < ma99[-1] and ma7[-1] < ma99[-1] and weak_close
+        lower_high_breakdown = highs[-1] < max(highs[-5:-1]) and closes[-1] < min(lows[-5:-1])
+        if mode == "slope_only":
+            if closes[-1] < ma99[-1] and ma7[-1] < ma7[-4]:
+                return None
+        elif mode == "cross_confirmed":
+            prior_cross = any(ma7[index] >= ma99[index] for index in range(max(0, len(ma7) - 14), len(ma7) - 1))
+            if ma7[-1] < ma99[-1] and prior_cross and closes[-1] < ma7[-1] and closes[-1] < ma99[-1]:
+                return None
+        else:
+            if ma7[-1] < ma99[-1] and (ma7_reject or ma99_reject or lower_high_breakdown):
+                return None
+        return "short_waiting_retest_reject"
+
     def _manage_existing_position(self, symbol: str, position: LivePosition, account: AccountSnapshot) -> None:
         candles = self._closed_candles(symbol)
         if len(candles) < VolatilityBreakoutScalper(self.config.strategy).warmup_bars:
             return
+        exit_candle = self._live_exit_candle(symbol, candles, position)
+        exit_mark_price = exit_candle.close
+        profit_state = self._profit_state_for(symbol, position)
         strategy = VolatilityBreakoutScalper(self.config.strategy)
         strategy.prepare(candles)
         signal = strategy.signal(len(candles) - 1, candles)
         if not self._managed_exit_allowed(position):
-            self._profit_state_for(symbol, position)
+            self._log_position_exit_diagnostics(
+                symbol,
+                position,
+                profit_state,
+                exit_mark_price,
+                profit_exit_reason=None,
+                stale_reason=None,
+                managed_exit_allowed=False,
+            )
             return
-        profit_exit_reason = self._profit_exit_reason(position, candles, state=self._profit_state_for(symbol, position))
+        profit_exit_reason = self._profit_exit_reason(position, candles, current_candle=exit_candle, state=profit_state)
+        stale_reason = self._stale_position_exit_reason(position, exit_mark_price)
+        self._log_position_exit_diagnostics(
+            symbol,
+            position,
+            profit_state,
+            exit_mark_price,
+            profit_exit_reason=profit_exit_reason,
+            stale_reason=stale_reason,
+            managed_exit_allowed=True,
+        )
         if profit_exit_reason:
             self.log(f"{symbol}: 盈利保护触发，准备平仓 ({profit_exit_reason})")
             self._exit_position(symbol, position, profit_exit_reason)
             return
-        account_loss_reason = self._account_loss_exit_reason(position, candles[-1].close, account)
+        account_loss_reason = self._account_loss_exit_reason(position, exit_mark_price, account)
         if account_loss_reason:
             self.log(f"{symbol}: 单仓账户亏损保护触发，准备平仓 ({account_loss_reason})")
             self._exit_position(symbol, position, account_loss_reason)
             return
-        fail_fast_reason = self._indicator_long_fail_fast_exit_reason(position, candles[-1].close)
+        fail_fast_reason = self._indicator_long_fail_fast_exit_reason(position, exit_mark_price)
         if fail_fast_reason:
             self.log(f"{symbol}: 指标多头快速失败退出，准备平仓 ({fail_fast_reason})")
             self._exit_position(symbol, position, fail_fast_reason)
             return
-        trend_loss_reason = self._trend_loss_exit_reason(position, candles[-1].close)
+        trend_loss_reason = self._trend_loss_exit_reason(position, exit_mark_price)
         if trend_loss_reason:
             self.log(f"{symbol}: 趋势单亏损保护触发，准备平仓 ({trend_loss_reason})")
             self._exit_position(symbol, position, trend_loss_reason)
             return
-        stale_reason = self._stale_position_exit_reason(position, candles[-1].close)
         if stale_reason:
             self.log(f"{symbol}: 长时间持仓观察退出，准备平仓 ({stale_reason})")
             self._exit_position(symbol, position, stale_reason)
             return
         false_position_reason = self._false_breakout_reason(position.direction, candles)
-        if false_position_reason and _position_profit_pct(position, candles[-1].close) < 0:
+        if false_position_reason and _position_profit_pct(position, exit_mark_price) < 0:
             self.log(f"{symbol}: 当前持仓方向疑似假突破，准备平仓 ({false_position_reason})")
             self._exit_position(symbol, position, false_position_reason)
             return
@@ -1747,7 +2828,7 @@ class BinanceAutoTrader:
         if signal.direction == position.direction:
             self._maybe_scale_in_position(symbol, position, account, signal, candles)
             return
-        if _position_profit_pct(position, candles[-1].close) >= self.config.trading.scale_in_min_profit_pct:
+        if _position_profit_pct(position, exit_mark_price) >= self.config.trading.scale_in_min_profit_pct:
             supported, support_reason = self._passes_multi_timeframe_filter(symbol, position.direction)
             if supported:
                 continuation = self._continuation_signal(
@@ -1758,6 +2839,67 @@ class BinanceAutoTrader:
                 self._maybe_scale_in_position(symbol, position, account, continuation, candles)
                 return
         self._maybe_loss_scale_on_supported_direction(symbol, position, account, candles, "5m无同向突破")
+
+    def _live_exit_candle(self, symbol: str, candles: list[Candle], position: LivePosition) -> Candle:
+        base = candles[-1]
+        mark_price = float(getattr(position, "mark_price", 0.0) or 0.0)
+        latest_1m: Candle | None = None
+        try:
+            one_minute_candles = self.client.klines(symbol, "1m", 2)
+            if one_minute_candles:
+                latest_1m = one_minute_candles[-1]
+        except Exception:
+            latest_1m = None
+
+        close = mark_price if mark_price > 0 else (latest_1m.close if latest_1m is not None else base.close)
+        high = max(base.high, close)
+        low = min(base.low, close)
+        volume = base.volume
+        if latest_1m is not None:
+            high = max(high, latest_1m.high)
+            low = min(low, latest_1m.low)
+            volume = max(volume, latest_1m.volume)
+        return replace(base, high=high, low=low, close=close, volume=volume)
+
+    def _log_position_exit_diagnostics(
+        self,
+        symbol: str,
+        position: LivePosition,
+        state: ProfitState,
+        mark_price: float,
+        profit_exit_reason: str | None,
+        stale_reason: str | None,
+        managed_exit_allowed: bool,
+    ) -> None:
+        interval = max(5.0, float(getattr(self.config.trading, "position_diagnostics_interval_seconds", 60.0)))
+        now = time.time()
+        if now - self._last_position_diagnostics_log_ts.get(symbol, 0.0) < interval:
+            return
+        self._last_position_diagnostics_log_ts[symbol] = now
+
+        bars_held = self._position_bars_held(position)
+        current_profit = _directional_profit_pct(position.direction, position.entry_price, mark_price)
+        peak_profit = _directional_profit_pct(position.direction, position.entry_price, state.best_price)
+        minimum_profit = self._minimum_profit_exit_pct()
+        stale_enabled = bool(getattr(self.config.strategy, "stale_position_exit_enabled", False))
+        observation_bars, force_exit_bars = self._stale_exit_thresholds(position)
+        if not managed_exit_allowed:
+            profit_status = "blocked managed_exit_min"
+            stale_status = f"blocked managed_exit_min bars={bars_held}"
+        else:
+            profit_status = f"YES {profit_exit_reason}" if profit_exit_reason else "NO"
+            if not stale_enabled:
+                stale_status = "disabled"
+            elif stale_reason:
+                stale_status = f"YES {stale_reason}"
+            else:
+                stale_status = f"NO obs={observation_bars} force={force_exit_bars}"
+
+        self.log(
+            f"{symbol}: 持仓退出诊断 bars={bars_held} mark={mark_price:.6g} "
+            f"profit={current_profit * 100:+.3f}% peak={peak_profit * 100:+.3f}% "
+            f"min_exit={minimum_profit * 100:.3f}% profit_exit={profit_status} stale_exit={stale_status}"
+        )
 
     def _maybe_scale_in_position(
         self,
@@ -2071,6 +3213,7 @@ class BinanceAutoTrader:
         self._cancel_all_symbol_orders(symbol)
         self._mark_symbol_reentry_cooldown(symbol, reason)
         entry_reason = position.entry_reason or self._entry_reasons.get(symbol, "")
+        self._mark_portfolio_symbol_cooldown(symbol, position.unrealized_pnl)
         if not self._sync_closed_symbol_trade_pnl(symbol, reason, entry_reason=entry_reason):
             self._record_indicator_reversal_result(position.unrealized_pnl, entry_reason)
         self._scale_in_counts.pop(symbol, None)
@@ -2099,9 +3242,24 @@ class BinanceAutoTrader:
         self._entry_reasons.pop(symbol, None)
         self._position_opened_at.pop(symbol, None)
         self._mark_symbol_reentry_cooldown(symbol, reason)
+        self._mark_portfolio_symbol_cooldown(symbol, pnl)
         self._known_active_symbols.discard(symbol)
         self.log(f"{symbol}: dry-run 虚拟平仓 exit={exit_price:.6g} pnl={pnl:+.4f}U reason={reason}")
         self._log_session_stats(self.snapshot_account(), force=True)
+
+    def _mark_portfolio_symbol_cooldown(self, symbol: str, pnl: float) -> None:
+        control = self.config.portfolio_control
+        if not getattr(control, "enabled", False):
+            return
+        minutes = max(0, int(control.symbol_cooldown_minutes))
+        if pnl < 0:
+            minutes = max(minutes, int(control.symbol_loss_cooldown_minutes))
+        if minutes <= 0:
+            return
+        self._portfolio_symbol_cooldown_until[symbol] = max(
+            self._portfolio_symbol_cooldown_until.get(symbol, 0.0),
+            time.time() + minutes * 60.0,
+        )
 
     def _sync_closed_symbol_trade_pnl(self, symbol: str, reason: str, entry_reason: str | None = None) -> bool:
         if self.config.trading.dry_run:
@@ -2424,6 +3582,18 @@ class BinanceAutoTrader:
         if bars_held <= 0:
             return None
 
+        observation_bars, force_exit_bars = self._stale_exit_thresholds(position)
+
+        current_profit = _directional_profit_pct(position.direction, position.entry_price, mark_price)
+        minimum_profit = self._minimum_profit_exit_pct()
+        if bars_held >= force_exit_bars:
+            return f"stale_force_exit bars={bars_held} profit={current_profit * 100:.3f}%"
+        if bars_held >= observation_bars and current_profit >= minimum_profit:
+            return f"stale_profit_exit bars={bars_held} profit={current_profit * 100:.3f}%"
+        return None
+
+    def _stale_exit_thresholds(self, position: LivePosition | SimPosition) -> tuple[int, int]:
+        strategy = self.config.strategy
         entry_reason = getattr(position, "entry_reason", "")
         is_super_volume = "super_volume" in entry_reason.lower() or "startup_breakout" in entry_reason.lower()
         observation_bars = (
@@ -2438,14 +3608,7 @@ class BinanceAutoTrader:
         )
         observation_bars = max(1, observation_bars)
         force_exit_bars = max(observation_bars, force_exit_bars)
-
-        current_profit = _directional_profit_pct(position.direction, position.entry_price, mark_price)
-        minimum_profit = self._minimum_profit_exit_pct()
-        if bars_held >= force_exit_bars:
-            return f"stale_force_exit bars={bars_held} profit={current_profit * 100:.3f}%"
-        if bars_held >= observation_bars and current_profit >= minimum_profit:
-            return f"stale_profit_exit bars={bars_held} profit={current_profit * 100:.3f}%"
-        return None
+        return observation_bars, force_exit_bars
 
     def _position_bars_held(self, position: LivePosition | SimPosition) -> int:
         bars_held = int(getattr(position, "bars_held", 0) or 0)
@@ -3392,6 +4555,19 @@ def _float_value(value: object) -> float:
         return float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _sma_values(values: list[float], period: int) -> list[float]:
+    period = max(1, int(period))
+    output: list[float] = []
+    running = 0.0
+    for index, value in enumerate(values):
+        running += value
+        if index >= period:
+            running -= values[index - period]
+        window = min(index + 1, period)
+        output.append(running / window)
+    return output
 
 
 def _valid_mtf_timeframe(value: object, default: str) -> str:

@@ -219,7 +219,12 @@ def run_portfolio_backtest_config(
     candles_by_symbol = {symbol: candles_by_symbol[symbol] for symbol in symbols}
     candles_by_symbol = _align_candles_by_common_timestamps(candles_by_symbol)
     common_length = min(len(candles) for candles in candles_by_symbol.values())
-    client = HistoricalClient(candles_by_symbol, config.trading.timeframe, config.filters.timeframes)
+    historical_filter_timeframes = tuple(config.filters.timeframes)
+    if getattr(config.strategy, "low_base_volume_ignition_enabled", False):
+        for timeframe in ("15m", "30m", "1h", "4h"):
+            if timeframe not in historical_filter_timeframes:
+                historical_filter_timeframes += (timeframe,)
+    client = HistoricalClient(candles_by_symbol, config.trading.timeframe, historical_filter_timeframes)
     trader = BinanceAutoTrader(config, client, logger=lambda _message: None)
     signal_cache = _build_signal_cache(config, candles_by_symbol, common_length)
     reversal_cache = _build_indicator_reversal_cache(config, candles_by_symbol, common_length)
@@ -1257,6 +1262,11 @@ def _cached_entry_candidate(
     execution_timing_timestamps_by_symbol: dict[str, list[Any]] | None = None,
     decision_timestamp: Any = None,
 ) -> EntryCandidate | None:
+    if getattr(config.strategy, "low_base_volume_ignition_enabled", False):
+        candidate = trader._low_base_volume_ignition_entry_candidate(symbol)
+        if candidate is not None or getattr(config.strategy, "low_base_volume_ignition_disable_legacy", False):
+            return candidate
+
     start = max(0, index + 1 - config.trading.kline_limit)
     candles = candles_by_symbol[symbol][start:index + 1]
     if len(candles) < VolatilityBreakoutScalper(config.strategy).warmup_bars:
@@ -1308,6 +1318,11 @@ def _filtered_entry_candidate_from_signal(
 ) -> EntryCandidate | None:
     reference_guard_reason = _indicator_reference_guard_reason(config, client, symbol, signal)
     if reference_guard_reason:
+        return None
+
+    short_guard_reason = trader._indicator_short_guard_reason(symbol, signal, rank_candles)
+    if short_guard_reason:
+        trader._record_short_guard_reject(short_guard_reason)
         return None
 
     allowed, filter_reason = _cached_mtf_allows(trader, config, client, mtf_cache, symbol, index, signal.direction)
@@ -2933,6 +2948,8 @@ def _parse_trade_time(value: Any) -> Any:
 
 def _strategy_bucket(entry_reason: str) -> str:
     reason = entry_reason.lower()
+    if "vbp_" in reason or "volume_breakout_pullback" in reason:
+        return "volume_breakout_pullback"
     if "mtf_4h_rsi_regime_pullback" in reason:
         return "mtf_4h_rsi_regime_pullback"
     if "macro_event" in reason:

@@ -24,7 +24,7 @@ from .live_trader import AccountSnapshot, BinanceAutoTrader
 from .secrets import mask_secret, read_secret
 
 
-DEFAULT_CONFIG_PATH = "config.live.optimized_super_volume.json"
+DEFAULT_CONFIG_PATH = "config.live_safe.json"
 FALLBACK_CONFIG_PATH = "config.live.example.json"
 STRATEGY_MODE_INDICATOR = "指标反转稳定版"
 STRATEGY_MODE_SUPER_VOLUME = "强放量突破"

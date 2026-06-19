@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -220,6 +220,125 @@ class MacroEventConfig:
 
 
 @dataclass(frozen=True)
+class VbpUniverseConfig:
+    rank_jump_threshold: int = 50
+    rank_window_minutes: int = 30
+    rvol_entry_threshold: float = 1.5
+    rvol_trigger_threshold: float = 3.0
+    rvol_lookback_days: int = 20
+    watchlist_ttl_minutes: int = 60
+
+
+@dataclass(frozen=True)
+class VbpStructureFilterConfig:
+    consolidation_bars: int = 48
+    consolidation_threshold_pct: float = 0.02
+    funding_rate_max: float = 0.0001
+    daily_high_lookback_days: int = 90
+    daily_high_zone_pct: float = 0.9
+
+
+@dataclass(frozen=True)
+class VbpEntryConfig:
+    pullback_volume_ratio: float = 0.4
+    timeout_bars: int = 15
+    use_vwap_as_pullback_target: bool = True
+
+
+@dataclass(frozen=True)
+class VbpExitConfig:
+    stop_loss_pct: float = 0.025
+    tp1_rr_ratio: float = 1.5
+    tp1_close_ratio: float = 0.5
+    trailing_stop_after_tp1: bool = True
+
+
+@dataclass(frozen=True)
+class VbpPositionConfig:
+    size_multiplier: float = 1.5
+    max_positions: int = 3
+
+
+@dataclass(frozen=True)
+class VbpMarketFilterConfig:
+    enabled: bool = True
+    btc_15m_drop_block: float = -0.006
+    btc_1h_drop_block: float = -0.012
+    btc_1h_ema_bear_block_enabled: bool = True
+    breadth_enabled: bool = True
+    breadth_min_15m_up_pct: float = 0.38
+    breadth_min_1h_up_pct: float = 0.42
+    breadth_min_above_ema21_pct: float = 0.35
+
+
+@dataclass(frozen=True)
+class VbpRiskControlConfig:
+    enabled: bool = True
+    consecutive_loss_limit: int = 2
+    consecutive_loss_pause_minutes: int = 60
+    symbol_loss_cooldown_minutes: int = 240
+    daily_loss_stop_pct: float = 0.05
+    adaptive_exposure_enabled: bool = True
+    daily_loss_reduce_pct: float = 0.03
+    monthly_loss_reduce_pct: float = 0.08
+    drawdown_reduce_pct: float = 0.12
+    reduced_size_multiplier: float = 0.75
+    reduced_max_positions: int = 1
+    monthly_drawdown_control_enabled: bool = True
+    monthly_drawdown_half_size_pct: float = 0.10
+    monthly_drawdown_one_position_pct: float = 0.15
+    monthly_drawdown_stop_pct: float = 0.20
+    frequency_control_enabled: bool = True
+    symbol_entry_cooldown_minutes: int = 720
+    max_24h_return_pct: float = 0.18
+    correlated_alt_max_positions: int = 2
+    symbol_performance_guard_enabled: bool = True
+    symbol_recent_trade_window: int = 8
+    symbol_recent_min_trades: int = 5
+    symbol_recent_pf_min: float = 0.8
+    symbol_recent_net_pnl_min: float = 0.0
+    symbol_performance_cooldown_minutes: int = 1440
+    fail_fast_enabled: bool = True
+    fail_fast_minutes: int = 15
+    fail_fast_min_mfe_r: float = 0.25
+    fail_fast_lost_level_enabled: bool = True
+    fail_fast_lost_vwap_enabled: bool = True
+    breakeven_enabled: bool = True
+    breakeven_trigger_r: float = 0.8
+    breakeven_offset_pct: float = 0.0005
+
+
+@dataclass(frozen=True)
+class VbpStrategyConfig:
+    enabled: bool = False
+    universe: VbpUniverseConfig = field(default_factory=VbpUniverseConfig)
+    structure_filter: VbpStructureFilterConfig = field(default_factory=VbpStructureFilterConfig)
+    entry: VbpEntryConfig = field(default_factory=VbpEntryConfig)
+    exit: VbpExitConfig = field(default_factory=VbpExitConfig)
+    position: VbpPositionConfig = field(default_factory=VbpPositionConfig)
+    market_filter: VbpMarketFilterConfig = field(default_factory=VbpMarketFilterConfig)
+    risk_control: VbpRiskControlConfig = field(default_factory=VbpRiskControlConfig)
+
+
+@dataclass(frozen=True)
+class PortfolioControlConfig:
+    enabled: bool = False
+    max_open_positions: int = 3
+    max_vbp_positions: int = 2
+    max_indicator_positions: int = 2
+    max_altcoin_positions: int = 2
+    prevent_same_symbol_overlap: bool = True
+    symbol_cooldown_minutes: int = 360
+    symbol_loss_cooldown_minutes: int = 720
+    vbp_risk_multiplier: float = 1.0
+    indicator_risk_multiplier: float = 0.65
+    btc_weak_risk_reduction_enabled: bool = True
+    btc_weak_1h_return_pct: float = -0.012
+    btc_weak_4h_return_pct: float = -0.025
+    btc_weak_risk_multiplier: float = 0.5
+
+
+@dataclass(frozen=True)
 class LiveAppConfig:
     exchange: ExchangeConfig
     trading: LiveTradingConfig
@@ -227,6 +346,8 @@ class LiveAppConfig:
     filters: MultiTimeframeFilterConfig
     risk: LiveRiskConfig
     macro_events: MacroEventConfig
+    vbp_strategy: VbpStrategyConfig = field(default_factory=VbpStrategyConfig)
+    portfolio_control: PortfolioControlConfig = field(default_factory=PortfolioControlConfig)
 
 
 T = TypeVar("T")
@@ -294,6 +415,22 @@ def _normalize_timeframes(value: Any) -> list[str]:
     return timeframes
 
 
+def _coerce_vbp_config(values: dict[str, Any]) -> VbpStrategyConfig:
+    values = dict(values or {})
+    nested = {
+        "universe": VbpUniverseConfig,
+        "structure_filter": VbpStructureFilterConfig,
+        "entry": VbpEntryConfig,
+        "exit": VbpExitConfig,
+        "position": VbpPositionConfig,
+        "market_filter": VbpMarketFilterConfig,
+        "risk_control": VbpRiskControlConfig,
+    }
+    for key, cls in nested.items():
+        values[key] = _coerce_dataclass(cls, values.get(key, {}))
+    return _coerce_dataclass(VbpStrategyConfig, values)
+
+
 def load_live_config(path: str | Path) -> LiveAppConfig:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     return LiveAppConfig(
@@ -303,6 +440,8 @@ def load_live_config(path: str | Path) -> LiveAppConfig:
         filters=_coerce_dataclass(MultiTimeframeFilterConfig, raw.get("filters", {})),
         risk=_coerce_dataclass(LiveRiskConfig, raw.get("risk", {})),
         macro_events=_coerce_dataclass(MacroEventConfig, raw.get("macro_events", {})),
+        vbp_strategy=_coerce_vbp_config(raw.get("vbp_strategy", {})),
+        portfolio_control=_coerce_dataclass(PortfolioControlConfig, raw.get("portfolio_control", {})),
     )
 
 
@@ -314,6 +453,8 @@ def write_live_config(path: str | Path, config: LiveAppConfig) -> None:
         "filters": asdict(config.filters),
         "risk": asdict(config.risk),
         "macro_events": asdict(config.macro_events),
+        "vbp_strategy": asdict(config.vbp_strategy),
+        "portfolio_control": asdict(config.portfolio_control),
     }
     Path(path).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
