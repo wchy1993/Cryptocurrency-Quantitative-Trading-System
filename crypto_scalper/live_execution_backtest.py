@@ -447,6 +447,8 @@ def run_execution_backtest_config(
             timestamp,
             client,
             execution_config,
+            portfolio_symbol_cooldown_until,
+            portfolio_control_stats,
         )
         equity = _mark_equity(cash, positions, execution_candles_by_symbol, execution_index)
         trader._peak_equity = max(getattr(trader, "_peak_equity", starting_equity), equity)
@@ -671,6 +673,8 @@ def _fill_pending_entries_1m(
     timestamp: Any,
     client: HistoricalClient,
     execution_config: BacktestExecutionConfig,
+    portfolio_symbol_cooldown_until: dict[str, Any],
+    portfolio_control_stats: dict[str, int],
 ) -> float:
     if not pending_entries:
         return cash
@@ -690,6 +694,30 @@ def _fill_pending_entries_1m(
         if len(positions) >= _entry_position_limit(config):
             remaining.append(pending)
             continue
+        bucket = _portfolio_bucket_for_candidate(candidate)
+        portfolio_allowed, portfolio_reason, portfolio_multiplier = _portfolio_entry_decision(
+            config,
+            candidate.symbol,
+            bucket,
+            positions,
+            remaining,
+            execution_candles_by_symbol,
+            execution_index,
+            timestamp,
+            portfolio_symbol_cooldown_until,
+        )
+        if not portfolio_allowed:
+            _portfolio_count(portfolio_control_stats, portfolio_reason)
+            continue
+        if portfolio_multiplier <= 0:
+            _portfolio_count(portfolio_control_stats, "portfolio_zero_risk")
+            continue
+        if portfolio_multiplier < 0.999:
+            adjusted_signal = replace(
+                candidate.signal,
+                risk_multiplier=candidate.signal.risk_multiplier * portfolio_multiplier,
+            )
+            candidate = replace(candidate, signal=adjusted_signal)
         candle = execution_candles_by_symbol[candidate.symbol][execution_index]
         execution_candle = replace(
             candle,

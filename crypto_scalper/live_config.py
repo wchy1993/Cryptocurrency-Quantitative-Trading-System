@@ -102,7 +102,7 @@ class LiveTradingConfig:
     reduce_only_exit: bool = True
     use_protective_orders: bool = True
     working_type: str = "MARK_PRICE"
-    max_open_positions: int = 4
+    max_open_positions: int = 5
     super_volume_extra_slot_enabled: bool = False
     super_volume_extra_max_open_positions: int = 5
     super_volume_extra_min_rank_score: float = 6.2
@@ -170,7 +170,7 @@ class MultiTimeframeFilterConfig:
 @dataclass(frozen=True)
 class LiveRiskConfig:
     starting_capital_usdt: float = 100.0
-    max_account_margin_usage_pct: float = 0.08
+    max_account_margin_usage_pct: float = 0.10
     max_symbol_margin_pct: float = 0.04
     min_symbol_margin_pct: float = 0.01
     max_position_notional_usdt: float = 10_000.0
@@ -256,7 +256,7 @@ class VbpExitConfig:
 @dataclass(frozen=True)
 class VbpPositionConfig:
     size_multiplier: float = 1.5
-    max_positions: int = 3
+    max_positions: int = 2
 
 
 @dataclass(frozen=True)
@@ -323,16 +323,16 @@ class VbpStrategyConfig:
 @dataclass(frozen=True)
 class PortfolioControlConfig:
     enabled: bool = False
-    max_open_positions: int = 3
+    max_open_positions: int = 5
     max_vbp_positions: int = 2
-    max_indicator_positions: int = 2
-    max_altcoin_positions: int = 2
+    max_indicator_positions: int = 3
+    max_altcoin_positions: int = 0
     prevent_same_symbol_overlap: bool = True
-    symbol_cooldown_minutes: int = 360
-    symbol_loss_cooldown_minutes: int = 720
+    symbol_cooldown_minutes: int = 0
+    symbol_loss_cooldown_minutes: int = 0
     vbp_risk_multiplier: float = 1.0
-    indicator_risk_multiplier: float = 0.65
-    btc_weak_risk_reduction_enabled: bool = True
+    indicator_risk_multiplier: float = 1.0
+    btc_weak_risk_reduction_enabled: bool = False
     btc_weak_1h_return_pct: float = -0.012
     btc_weak_4h_return_pct: float = -0.025
     btc_weak_risk_multiplier: float = 0.5

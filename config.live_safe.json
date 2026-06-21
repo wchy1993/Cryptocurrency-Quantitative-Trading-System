@@ -226,7 +226,7 @@
     "reduce_only_exit": true,
     "use_protective_orders": true,
     "working_type": "MARK_PRICE",
-    "max_open_positions": 4,
+    "max_open_positions": 5,
     "super_volume_extra_slot_enabled": false,
     "super_volume_extra_max_open_positions": 5,
     "super_volume_extra_min_rank_score": 6.2,
@@ -679,7 +679,7 @@
     },
     "position": {
       "size_multiplier": 1.5,
-      "max_positions": 3
+      "max_positions": 2
     },
     "market_filter": {
       "enabled": false,
@@ -728,17 +728,17 @@
     }
   },
   "portfolio_control": {
-    "enabled": false,
-    "max_open_positions": 4,
-    "max_vbp_positions": 3,
-    "max_indicator_positions": 2,
-    "max_altcoin_positions": 3,
+    "enabled": true,
+    "max_open_positions": 5,
+    "max_vbp_positions": 2,
+    "max_indicator_positions": 3,
+    "max_altcoin_positions": 0,
     "prevent_same_symbol_overlap": true,
-    "symbol_cooldown_minutes": 120,
-    "symbol_loss_cooldown_minutes": 360,
+    "symbol_cooldown_minutes": 0,
+    "symbol_loss_cooldown_minutes": 0,
     "vbp_risk_multiplier": 1.0,
-    "indicator_risk_multiplier": 0.85,
-    "btc_weak_risk_reduction_enabled": true,
+    "indicator_risk_multiplier": 1.0,
+    "btc_weak_risk_reduction_enabled": false,
     "btc_weak_1h_return_pct": -0.02,
     "btc_weak_4h_return_pct": -0.04,
     "btc_weak_risk_multiplier": 0.75
