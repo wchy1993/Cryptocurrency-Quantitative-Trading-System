@@ -139,6 +139,8 @@ class TradingApp(tk.Tk):
         self.mainnet_confirmation = tk.StringVar()
         self.strategy_mode = tk.StringVar(value=STRATEGY_MODE_INDICATOR)
         self.strategy_mode_summary = tk.StringVar(value=STRATEGY_MODE_SUMMARIES[STRATEGY_MODE_INDICATOR])
+        self.strategy_indicator_enabled = tk.BooleanVar(value=True)
+        self.strategy_vbp_enabled = tk.BooleanVar(value=True)
         self.fast_ema = tk.StringVar()
         self.slow_ema = tk.StringVar()
         self.atr_period = tk.StringVar()
@@ -570,11 +572,12 @@ class TradingApp(tk.Tk):
         panel.columnconfigure(0, weight=1)
 
         ttk.Label(panel, text="持仓与币种盈亏", style="SectionTitle.TLabel").grid(row=0, column=0, sticky=tk.W)
-        columns = ("symbol", "side", "size_usdt", "leverage", "entry", "mark", "margin", "pnl", "roe")
+        columns = ("symbol", "side", "strategy", "size_usdt", "leverage", "entry", "mark", "margin", "pnl", "roe")
         self.positions = ttk.Treeview(panel, columns=columns, show="headings", height=9)
         headings = {
             "symbol": "币种",
             "side": "方向",
+            "strategy": "策略",
             "size_usdt": "仓位U",
             "leverage": "倍率",
             "entry": "开仓价",
@@ -586,6 +589,7 @@ class TradingApp(tk.Tk):
         widths = {
             "symbol": 92,
             "side": 78,
+            "strategy": 64,
             "size_usdt": 92,
             "leverage": 64,
             "entry": 86,
@@ -596,7 +600,7 @@ class TradingApp(tk.Tk):
         }
         for column in columns:
             self.positions.heading(column, text=headings[column])
-            self.positions.column(column, width=widths[column], anchor=tk.E if column not in {"symbol", "side"} else tk.W)
+            self.positions.column(column, width=widths[column], anchor=tk.E if column not in {"symbol", "side", "strategy"} else tk.W)
         self.positions.tag_configure("profit", foreground=THEME["profit"])
         self.positions.tag_configure("loss", foreground=THEME["loss"])
         self.positions.tag_configure("flat", foreground=THEME["muted"])
@@ -647,18 +651,21 @@ class TradingApp(tk.Tk):
         ttk.Label(parent, text="策略选择", style="SectionTitle.TLabel").grid(row=0, column=0, sticky=tk.W, pady=(0, 6))
         selector = ttk.Frame(parent, style="Panel.TFrame")
         selector.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 12))
-        selector.columnconfigure(1, weight=1)
-        ttk.Label(selector, text="当前策略").grid(row=0, column=0, sticky=tk.W, padx=(0, 8), pady=5)
-        combo = ttk.Combobox(
+        selector.columnconfigure(2, weight=1)
+        ttk.Label(selector, text="启用策略").grid(row=0, column=0, sticky=tk.W, padx=(0, 8), pady=5)
+        ttk.Checkbutton(
             selector,
-            textvariable=self.strategy_mode,
-            values=STRATEGY_MODE_VALUES,
-            state="readonly",
-            width=22,
-        )
-        combo.grid(row=0, column=1, sticky="ew", pady=5, padx=(0, 8))
-        combo.bind("<<ComboboxSelected>>", self._on_strategy_mode_selected)
-        ttk.Button(selector, text="应用到表单", command=self._apply_selected_strategy_to_form).grid(row=0, column=2, sticky=tk.E, pady=5)
+            text="IND indicator_reversal",
+            variable=self.strategy_indicator_enabled,
+            command=self._update_strategy_mode_summary,
+        ).grid(row=0, column=1, sticky=tk.W, padx=(0, 12), pady=5)
+        ttk.Checkbutton(
+            selector,
+            text="VBP 放量突破回踩",
+            variable=self.strategy_vbp_enabled,
+            command=self._update_strategy_mode_summary,
+        ).grid(row=0, column=2, sticky=tk.W, padx=(0, 12), pady=5)
+        ttk.Button(selector, text="应用分仓", command=self._apply_selected_strategy_to_form).grid(row=0, column=3, sticky=tk.E, pady=5)
         ttk.Label(
             selector,
             textvariable=self.strategy_mode_summary,
@@ -671,34 +678,22 @@ class TradingApp(tk.Tk):
         self._update_strategy_mode_summary()
 
     def _update_strategy_mode_summary(self) -> None:
-        mode = self._selected_strategy_mode()
-        self.strategy_mode_summary.set(STRATEGY_MODE_SUMMARIES.get(mode, STRATEGY_MODE_SUMMARIES[STRATEGY_MODE_MANUAL]))
+        enabled = []
+        if self.strategy_indicator_enabled.get():
+            enabled.append("IND")
+        if self.strategy_vbp_enabled.get():
+            enabled.append("VBP")
+        text = "+".join(enabled) if enabled else "无"
+        self.strategy_mode_summary.set(f"当前启用：{text}。分仓限制：IND最多3仓，VBP最多2仓，总持仓最多5仓。策略内部参数保持配置文件原值。")
 
     def _selected_strategy_mode(self) -> str:
         mode = self.strategy_mode.get().strip()
         return mode if mode in STRATEGY_MODE_VALUES else STRATEGY_MODE_MANUAL
 
     def _apply_selected_strategy_to_form(self) -> None:
-        mode = self._selected_strategy_mode()
         self._update_strategy_mode_summary()
-        if mode == STRATEGY_MODE_INDICATOR:
-            self.allow_short.set(True)
-            self.short_risk_bias.set("1.05")
-            self.risk_per_trade.set("0.065")
-            self.max_open_positions.set("4")
-            self.spike_trade_enabled.set(False)
-            self.rsi_reversal_enabled.set(False)
-            self.entry_scan_seconds.set("300")
-            self.leverage.set("20")
-        elif mode == STRATEGY_MODE_SUPER_VOLUME:
-            self.spike_trade_enabled.set(False)
-            self.rsi_reversal_enabled.set(False)
-        elif mode == STRATEGY_MODE_OI_FLUSH:
-            self.allow_short.set(False)
-            self.short_risk_bias.set("0.0")
-            self.spike_trade_enabled.set(False)
-            self.rsi_reversal_enabled.set(False)
-        self.log(f"策略已切换为: {mode}。启动或保存时会写入对应策略开关。")
+        self.max_open_positions.set("5")
+        self.log("已应用分仓: IND最多3仓，VBP最多2仓，总持仓最多5仓。策略内部参数未修改。")
 
     def _load_initial_config(self) -> None:
         path = Path(DEFAULT_CONFIG_PATH)
@@ -967,6 +962,8 @@ class TradingApp(tk.Tk):
         self.macro_nfp_min_surprise_k.set(str(config.macro_events.nfp_min_surprise_k))
         self.macro_cpi_min_surprise_pct.set(str(config.macro_events.cpi_min_surprise_pct))
         self.strategy_mode.set(_detect_strategy_mode(config))
+        self.strategy_indicator_enabled.set(_indicator_strategy_enabled(config))
+        self.strategy_vbp_enabled.set(bool(getattr(config.vbp_strategy, "enabled", False)))
         self._update_strategy_mode_summary()
         self.status_var.set(f"{config.exchange.environment.upper()} / {'DRY-RUN' if config.trading.dry_run else 'LIVE'}")
 
@@ -1081,8 +1078,21 @@ class TradingApp(tk.Tk):
             nfp_min_surprise_k=read_float(self.macro_nfp_min_surprise_k, base.macro_events.nfp_min_surprise_k),
             cpi_min_surprise_pct=read_float(self.macro_cpi_min_surprise_pct, base.macro_events.cpi_min_surprise_pct),
         )
-        config = LiveAppConfig(exchange=exchange, trading=trading, strategy=strategy, filters=base.filters, risk=risk, macro_events=macro_events)
-        return _config_with_strategy_mode(config, self._selected_strategy_mode())
+        config = LiveAppConfig(
+            exchange=exchange,
+            trading=trading,
+            strategy=strategy,
+            filters=base.filters,
+            risk=risk,
+            macro_events=macro_events,
+            vbp_strategy=base.vbp_strategy,
+            portfolio_control=base.portfolio_control,
+        )
+        return _config_with_strategy_selection(
+            config,
+            indicator_enabled=bool(self.strategy_indicator_enabled.get()),
+            vbp_enabled=bool(self.strategy_vbp_enabled.get()),
+        )
 
     def _apply_symbol_preset(self) -> None:
         self._set_symbols_value(DEFAULT_SYMBOLS)
@@ -1146,7 +1156,7 @@ class TradingApp(tk.Tk):
     def _render_empty_positions(self, config: LiveAppConfig) -> None:
         self.positions.delete(*self.positions.get_children())
         for symbol in config.trading.symbols:
-            self.positions.insert("", tk.END, values=(symbol, "空仓", "0.00", "-", "-", "-", "0.00", "0.00", "0.00%"), tags=("flat",))
+            self.positions.insert("", tk.END, values=(symbol, "空仓", "-", "0.00", "-", "-", "-", "0.00", "0.00", "0.00%"), tags=("flat",))
 
     def _render_account(self, snapshot: AccountSnapshot, sync_starting_capital: bool = False) -> None:
         if sync_starting_capital:
@@ -1181,7 +1191,7 @@ class TradingApp(tk.Tk):
         for symbol in _position_symbols_first(config.trading.symbols, rows_by_symbol):
             rows = rows_by_symbol.get(symbol)
             if not rows:
-                self.positions.insert("", tk.END, values=(symbol, "空仓", "0.00", "-", "-", "-", "0.00", "0.00", "0.00%"), tags=("flat",))
+                self.positions.insert("", tk.END, values=(symbol, "空仓", "-", "0.00", "-", "-", "-", "0.00", "0.00", "0.00%"), tags=("flat",))
                 continue
             for position in rows:
                 margin = position.notional / position.leverage if position.leverage > 0 else 0.0
@@ -1196,6 +1206,7 @@ class TradingApp(tk.Tk):
                     values=(
                         position.symbol,
                         side,
+                        _strategy_short_name(getattr(position, "entry_reason", "")),
                         _fmt_float(position.notional, 2),
                         f"{position.leverage}x",
                         _fmt_float(position.entry_price, 4),
@@ -1406,6 +1417,59 @@ def _position_symbols_first(symbols: tuple[str, ...], rows_by_symbol: dict[str, 
     inactive = [symbol for symbol in symbols if not rows_by_symbol.get(symbol)]
     extras = [symbol for symbol in rows_by_symbol if symbol not in symbols]
     return active + extras + inactive
+
+
+def _indicator_strategy_enabled(config: LiveAppConfig) -> bool:
+    strategy = config.strategy
+    return bool(
+        config.filters.extreme_reversal_entry_enabled
+        or getattr(strategy, "indicator_confirmed_cross_extreme_required_enabled", False)
+        or getattr(strategy, "indicator_reversal_size_multiplier", 0.0) > 0
+    )
+
+
+def _strategy_short_name(entry_reason: str | None) -> str:
+    reason = (entry_reason or "").lower()
+    if not reason:
+        return "未知"
+    if reason.startswith("vbp_") or "volume_breakout_pullback" in reason:
+        return "VBP"
+    if "indicator_" in reason or "macd_" in reason:
+        return "IND"
+    if "super_volume" in reason or "startup_breakout" in reason:
+        return "SV"
+    if "macro" in reason:
+        return "MACRO"
+    if "trend" in reason or "breakout" in reason:
+        return "TRD"
+    return "其他"
+
+
+def _config_with_strategy_selection(
+    config: LiveAppConfig,
+    *,
+    indicator_enabled: bool,
+    vbp_enabled: bool,
+) -> LiveAppConfig:
+    trading = replace(config.trading, max_open_positions=5)
+    vbp_strategy = replace(config.vbp_strategy, enabled=vbp_enabled)
+    portfolio_control = replace(
+        config.portfolio_control,
+        enabled=True,
+        max_open_positions=5,
+        max_indicator_positions=3 if indicator_enabled else 0,
+        max_vbp_positions=2 if vbp_enabled else 0,
+    )
+    filters = config.filters
+    if not indicator_enabled:
+        filters = replace(filters, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False)
+    return replace(
+        config,
+        trading=trading,
+        filters=filters,
+        vbp_strategy=vbp_strategy,
+        portfolio_control=portfolio_control,
+    )
 
 
 def _detect_strategy_mode(config: LiveAppConfig) -> str:

@@ -143,6 +143,17 @@ class StrategyConfig:
     stale_force_exit_bars: int = 12
     stale_super_volume_observation_bars: int = 3
     stale_super_volume_force_exit_bars: int = 6
+    indicator_stale_observation_bars: int = 6
+    indicator_stale_force_exit_bars: int = 8
+    indicator_peak_giveback_enabled: bool = False
+    indicator_peak_breakeven_trigger_pct: float = 0.005
+    indicator_peak_breakeven_floor_pct: float = 0.0008
+    indicator_peak_giveback_low_trigger_pct: float = 0.008
+    indicator_peak_giveback_low_floor_pct: float = 0.0010
+    indicator_peak_giveback_mid_trigger_pct: float = 0.012
+    indicator_peak_giveback_mid_retrace_pct: float = 0.0045
+    indicator_peak_giveback_high_trigger_pct: float = 0.018
+    indicator_peak_giveback_high_floor_pct: float = 0.0050
     indicator_trend_guard_enabled: bool = False
     indicator_trend_guard_lookback_bars: int = 12
     indicator_trend_guard_buffer_atr: float = 0.10

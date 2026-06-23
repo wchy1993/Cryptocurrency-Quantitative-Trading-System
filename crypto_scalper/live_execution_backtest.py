@@ -98,11 +98,15 @@ class VbpSymbolFeatures:
 class VbpRuntimeControl:
     loss_streak: int = 0
     pause_until: Any = None
+    loss_reduce_until: Any = None
     peak_equity: float = 0.0
     symbol_cooldown_until: dict[str, Any] | None = None
     daily_pnl: dict[Any, float] | None = None
     monthly_pnl: dict[str, float] | None = None
     monthly_peak_equity: dict[str, float] | None = None
+    weekly_pnl: dict[str, float] | None = None
+    weekly_start_equity: dict[str, float] | None = None
+    weekly_peak_equity: dict[str, float] | None = None
     symbol_recent_pnl: dict[str, list[float]] | None = None
 
     def __post_init__(self) -> None:
@@ -114,8 +118,26 @@ class VbpRuntimeControl:
             self.monthly_pnl = {}
         if self.monthly_peak_equity is None:
             self.monthly_peak_equity = {}
+        if self.weekly_pnl is None:
+            self.weekly_pnl = {}
+        if self.weekly_start_equity is None:
+            self.weekly_start_equity = {}
+        if self.weekly_peak_equity is None:
+            self.weekly_peak_equity = {}
         if self.symbol_recent_pnl is None:
             self.symbol_recent_pnl = {}
+
+
+@dataclass
+class PortfolioRuntimeControl:
+    weekly_start_equity: dict[str, float] | None = None
+    weekly_peak_equity: dict[str, float] | None = None
+
+    def __post_init__(self) -> None:
+        if self.weekly_start_equity is None:
+            self.weekly_start_equity = {}
+        if self.weekly_peak_equity is None:
+            self.weekly_peak_equity = {}
 
 
 def run_execution_backtest(
@@ -368,6 +390,7 @@ def run_execution_backtest_config(
     vbp_stats: dict[str, int] = {}
     portfolio_control_stats: dict[str, int] = {}
     portfolio_symbol_cooldown_until: dict[str, Any] = {}
+    portfolio_runtime = PortfolioRuntimeControl()
     vbp_control = VbpRuntimeControl()
     vbp_feature_cache = _build_vbp_feature_cache(config, execution_candles_by_symbol) if vbp_enabled else {}
     if mtf_candidate_cache is None:
@@ -449,6 +472,7 @@ def run_execution_backtest_config(
             execution_config,
             portfolio_symbol_cooldown_until,
             portfolio_control_stats,
+            portfolio_runtime,
         )
         equity = _mark_equity(cash, positions, execution_candles_by_symbol, execution_index)
         trader._peak_equity = max(getattr(trader, "_peak_equity", starting_equity), equity)
@@ -524,6 +548,7 @@ def run_execution_backtest_config(
                 vbp_stats,
                 portfolio_symbol_cooldown_until,
                 portfolio_control_stats,
+                portfolio_runtime,
             )
             if len(positions) > opened_before:
                 _record_monthly_equity(monthly_stats, timestamp, _mark_equity(cash, positions, execution_candles_by_symbol, execution_index))
@@ -571,6 +596,8 @@ def run_execution_backtest_config(
             timestamp,
             portfolio_symbol_cooldown_until,
             portfolio_control_stats,
+            equity,
+            portfolio_runtime,
         )
         opened = 0
         scan_start_positions = len(positions) + len(pending_entries)
@@ -675,6 +702,7 @@ def _fill_pending_entries_1m(
     execution_config: BacktestExecutionConfig,
     portfolio_symbol_cooldown_until: dict[str, Any],
     portfolio_control_stats: dict[str, int],
+    portfolio_runtime: PortfolioRuntimeControl,
 ) -> float:
     if not pending_entries:
         return cash
@@ -695,6 +723,7 @@ def _fill_pending_entries_1m(
             remaining.append(pending)
             continue
         bucket = _portfolio_bucket_for_candidate(candidate)
+        current_equity = _mark_equity(cash, positions, execution_candles_by_symbol, execution_index)
         portfolio_allowed, portfolio_reason, portfolio_multiplier = _portfolio_entry_decision(
             config,
             candidate.symbol,
@@ -705,6 +734,8 @@ def _fill_pending_entries_1m(
             execution_index,
             timestamp,
             portfolio_symbol_cooldown_until,
+            current_equity,
+            portfolio_runtime,
         )
         if not portfolio_allowed:
             _portfolio_count(portfolio_control_stats, portfolio_reason)
@@ -1090,7 +1121,8 @@ def _manage_positions_1m(
                 trader.client.symbol_rules(symbol),
                 vbp_stats if vbp_stats is not None else {},
             )
-            vbp_exit_reason = _vbp_dynamic_exit_reason(config, position, candle, vbp_stats if vbp_stats is not None else {})
+            recent_1m_candles = execution_candles_by_symbol[symbol][max(0, execution_index - 40):execution_index + 1]
+            vbp_exit_reason = _vbp_dynamic_exit_reason(config, position, candle, vbp_stats if vbp_stats is not None else {}, recent_1m_candles)
             if vbp_exit_reason:
                 cash = _close_position(
                     config,
@@ -1296,6 +1328,9 @@ def _update_vbp_control_after_trades(
         month_key = timestamp.strftime("%Y-%m") if hasattr(timestamp, "strftime") else str(timestamp)[:7]
         if control.monthly_pnl is not None:
             control.monthly_pnl[month_key] = control.monthly_pnl.get(month_key, 0.0) + pnl
+        week_key = _week_key(timestamp)
+        if control.weekly_pnl is not None:
+            control.weekly_pnl[week_key] = control.weekly_pnl.get(week_key, 0.0) + pnl
         if control.symbol_recent_pnl is not None:
             symbol = str(trade.get("symbol"))
             recent = control.symbol_recent_pnl.setdefault(symbol, [])
@@ -1313,6 +1348,14 @@ def _update_vbp_control_after_trades(
                     _vbp_count(stats, "symbol_performance_cooldown_count")
         if pnl < 0:
             control.loss_streak += 1
+            if bool(getattr(risk, "consecutive_loss_reduce_enabled", False)):
+                reduce_losses = max(1, int(getattr(risk, "consecutive_loss_reduce_losses", 1)))
+                if control.loss_streak >= reduce_losses:
+                    reduce_minutes = max(1, int(getattr(risk, "consecutive_loss_reduce_minutes", 1440)))
+                    reduce_until = timestamp + timedelta(minutes=reduce_minutes)
+                    if control.loss_reduce_until is None or reduce_until > control.loss_reduce_until:
+                        control.loss_reduce_until = reduce_until
+                    _vbp_count(stats, "consecutive_loss_reduce_count")
             if control.symbol_cooldown_until is not None:
                 cooldown_minutes = max(0, int(risk.symbol_loss_cooldown_minutes))
                 if cooldown_minutes > 0:
@@ -1432,6 +1475,49 @@ def _portfolio_btc_weak_multiplier(
     return 1.0
 
 
+def _week_key(timestamp: Any) -> str:
+    if hasattr(timestamp, "isocalendar"):
+        iso = timestamp.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+    return str(timestamp)[:10]
+
+
+def _portfolio_weekly_risk_multiplier(
+    config: Any,
+    runtime: PortfolioRuntimeControl | None,
+    timestamp: Any,
+    current_equity: float | None,
+) -> tuple[float, str]:
+    if runtime is None or current_equity is None:
+        return 1.0, "portfolio_weekly_base"
+    if not _portfolio_control_enabled(config):
+        return 1.0, "portfolio_weekly_disabled"
+    control = config.portfolio_control
+    if not bool(getattr(control, "weekly_drawdown_control_enabled", False)):
+        return 1.0, "portfolio_weekly_disabled"
+    key = _week_key(timestamp)
+    assert runtime.weekly_start_equity is not None
+    assert runtime.weekly_peak_equity is not None
+    runtime.weekly_start_equity.setdefault(key, current_equity)
+    runtime.weekly_peak_equity[key] = max(runtime.weekly_peak_equity.get(key, current_equity), current_equity)
+    start = max(runtime.weekly_start_equity.get(key, current_equity), 1e-12)
+    peak = max(runtime.weekly_peak_equity.get(key, current_equity), 1e-12)
+    drawdown = max(0.0, 1.0 - current_equity / peak)
+    loss = max(0.0, 1.0 - current_equity / start)
+    if drawdown >= float(getattr(control, "weekly_drawdown_stop_pct", 0.0)) > 0:
+        return 0.0, "portfolio_weekly_drawdown_stop"
+    if loss >= float(getattr(control, "weekly_loss_stop_pct", 0.0)) > 0:
+        return 0.0, "portfolio_weekly_loss_stop"
+    multiplier = 1.0
+    if drawdown >= float(getattr(control, "weekly_drawdown_reduce_pct", 0.0)) > 0:
+        multiplier = min(multiplier, max(0.0, min(1.0, float(getattr(control, "weekly_drawdown_risk_multiplier", 0.5)))))
+    if loss >= float(getattr(control, "weekly_loss_reduce_pct", 0.0)) > 0:
+        multiplier = min(multiplier, max(0.0, min(1.0, float(getattr(control, "weekly_loss_risk_multiplier", 0.5)))))
+    if multiplier < 0.999:
+        return multiplier, "portfolio_weekly_risk_reduced"
+    return 1.0, "portfolio_weekly_base"
+
+
 def _portfolio_entry_decision(
     config: Any,
     symbol: str,
@@ -1442,6 +1528,8 @@ def _portfolio_entry_decision(
     execution_index: int,
     timestamp: Any,
     symbol_cooldown_until: dict[str, Any],
+    current_equity: float | None = None,
+    portfolio_runtime: PortfolioRuntimeControl | None = None,
 ) -> tuple[bool, str, float]:
     if not _portfolio_control_enabled(config):
         return True, "portfolio_ok", 1.0
@@ -1469,7 +1557,12 @@ def _portfolio_entry_decision(
         multiplier = float(control.indicator_risk_multiplier)
     else:
         multiplier = 1.0
-    multiplier *= _portfolio_btc_weak_multiplier(config, execution_candles_by_symbol, execution_index)
+    weekly_multiplier, weekly_reason = _portfolio_weekly_risk_multiplier(config, portfolio_runtime, timestamp, current_equity)
+    if weekly_multiplier <= 0:
+        return False, weekly_reason, 0.0
+    multiplier *= weekly_multiplier
+    if bucket == "vbp":
+        multiplier *= _portfolio_btc_weak_multiplier(config, execution_candles_by_symbol, execution_index)
     return True, "portfolio_ok", max(0.0, multiplier)
 
 
@@ -1483,6 +1576,8 @@ def _portfolio_filter_candidates_for_scan(
     timestamp: Any,
     symbol_cooldown_until: dict[str, Any],
     stats: dict[str, int],
+    current_equity: float,
+    portfolio_runtime: PortfolioRuntimeControl,
 ) -> list[EntryCandidate]:
     if not _portfolio_control_enabled(config):
         return candidates
@@ -1500,6 +1595,8 @@ def _portfolio_filter_candidates_for_scan(
             execution_index,
             timestamp,
             symbol_cooldown_until,
+            current_equity,
+            portfolio_runtime,
         )
         if not allowed:
             _portfolio_count(stats, reason)
@@ -1576,6 +1673,15 @@ def _vbp_dynamic_exposure(
         control.peak_equity = equity
     control.peak_equity = max(control.peak_equity, equity)
     drawdown = 1.0 - equity / max(control.peak_equity, 1e-12)
+    week_key = _week_key(timestamp)
+    if control.weekly_start_equity is not None:
+        control.weekly_start_equity.setdefault(week_key, equity)
+    if control.weekly_peak_equity is not None:
+        control.weekly_peak_equity[week_key] = max(control.weekly_peak_equity.get(week_key, equity), equity)
+    weekly_start = control.weekly_start_equity.get(week_key, equity) if control.weekly_start_equity else equity
+    weekly_peak = control.weekly_peak_equity.get(week_key, equity) if control.weekly_peak_equity else equity
+    weekly_drawdown = 1.0 - equity / max(weekly_peak, 1e-12)
+    weekly_loss = max(0.0, 1.0 - equity / max(weekly_start, 1e-12))
     month_key = timestamp.strftime("%Y-%m") if hasattr(timestamp, "strftime") else str(timestamp)[:7]
     if control.monthly_peak_equity is not None:
         control.monthly_peak_equity[month_key] = max(control.monthly_peak_equity.get(month_key, equity), equity)
@@ -1583,6 +1689,28 @@ def _vbp_dynamic_exposure(
     monthly_drawdown = 1.0 - equity / max(monthly_peak, 1e-12)
     month_pnl = control.monthly_pnl.get(month_key, 0.0) if control.monthly_pnl else 0.0
     day_pnl = control.daily_pnl.get(timestamp.date(), 0.0) if control.daily_pnl and hasattr(timestamp, "date") else 0.0
+    if bool(getattr(risk, "weekly_drawdown_control_enabled", False)):
+        if weekly_drawdown >= float(getattr(risk, "weekly_drawdown_stop_pct", 0.0)) > 0:
+            return 0, 0.0, "weekly_drawdown_stop"
+        if weekly_loss >= float(getattr(risk, "weekly_loss_stop_pct", 0.0)) > 0:
+            return 0, 0.0, "weekly_loss_stop"
+        if (
+            weekly_drawdown >= float(getattr(risk, "weekly_drawdown_one_position_pct", 0.0)) > 0
+            or weekly_loss >= float(getattr(risk, "weekly_loss_one_position_pct", 0.0)) > 0
+        ):
+            return 1, min(base_size_multiplier, float(risk.reduced_size_multiplier)), "weekly_one_position"
+        if (
+            weekly_drawdown >= float(getattr(risk, "weekly_drawdown_half_size_pct", 0.0)) > 0
+            or weekly_loss >= float(getattr(risk, "weekly_loss_reduce_pct", 0.0)) > 0
+        ):
+            return base_max_positions, min(base_size_multiplier, base_size_multiplier * 0.5), "weekly_half_size"
+    if bool(getattr(risk, "consecutive_loss_reduce_enabled", False)):
+        if control.loss_reduce_until is not None and timestamp < control.loss_reduce_until:
+            return (
+                max(1, min(base_max_positions, int(getattr(risk, "consecutive_loss_reduced_max_positions", 1)))),
+                min(base_size_multiplier, float(getattr(risk, "consecutive_loss_reduced_size_multiplier", 0.65))),
+                "consecutive_loss_reduced",
+            )
     if bool(getattr(risk, "monthly_drawdown_control_enabled", False)):
         if monthly_drawdown >= float(risk.monthly_drawdown_stop_pct):
             return 0, 0.0, "monthly_stop"
@@ -1768,6 +1896,7 @@ def _run_vbp_scan_1m(
     stats: dict[str, int],
     portfolio_symbol_cooldown_until: dict[str, Any],
     portfolio_control_stats: dict[str, int],
+    portfolio_runtime: PortfolioRuntimeControl,
 ) -> float:
     vbp = config.vbp_strategy
     market_allowed, market_reason = _vbp_market_allows(config, execution_candles_by_symbol, execution_index)
@@ -1850,6 +1979,7 @@ def _run_vbp_scan_1m(
             control,
             portfolio_symbol_cooldown_until,
             portfolio_control_stats,
+            portfolio_runtime,
         )
         if did_open:
             opened += 1
@@ -1877,6 +2007,7 @@ def _vbp_process_symbol(
     control: VbpRuntimeControl,
     portfolio_symbol_cooldown_until: dict[str, Any],
     portfolio_control_stats: dict[str, int],
+    portfolio_runtime: PortfolioRuntimeControl,
 ) -> tuple[float, bool]:
     vbp = config.vbp_strategy
     candles = execution_candles_by_symbol[symbol]
@@ -1902,6 +2033,7 @@ def _vbp_process_symbol(
             control,
             portfolio_symbol_cooldown_until,
             portfolio_control_stats,
+            portfolio_runtime,
         )
 
     structure = vbp.structure_filter
@@ -1968,6 +2100,7 @@ def _vbp_process_pending(
     control: VbpRuntimeControl,
     portfolio_symbol_cooldown_until: dict[str, Any],
     portfolio_control_stats: dict[str, int],
+    portfolio_runtime: PortfolioRuntimeControl,
 ) -> tuple[float, bool]:
     vbp = config.vbp_strategy
     candles = execution_candles_by_symbol[pending.symbol]
@@ -2007,6 +2140,8 @@ def _vbp_process_pending(
         execution_index,
         timestamp,
         portfolio_symbol_cooldown_until,
+        _mark_equity(cash, positions, execution_candles_by_symbol, execution_index),
+        portfolio_runtime,
     )
     if not portfolio_allowed:
         _portfolio_count(portfolio_control_stats, portfolio_reason)
@@ -2129,10 +2264,39 @@ def _vbp_dynamic_exit_reason(
     position: PortfolioPosition,
     candle: Candle,
     stats: dict[str, int],
+    recent_1m_candles: list[Candle] | None = None,
 ) -> str | None:
     risk = config.vbp_strategy.risk_control
     if not bool(risk.enabled):
         return None
+    exit_config = config.vbp_strategy.exit
+    current_profit = (candle.close - position.entry_price) / max(position.entry_price, 1e-12)
+    peak_profit = (position.best_price - position.entry_price) / max(position.entry_price, 1e-12)
+    pullback = max(0.0, (position.best_price - candle.close) / max(position.entry_price, 1e-12))
+
+    if bool(getattr(exit_config, "peak_giveback_enabled", True)):
+        trigger = max(0.0, float(getattr(exit_config, "peak_giveback_trigger_pct", 0.008)))
+        floor = float(getattr(exit_config, "peak_giveback_floor_pct", 0.0015))
+        retrace = max(0.0, float(getattr(exit_config, "peak_giveback_retrace_pct", 0.005)))
+        if peak_profit >= trigger and (current_profit <= floor or pullback >= retrace):
+            _vbp_count(stats, "peak_giveback_exit_count")
+            return (
+                f"vbp_peak_giveback peak={peak_profit * 100:.3f}% "
+                f"now={current_profit * 100:.3f}% pullback={pullback * 100:.3f}%"
+            )
+
+    if bool(getattr(exit_config, "large_bear_exit_enabled", True)) and recent_1m_candles:
+        min_peak = float(getattr(exit_config, "large_bear_min_peak_profit_pct", 0.006))
+        min_current = float(getattr(exit_config, "large_bear_min_current_profit_pct", -0.001))
+        if peak_profit >= min_peak and current_profit >= min_current:
+            bear_reason = _vbp_large_bearish_candle_reason(recent_1m_candles, exit_config)
+            if bear_reason:
+                _vbp_count(stats, "large_bear_exit_count")
+                return (
+                    f"vbp_high_volume_bear_exit {bear_reason} "
+                    f"peak={peak_profit * 100:.3f}% now={current_profit * 100:.3f}%"
+                )
+
     risk_price = _vbp_risk_price(position)
     mfe_r = position.mfe / max(risk_price * position.quantity, 1e-12)
     if bool(risk.breakeven_enabled) and " vbp_be=1" not in position.entry_reason:
@@ -2159,6 +2323,31 @@ def _vbp_dynamic_exit_reason(
             _vbp_count(stats, "fail_fast_lost_vwap_count")
             return "vbp_fail_fast_lost_vwap"
     return None
+
+
+def _vbp_large_bearish_candle_reason(candles: list[Candle], exit_config: Any) -> str | None:
+    lookback = max(3, int(getattr(exit_config, "large_bear_lookback_bars", 20)))
+    if len(candles) < lookback + 1:
+        return None
+    candle = candles[-1]
+    previous = candles[-lookback - 1:-1]
+    average_volume = sum(max(item.volume, 0.0) for item in previous) / max(1, len(previous))
+    volume_multiplier = candle.volume / max(average_volume, 1e-12)
+    candle_range = max(candle.high - candle.low, 1e-12)
+    close_position = (candle.close - candle.low) / candle_range
+    body_pct = abs(candle.close - candle.open) / max(candle.open, 1e-12)
+    if candle.close >= candle.open:
+        return None
+    if volume_multiplier < float(getattr(exit_config, "large_bear_volume_multiplier", 2.0)):
+        return None
+    if close_position > float(getattr(exit_config, "large_bear_max_close_position", 0.35)):
+        return None
+    if body_pct < float(getattr(exit_config, "large_bear_min_body_pct", 0.0015)):
+        return None
+    return (
+        f"vol={volume_multiplier:.2f}x close_pos={close_position:.2f} "
+        f"body={body_pct * 100:.3f}%"
+    )
 
 
 def _vbp_risk_price(position: PortfolioPosition) -> float:

@@ -251,6 +251,17 @@ class VbpExitConfig:
     tp1_rr_ratio: float = 1.5
     tp1_close_ratio: float = 0.5
     trailing_stop_after_tp1: bool = True
+    peak_giveback_enabled: bool = True
+    peak_giveback_trigger_pct: float = 0.012
+    peak_giveback_floor_pct: float = 0.002
+    peak_giveback_retrace_pct: float = 0.008
+    large_bear_exit_enabled: bool = True
+    large_bear_min_peak_profit_pct: float = 0.010
+    large_bear_min_current_profit_pct: float = 0.002
+    large_bear_volume_multiplier: float = 3.0
+    large_bear_lookback_bars: int = 20
+    large_bear_max_close_position: float = 0.25
+    large_bear_min_body_pct: float = 0.0025
 
 
 @dataclass(frozen=True)
@@ -288,6 +299,18 @@ class VbpRiskControlConfig:
     monthly_drawdown_half_size_pct: float = 0.10
     monthly_drawdown_one_position_pct: float = 0.15
     monthly_drawdown_stop_pct: float = 0.20
+    weekly_drawdown_control_enabled: bool = False
+    weekly_drawdown_half_size_pct: float = 0.08
+    weekly_drawdown_one_position_pct: float = 0.12
+    weekly_drawdown_stop_pct: float = 0.16
+    weekly_loss_reduce_pct: float = 0.06
+    weekly_loss_one_position_pct: float = 0.10
+    weekly_loss_stop_pct: float = 0.14
+    consecutive_loss_reduce_enabled: bool = False
+    consecutive_loss_reduce_losses: int = 1
+    consecutive_loss_reduce_minutes: int = 1440
+    consecutive_loss_reduced_size_multiplier: float = 0.65
+    consecutive_loss_reduced_max_positions: int = 1
     frequency_control_enabled: bool = True
     symbol_entry_cooldown_minutes: int = 720
     max_24h_return_pct: float = 0.18
@@ -336,6 +359,13 @@ class PortfolioControlConfig:
     btc_weak_1h_return_pct: float = -0.012
     btc_weak_4h_return_pct: float = -0.025
     btc_weak_risk_multiplier: float = 0.5
+    weekly_drawdown_control_enabled: bool = False
+    weekly_drawdown_reduce_pct: float = 0.10
+    weekly_drawdown_stop_pct: float = 0.18
+    weekly_drawdown_risk_multiplier: float = 0.5
+    weekly_loss_reduce_pct: float = 0.08
+    weekly_loss_stop_pct: float = 0.15
+    weekly_loss_risk_multiplier: float = 0.5
 
 
 @dataclass(frozen=True)

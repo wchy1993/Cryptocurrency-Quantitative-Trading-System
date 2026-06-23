@@ -224,6 +224,14 @@ class BinanceAutoTrader:
         self._position_opened_at: dict[str, datetime] = {}
         self._portfolio_symbol_cooldown_until: dict[str, float] = {}
         self._portfolio_btc_weak_cache: tuple[float, float] | None = None
+        self._portfolio_week_key: tuple[int, int] | None = None
+        self._portfolio_week_start_equity = config.risk.starting_capital_usdt
+        self._portfolio_week_peak_equity = config.risk.starting_capital_usdt
+        self._vbp_live_week_key: tuple[int, int] | None = None
+        self._vbp_live_week_start_equity = config.risk.starting_capital_usdt
+        self._vbp_live_week_peak_equity = config.risk.starting_capital_usdt
+        self._vbp_live_loss_streak = 0
+        self._vbp_live_loss_reduce_until = 0.0
         self._vbp_watch_until: dict[str, datetime] = {}
         self._vbp_breakouts: dict[str, VbpLiveBreakoutState] = {}
         self._vbp_stats: dict[str, int] = {}
@@ -1375,7 +1383,14 @@ class BinanceAutoTrader:
             self.log(f"{candidate.symbol}: 组合风控拒绝 max_open_positions")
             return None
         bucket = _portfolio_bucket_from_reason(candidate.signal.reason)
-        if bucket == "vbp" and self._portfolio_live_bucket_count(account, "vbp") >= max(0, int(control.max_vbp_positions)):
+        vbp_week_max_positions = max(0, int(control.max_vbp_positions))
+        vbp_week_multiplier = 1.0
+        if bucket == "vbp":
+            vbp_week_max_positions, vbp_week_multiplier, vbp_week_reason = self._vbp_live_weekly_limits(account)
+            if vbp_week_max_positions <= 0 or vbp_week_multiplier <= 0:
+                self.log(f"{candidate.symbol}: 组合风控拒绝 {vbp_week_reason}")
+                return None
+        if bucket == "vbp" and self._portfolio_live_bucket_count(account, "vbp") >= max(0, min(int(control.max_vbp_positions), vbp_week_max_positions)):
             self.log(f"{candidate.symbol}: 组合风控拒绝 max_vbp_positions")
             return None
         if bucket == "indicator" and self._portfolio_live_bucket_count(account, "indicator") >= max(0, int(control.max_indicator_positions)):
@@ -1390,9 +1405,15 @@ class BinanceAutoTrader:
         multiplier = 1.0
         if bucket == "vbp":
             multiplier *= max(0.0, float(control.vbp_risk_multiplier))
+            multiplier *= vbp_week_multiplier
+            multiplier *= self._portfolio_live_btc_weak_multiplier()
         elif bucket == "indicator":
             multiplier *= max(0.0, float(control.indicator_risk_multiplier))
-        multiplier *= self._portfolio_live_btc_weak_multiplier()
+        weekly_multiplier, weekly_reason = self._portfolio_live_weekly_multiplier(account)
+        if weekly_multiplier <= 0:
+            self.log(f"{candidate.symbol}: 组合风控拒绝 {weekly_reason}")
+            return None
+        multiplier *= weekly_multiplier
         if multiplier <= 0:
             self.log(f"{candidate.symbol}: 组合风控拒绝 zero_risk")
             return None
@@ -1400,6 +1421,69 @@ class BinanceAutoTrader:
             adjusted_signal = replace(candidate.signal, risk_multiplier=candidate.signal.risk_multiplier * multiplier)
             return replace(candidate, signal=adjusted_signal)
         return candidate
+
+    def _portfolio_live_weekly_multiplier(self, account: AccountSnapshot) -> tuple[float, str]:
+        control = self.config.portfolio_control
+        if not getattr(control, "enabled", False) or not getattr(control, "weekly_drawdown_control_enabled", False):
+            return 1.0, "portfolio_weekly_disabled"
+        now = datetime.now(timezone.utc)
+        key = now.isocalendar()[:2]
+        if self._portfolio_week_key != key:
+            self._portfolio_week_key = key
+            self._portfolio_week_start_equity = account.equity
+            self._portfolio_week_peak_equity = account.equity
+        self._portfolio_week_peak_equity = max(self._portfolio_week_peak_equity, account.equity)
+        drawdown = max(0.0, 1.0 - account.equity / max(self._portfolio_week_peak_equity, 1e-12))
+        loss = max(0.0, 1.0 - account.equity / max(self._portfolio_week_start_equity, 1e-12))
+        if drawdown >= float(getattr(control, "weekly_drawdown_stop_pct", 0.0)) > 0:
+            return 0.0, "portfolio_weekly_drawdown_stop"
+        if loss >= float(getattr(control, "weekly_loss_stop_pct", 0.0)) > 0:
+            return 0.0, "portfolio_weekly_loss_stop"
+        multiplier = 1.0
+        if drawdown >= float(getattr(control, "weekly_drawdown_reduce_pct", 0.0)) > 0:
+            multiplier = min(multiplier, max(0.0, min(1.0, float(getattr(control, "weekly_drawdown_risk_multiplier", 0.5)))))
+        if loss >= float(getattr(control, "weekly_loss_reduce_pct", 0.0)) > 0:
+            multiplier = min(multiplier, max(0.0, min(1.0, float(getattr(control, "weekly_loss_risk_multiplier", 0.5)))))
+        return multiplier, "portfolio_weekly_risk_reduced" if multiplier < 0.999 else "portfolio_weekly_base"
+
+    def _vbp_live_weekly_limits(self, account: AccountSnapshot) -> tuple[int, float, str]:
+        risk = self.config.vbp_strategy.risk_control
+        base_max = max(1, int(self.config.vbp_strategy.position.max_positions))
+        base_multiplier = 1.0
+        if not bool(getattr(risk, "enabled", False)):
+            return base_max, base_multiplier, "vbp_weekly_disabled"
+        now = datetime.now(timezone.utc)
+        key = now.isocalendar()[:2]
+        if self._vbp_live_week_key != key:
+            self._vbp_live_week_key = key
+            self._vbp_live_week_start_equity = account.equity
+            self._vbp_live_week_peak_equity = account.equity
+            self._vbp_live_loss_streak = 0
+        self._vbp_live_week_peak_equity = max(self._vbp_live_week_peak_equity, account.equity)
+        if bool(getattr(risk, "weekly_drawdown_control_enabled", False)):
+            drawdown = max(0.0, 1.0 - account.equity / max(self._vbp_live_week_peak_equity, 1e-12))
+            loss = max(0.0, 1.0 - account.equity / max(self._vbp_live_week_start_equity, 1e-12))
+            if drawdown >= float(getattr(risk, "weekly_drawdown_stop_pct", 0.0)) > 0:
+                return 0, 0.0, "vbp_weekly_drawdown_stop"
+            if loss >= float(getattr(risk, "weekly_loss_stop_pct", 0.0)) > 0:
+                return 0, 0.0, "vbp_weekly_loss_stop"
+            if (
+                drawdown >= float(getattr(risk, "weekly_drawdown_one_position_pct", 0.0)) > 0
+                or loss >= float(getattr(risk, "weekly_loss_one_position_pct", 0.0)) > 0
+            ):
+                return 1, min(base_multiplier, float(getattr(risk, "reduced_size_multiplier", 0.75))), "vbp_weekly_one_position"
+            if (
+                drawdown >= float(getattr(risk, "weekly_drawdown_half_size_pct", 0.0)) > 0
+                or loss >= float(getattr(risk, "weekly_loss_reduce_pct", 0.0)) > 0
+            ):
+                return base_max, min(base_multiplier, 0.5), "vbp_weekly_half_size"
+        if bool(getattr(risk, "consecutive_loss_reduce_enabled", False)) and time.time() < self._vbp_live_loss_reduce_until:
+            return (
+                max(1, min(base_max, int(getattr(risk, "consecutive_loss_reduced_max_positions", 1)))),
+                min(base_multiplier, float(getattr(risk, "consecutive_loss_reduced_size_multiplier", 0.65))),
+                "vbp_consecutive_loss_reduced",
+            )
+        return base_max, base_multiplier, "vbp_weekly_base"
 
     def _portfolio_live_bucket_count(self, account: AccountSnapshot, bucket: str) -> int:
         count = 0
@@ -2736,13 +2820,31 @@ class BinanceAutoTrader:
         candles = self._closed_candles(symbol)
         if len(candles) < VolatilityBreakoutScalper(self.config.strategy).warmup_bars:
             return
-        exit_candle = self._live_exit_candle(symbol, candles, position)
+        recent_1m_candles = self._live_recent_1m_candles(symbol)
+        exit_candle = self._live_exit_candle(symbol, candles, position, recent_1m_candles)
         exit_mark_price = exit_candle.close
         profit_state = self._profit_state_for(symbol, position)
+        self._update_profit_state_with_candle(position, profit_state, exit_candle)
         strategy = VolatilityBreakoutScalper(self.config.strategy)
         strategy.prepare(candles)
         signal = strategy.signal(len(candles) - 1, candles)
-        if not self._managed_exit_allowed(position):
+        managed_exit_allowed = self._managed_exit_allowed(position)
+        if _is_vbp_entry_reason(str(getattr(position, "entry_reason", ""))):
+            vbp_exit_reason = self._vbp_live_exit_reason(position, exit_candle, recent_1m_candles, profit_state)
+            if vbp_exit_reason:
+                self._log_position_exit_diagnostics(
+                    symbol,
+                    position,
+                    profit_state,
+                    exit_mark_price,
+                    profit_exit_reason=vbp_exit_reason,
+                    stale_reason=None,
+                    managed_exit_allowed=True,
+                )
+                self.log(f"{symbol}: VBP动态退出触发，准备平仓 ({vbp_exit_reason})")
+                self._exit_position(symbol, position, vbp_exit_reason)
+                return
+        if not managed_exit_allowed:
             self._log_position_exit_diagnostics(
                 symbol,
                 position,
@@ -2840,18 +2942,27 @@ class BinanceAutoTrader:
                 return
         self._maybe_loss_scale_on_supported_direction(symbol, position, account, candles, "5m无同向突破")
 
-    def _live_exit_candle(self, symbol: str, candles: list[Candle], position: LivePosition) -> Candle:
+    def _live_recent_1m_candles(self, symbol: str, limit: int = 32) -> list[Candle]:
+        try:
+            candles = self.client.klines(symbol, "1m", max(3, limit))
+        except Exception:
+            return []
+        if len(candles) > 1:
+            return candles[:-1]
+        return candles
+
+    def _live_exit_candle(
+        self,
+        symbol: str,
+        candles: list[Candle],
+        position: LivePosition,
+        recent_1m_candles: list[Candle] | None = None,
+    ) -> Candle:
         base = candles[-1]
         mark_price = float(getattr(position, "mark_price", 0.0) or 0.0)
-        latest_1m: Candle | None = None
-        try:
-            one_minute_candles = self.client.klines(symbol, "1m", 2)
-            if one_minute_candles:
-                latest_1m = one_minute_candles[-1]
-        except Exception:
-            latest_1m = None
+        latest_1m = recent_1m_candles[-1] if recent_1m_candles else None
 
-        close = mark_price if mark_price > 0 else (latest_1m.close if latest_1m is not None else base.close)
+        close = latest_1m.close if latest_1m is not None else (mark_price if mark_price > 0 else base.close)
         high = max(base.high, close)
         low = min(base.low, close)
         volume = base.volume
@@ -2860,6 +2971,50 @@ class BinanceAutoTrader:
             low = min(low, latest_1m.low)
             volume = max(volume, latest_1m.volume)
         return replace(base, high=high, low=low, close=close, volume=volume)
+
+    def _update_profit_state_with_candle(self, position: LivePosition, state: ProfitState, candle: Candle) -> None:
+        if position.direction == Direction.LONG:
+            state.best_price = max(state.best_price, candle.high)
+        elif position.direction == Direction.SHORT:
+            state.best_price = min(state.best_price, candle.low)
+
+    def _vbp_live_exit_reason(
+        self,
+        position: LivePosition,
+        candle: Candle,
+        recent_1m_candles: list[Candle],
+        state: ProfitState,
+    ) -> str | None:
+        if position.direction != Direction.LONG:
+            return None
+        if not _is_vbp_entry_reason(str(getattr(position, "entry_reason", ""))):
+            return None
+        exit_config = self.config.vbp_strategy.exit
+        current_profit = _directional_profit_pct(position.direction, position.entry_price, candle.close)
+        peak_profit = _directional_profit_pct(position.direction, position.entry_price, state.best_price)
+        pullback = max(0.0, (state.best_price - candle.close) / max(position.entry_price, 1e-12))
+
+        if bool(getattr(exit_config, "peak_giveback_enabled", True)):
+            trigger = max(0.0, float(getattr(exit_config, "peak_giveback_trigger_pct", 0.008)))
+            floor = float(getattr(exit_config, "peak_giveback_floor_pct", 0.0015))
+            retrace = max(0.0, float(getattr(exit_config, "peak_giveback_retrace_pct", 0.005)))
+            if peak_profit >= trigger and (current_profit <= floor or pullback >= retrace):
+                return (
+                    f"vbp_peak_giveback peak={peak_profit * 100:.3f}% "
+                    f"now={current_profit * 100:.3f}% pullback={pullback * 100:.3f}%"
+                )
+
+        if bool(getattr(exit_config, "large_bear_exit_enabled", True)):
+            min_peak = float(getattr(exit_config, "large_bear_min_peak_profit_pct", 0.006))
+            min_current = float(getattr(exit_config, "large_bear_min_current_profit_pct", -0.001))
+            if peak_profit >= min_peak and current_profit >= min_current:
+                bear_reason = _vbp_large_bearish_candle_reason(recent_1m_candles, exit_config)
+                if bear_reason:
+                    return (
+                        f"vbp_high_volume_bear_exit {bear_reason} "
+                        f"peak={peak_profit * 100:.3f}% now={current_profit * 100:.3f}%"
+                    )
+        return None
 
     def _log_position_exit_diagnostics(
         self,
@@ -3214,6 +3369,7 @@ class BinanceAutoTrader:
         self._mark_symbol_reentry_cooldown(symbol, reason)
         entry_reason = position.entry_reason or self._entry_reasons.get(symbol, "")
         self._mark_portfolio_symbol_cooldown(symbol, position.unrealized_pnl)
+        self._record_vbp_live_result(position.unrealized_pnl, entry_reason)
         if not self._sync_closed_symbol_trade_pnl(symbol, reason, entry_reason=entry_reason):
             self._record_indicator_reversal_result(position.unrealized_pnl, entry_reason)
         self._scale_in_counts.pop(symbol, None)
@@ -3236,6 +3392,7 @@ class BinanceAutoTrader:
             self.stats.losing_trades += 1
         self.stats.realized_pnl += pnl
         self._record_indicator_reversal_result(pnl, position.entry_reason)
+        self._record_vbp_live_result(pnl, position.entry_reason)
         self._scale_in_counts.pop(symbol, None)
         self._last_scale_in_ts.pop(symbol, None)
         self._profit_states.pop(symbol, None)
@@ -3260,6 +3417,20 @@ class BinanceAutoTrader:
             self._portfolio_symbol_cooldown_until.get(symbol, 0.0),
             time.time() + minutes * 60.0,
         )
+
+    def _record_vbp_live_result(self, pnl: float, entry_reason: str | None) -> None:
+        if _portfolio_bucket_from_reason(entry_reason or "") != "vbp":
+            return
+        if pnl < 0:
+            self._vbp_live_loss_streak += 1
+            risk = self.config.vbp_strategy.risk_control
+            if bool(getattr(risk, "consecutive_loss_reduce_enabled", False)):
+                losses = max(1, int(getattr(risk, "consecutive_loss_reduce_losses", 1)))
+                if self._vbp_live_loss_streak >= losses:
+                    minutes = max(1, int(getattr(risk, "consecutive_loss_reduce_minutes", 1440)))
+                    self._vbp_live_loss_reduce_until = max(self._vbp_live_loss_reduce_until, time.time() + minutes * 60.0)
+        else:
+            self._vbp_live_loss_streak = 0
 
     def _sync_closed_symbol_trade_pnl(self, symbol: str, reason: str, entry_reason: str | None = None) -> bool:
         if self.config.trading.dry_run:
@@ -3414,6 +3585,15 @@ class BinanceAutoTrader:
         else:
             pullback = (candle.close - best_price) / max(position.entry_price, 1e-12)
 
+        indicator_peak_reason = self._indicator_peak_giveback_exit_reason(
+            position,
+            current_profit,
+            peak_profit,
+            pullback,
+        )
+        if indicator_peak_reason:
+            return indicator_peak_reason
+
         minimum_profit = self._minimum_profit_exit_pct()
         if current_profit < minimum_profit:
             return None
@@ -3448,6 +3628,55 @@ class BinanceAutoTrader:
         momentum_reason = self._momentum_profit_exit_reason(position.direction, _candles_until(candles, candle))
         if momentum_reason:
             return momentum_reason
+        return None
+
+    def _indicator_peak_giveback_exit_reason(
+        self,
+        position: LivePosition | SimPosition,
+        current_profit: float,
+        peak_profit: float,
+        pullback: float,
+    ) -> str | None:
+        strategy = self.config.strategy
+        if not bool(getattr(strategy, "indicator_peak_giveback_enabled", False)):
+            return None
+        entry_reason = str(getattr(position, "entry_reason", ""))
+        if not _is_indicator_reversal_entry_reason(entry_reason):
+            return None
+        if peak_profit <= 0:
+            return None
+
+        high_trigger = max(0.0, float(getattr(strategy, "indicator_peak_giveback_high_trigger_pct", 0.018)))
+        high_floor = max(0.0, float(getattr(strategy, "indicator_peak_giveback_high_floor_pct", 0.0050)))
+        if high_trigger > 0 and peak_profit >= high_trigger and current_profit <= high_floor:
+            return (
+                f"indicator_peak_giveback_high peak={peak_profit * 100:.3f}% "
+                f"now={current_profit * 100:.3f}% floor={high_floor * 100:.3f}%"
+            )
+
+        mid_trigger = max(0.0, float(getattr(strategy, "indicator_peak_giveback_mid_trigger_pct", 0.012)))
+        mid_retrace = max(0.0, float(getattr(strategy, "indicator_peak_giveback_mid_retrace_pct", 0.0045)))
+        if mid_trigger > 0 and peak_profit >= mid_trigger and pullback >= mid_retrace:
+            return (
+                f"indicator_peak_giveback_mid peak={peak_profit * 100:.3f}% "
+                f"now={current_profit * 100:.3f}% pullback={pullback * 100:.3f}%"
+            )
+
+        low_trigger = max(0.0, float(getattr(strategy, "indicator_peak_giveback_low_trigger_pct", 0.008)))
+        low_floor = max(0.0, float(getattr(strategy, "indicator_peak_giveback_low_floor_pct", 0.0010)))
+        if low_trigger > 0 and peak_profit >= low_trigger and current_profit <= low_floor:
+            return (
+                f"indicator_peak_giveback_low peak={peak_profit * 100:.3f}% "
+                f"now={current_profit * 100:.3f}% floor={low_floor * 100:.3f}%"
+            )
+
+        breakeven_trigger = max(0.0, float(getattr(strategy, "indicator_peak_breakeven_trigger_pct", 0.005)))
+        breakeven_floor = max(0.0, float(getattr(strategy, "indicator_peak_breakeven_floor_pct", 0.0008)))
+        if breakeven_trigger > 0 and peak_profit >= breakeven_trigger and current_profit <= breakeven_floor:
+            return (
+                f"indicator_peak_breakeven peak={peak_profit * 100:.3f}% "
+                f"now={current_profit * 100:.3f}% floor={breakeven_floor * 100:.3f}%"
+            )
         return None
 
     def _indicator_trend_guard_reason(self, direction: Direction, closes: list[float], atr_values: list[float]) -> str | None:
@@ -3594,17 +3823,26 @@ class BinanceAutoTrader:
 
     def _stale_exit_thresholds(self, position: LivePosition | SimPosition) -> tuple[int, int]:
         strategy = self.config.strategy
-        entry_reason = getattr(position, "entry_reason", "")
+        entry_reason = str(getattr(position, "entry_reason", ""))
+        is_indicator = _is_indicator_reversal_entry_reason(entry_reason)
         is_super_volume = "super_volume" in entry_reason.lower() or "startup_breakout" in entry_reason.lower()
         observation_bars = (
-            int(getattr(strategy, "stale_super_volume_observation_bars", 3))
-            if is_super_volume
-            else int(getattr(strategy, "stale_observation_bars", 8))
+            int(getattr(strategy, "indicator_stale_observation_bars", 6))
+            if is_indicator
+            else (
+                int(getattr(strategy, "stale_super_volume_observation_bars", 3))
+                if is_super_volume
+                else int(getattr(strategy, "stale_observation_bars", 8))
+            )
         )
         force_exit_bars = (
-            int(getattr(strategy, "stale_super_volume_force_exit_bars", 6))
-            if is_super_volume
-            else int(getattr(strategy, "stale_force_exit_bars", 12))
+            int(getattr(strategy, "indicator_stale_force_exit_bars", 8))
+            if is_indicator
+            else (
+                int(getattr(strategy, "stale_super_volume_force_exit_bars", 6))
+                if is_super_volume
+                else int(getattr(strategy, "stale_force_exit_bars", 12))
+            )
         )
         observation_bars = max(1, observation_bars)
         force_exit_bars = max(observation_bars, force_exit_bars)
@@ -4223,6 +4461,39 @@ def _directional_profit_pct(direction: Direction, entry_price: float, mark_price
 def _is_trend_entry_reason(reason: str) -> bool:
     normalized = reason.lower()
     return any(token in normalized for token in ("breakout", "breakdown", "pullback", "super_volume", "startup_breakout"))
+
+
+def _is_vbp_entry_reason(reason: str) -> bool:
+    normalized = reason.lower()
+    return "vbp_" in normalized or "volume_breakout_pullback" in normalized
+
+
+def _vbp_large_bearish_candle_reason(candles: list[Candle], exit_config: Any) -> str | None:
+    lookback = max(3, int(getattr(exit_config, "large_bear_lookback_bars", 20)))
+    if len(candles) < lookback + 1:
+        return None
+    candle = candles[-1]
+    previous = candles[-lookback - 1:-1]
+    average_volume = sum(max(item.volume, 0.0) for item in previous) / max(1, len(previous))
+    volume_multiplier = candle.volume / max(average_volume, 1e-12)
+    candle_range = max(candle.high - candle.low, 1e-12)
+    close_position = (candle.close - candle.low) / candle_range
+    body_pct = abs(candle.close - candle.open) / max(candle.open, 1e-12)
+    required_volume = float(getattr(exit_config, "large_bear_volume_multiplier", 2.0))
+    max_close_position = float(getattr(exit_config, "large_bear_max_close_position", 0.35))
+    min_body_pct = float(getattr(exit_config, "large_bear_min_body_pct", 0.0015))
+    if candle.close >= candle.open:
+        return None
+    if volume_multiplier < required_volume:
+        return None
+    if close_position > max_close_position:
+        return None
+    if body_pct < min_body_pct:
+        return None
+    return (
+        f"vol={volume_multiplier:.2f}x close_pos={close_position:.2f} "
+        f"body={body_pct * 100:.3f}%"
+    )
 
 
 def _is_indicator_reversal_entry_reason(reason: str) -> bool:
