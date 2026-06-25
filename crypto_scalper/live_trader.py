@@ -149,6 +149,13 @@ def _portfolio_bucket_from_reason(reason: str) -> str:
     return "other"
 
 
+def _vbp_symbol_enabled(config: LiveAppConfig, symbol: str) -> bool:
+    enabled_symbols = tuple(getattr(config.vbp_strategy, "enabled_symbols", ()) or ())
+    if not enabled_symbols:
+        return symbol in set(config.trading.entry_symbols or config.trading.symbols)
+    return symbol in set(enabled_symbols)
+
+
 def _entry_position_limit(config: LiveAppConfig) -> int:
     base_limit = max(0, int(config.trading.max_open_positions))
     if not config.trading.super_volume_extra_slot_enabled:
@@ -1103,6 +1110,8 @@ class BinanceAutoTrader:
     def _vbp_entry_candidate(self, symbol: str) -> EntryCandidate | None:
         vbp = self.config.vbp_strategy
         if not getattr(vbp, "enabled", False):
+            return None
+        if not _vbp_symbol_enabled(self.config, symbol):
             return None
         limit = max(
             180,
@@ -3270,7 +3279,7 @@ class BinanceAutoTrader:
         leverage_override: int | None = None,
     ) -> None:
         side = "BUY" if signal.direction == Direction.LONG else "SELL"
-        leverage = max(1, int(leverage_override or self.config.trading.leverage))
+        leverage = _effective_entry_leverage(self.config, symbol, signal, leverage_override)
         notional = float(quantity) * candle.close
         margin = notional / leverage
         action = f"补仓({scale_label})" if scale_in and scale_label else "补仓" if scale_in else "开仓"
@@ -3339,7 +3348,7 @@ class BinanceAutoTrader:
             self.log(f"{symbol}: dry-run 已记录虚拟仓 stop={stop:.6g} take_profit={take_profit:.6g}")
             return
 
-        if not self._prepare_symbol(symbol, leverage_override=leverage_override):
+        if not self._prepare_symbol(symbol, leverage_override=leverage_override, signal=signal):
             self.log(f"{symbol}: 跳过下单，当前杠杆/保证金模式不支持")
             return
         if not scale_in:
@@ -4091,7 +4100,7 @@ class BinanceAutoTrader:
         if drawdown_multiplier <= 0:
             return "0", "soft_drawdown_stop"
         risk_notional = account.equity * self.config.risk.risk_per_trade_pct * risk_weight * drawdown_multiplier / signal.stop_loss_pct
-        leverage = max(self.config.trading.leverage, 1)
+        leverage = _effective_entry_leverage(self.config, symbol, signal)
         symbol_margin_notional = account.equity * symbol_margin_pct * leverage * drawdown_multiplier
         policy_notional_cap = self.config.risk.max_position_notional_usdt
         if policy_notional_cap <= 0:
@@ -4099,7 +4108,7 @@ class BinanceAutoTrader:
         min_initial_margin_notional = account.equity * self.config.risk.min_symbol_margin_pct * leverage
         if policy_notional_cap < float("inf"):
             min_initial_margin_notional = min(min_initial_margin_notional, policy_notional_cap)
-        remaining_margin_notional = remaining_margin * self.config.trading.leverage
+        remaining_margin_notional = remaining_margin * leverage
         total_cap = min(risk_notional, symbol_margin_notional, policy_notional_cap)
         remaining_risk_notional = risk_notional - existing_notional
         remaining_symbol_notional = symbol_margin_notional - existing_notional
@@ -4336,8 +4345,8 @@ class BinanceAutoTrader:
             position = self._sim_positions.get(symbol)
             return position.entry_price if position else 0.0
 
-    def _prepare_symbol(self, symbol: str, leverage_override: int | None = None) -> bool:
-        leverage = max(1, int(leverage_override or self.config.trading.leverage))
+    def _prepare_symbol(self, symbol: str, leverage_override: int | None = None, signal: Signal | None = None) -> bool:
+        leverage = _effective_entry_leverage(self.config, symbol, signal, leverage_override)
         prepared_key = (symbol, leverage)
         if prepared_key in self._prepared_symbols and self._active_symbol_leverage.get(symbol) == leverage:
             return True
@@ -4440,6 +4449,34 @@ def _margin_type_change_blocked(exc: BinanceApiError) -> bool:
 def _leverage_not_valid(exc: BinanceApiError) -> bool:
     message = str(exc).lower()
     return "leverage" in message and "not valid" in message
+
+
+def _signal_uses_fixed_vbp_leverage(signal: Signal | None) -> bool:
+    if signal is None:
+        return False
+    reason = str(getattr(signal, "reason", "")).lower()
+    return "vbp_" in reason or "volume_breakout_pullback" in reason
+
+
+def _effective_entry_leverage(
+    config: LiveAppConfig,
+    symbol: str,
+    signal: Signal | None = None,
+    leverage_override: int | None = None,
+) -> int:
+    if leverage_override is not None:
+        return max(1, int(leverage_override))
+    base = max(1, int(getattr(config.trading, "leverage", 1)))
+    if _signal_uses_fixed_vbp_leverage(signal):
+        return base
+    overrides = getattr(config.trading, "symbol_leverage_overrides", {}) or {}
+    override = overrides.get(symbol.upper())
+    if override is None:
+        return base
+    try:
+        return max(1, min(base, int(float(override))))
+    except (TypeError, ValueError):
+        return base
 
 
 def _macro_event_id(event: MacroEvent) -> str:

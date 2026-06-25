@@ -96,6 +96,7 @@ class LiveTradingConfig:
     require_mainnet_confirmation: bool = True
     mainnet_confirmation_text: str = ""
     leverage: int = 30
+    symbol_leverage_overrides: dict[str, int] = field(default_factory=dict)
     margin_type: str = "CROSSED"
     require_one_way_mode: bool = True
     use_market_orders: bool = True
@@ -334,6 +335,7 @@ class VbpRiskControlConfig:
 @dataclass(frozen=True)
 class VbpStrategyConfig:
     enabled: bool = False
+    enabled_symbols: tuple[str, ...] = ()
     universe: VbpUniverseConfig = field(default_factory=VbpUniverseConfig)
     structure_filter: VbpStructureFilterConfig = field(default_factory=VbpStructureFilterConfig)
     entry: VbpEntryConfig = field(default_factory=VbpEntryConfig)
@@ -394,6 +396,9 @@ def _coerce_dataclass(cls: type[T], values: dict[str, Any]) -> T:
     if cls is LiveTradingConfig and "entry_symbols" in values:
         values = dict(values)
         values["entry_symbols"] = tuple(_normalize_symbols(values["entry_symbols"]))
+    if cls is LiveTradingConfig and "symbol_leverage_overrides" in values:
+        values = dict(values)
+        values["symbol_leverage_overrides"] = _normalize_symbol_leverage_overrides(values["symbol_leverage_overrides"])
     if cls is MultiTimeframeFilterConfig and "timeframes" in values:
         values = dict(values)
         values["timeframes"] = tuple(_normalize_timeframes(values["timeframes"]))
@@ -445,8 +450,27 @@ def _normalize_timeframes(value: Any) -> list[str]:
     return timeframes
 
 
+def _normalize_symbol_leverage_overrides(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for raw_symbol, raw_leverage in value.items():
+        symbols = _normalize_symbols([raw_symbol])
+        if not symbols:
+            continue
+        try:
+            leverage = int(float(raw_leverage))
+        except (TypeError, ValueError):
+            continue
+        if leverage > 0:
+            normalized[symbols[0]] = leverage
+    return normalized
+
+
 def _coerce_vbp_config(values: dict[str, Any]) -> VbpStrategyConfig:
     values = dict(values or {})
+    if "enabled_symbols" in values:
+        values["enabled_symbols"] = tuple(_normalize_symbols(values["enabled_symbols"]))
     nested = {
         "universe": VbpUniverseConfig,
         "structure_filter": VbpStructureFilterConfig,

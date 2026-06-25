@@ -143,6 +143,13 @@ class BinanceFuturesClient:
         payload = self._signed_request("GET", "/fapi/v2/positionRisk", params)
         return payload if isinstance(payload, list) else [payload]
 
+    def leverage_brackets(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        params = {}
+        if symbol:
+            params["symbol"] = symbol.upper()
+        payload = self._signed_request("GET", "/fapi/v1/leverageBracket", params)
+        return payload if isinstance(payload, list) else [payload]
+
     def open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         params = {}
         if symbol:

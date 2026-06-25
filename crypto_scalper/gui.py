@@ -684,7 +684,17 @@ class TradingApp(tk.Tk):
         if self.strategy_vbp_enabled.get():
             enabled.append("VBP")
         text = "+".join(enabled) if enabled else "无"
-        self.strategy_mode_summary.set(f"当前启用：{text}。分仓限制：IND最多3仓，VBP最多2仓，总持仓最多5仓。策略内部参数保持配置文件原值。")
+        config = self._last_config
+        if config is not None:
+            indicator_count = len(config.trading.entry_symbols or config.trading.symbols)
+            vbp_count = len(_vbp_strategy_symbols(config))
+            symbol_text = f"IND币种={indicator_count}，VBP币种={vbp_count}。"
+        else:
+            symbol_text = ""
+        self.strategy_mode_summary.set(
+            f"当前启用：{text}。{symbol_text}分仓限制：IND最多3仓，VBP最多2仓，总持仓最多5仓。"
+            "策略内部参数保持配置文件原值。"
+        )
 
     def _selected_strategy_mode(self) -> str:
         mode = self.strategy_mode.get().strip()
@@ -693,7 +703,16 @@ class TradingApp(tk.Tk):
     def _apply_selected_strategy_to_form(self) -> None:
         self._update_strategy_mode_summary()
         self.max_open_positions.set("5")
-        self.log("已应用分仓: IND最多3仓，VBP最多2仓，总持仓最多5仓。策略内部参数未修改。")
+        config = self._last_config
+        if config is None:
+            self.log("已应用分仓: IND最多3仓，VBP最多2仓，总持仓最多5仓。策略内部参数未修改。")
+            return
+        indicator_count = len(config.trading.entry_symbols or config.trading.symbols)
+        vbp_count = len(_vbp_strategy_symbols(config))
+        self.log(
+            f"已应用分仓: IND最多3仓({indicator_count}币)，VBP最多2仓({vbp_count}币)，"
+            "总持仓最多5仓。策略内部参数未修改。"
+        )
 
     def _load_initial_config(self) -> None:
         path = Path(DEFAULT_CONFIG_PATH)
@@ -1470,6 +1489,13 @@ def _config_with_strategy_selection(
         vbp_strategy=vbp_strategy,
         portfolio_control=portfolio_control,
     )
+
+
+def _vbp_strategy_symbols(config: LiveAppConfig) -> tuple[str, ...]:
+    symbols = tuple(getattr(config.vbp_strategy, "enabled_symbols", ()) or ())
+    if symbols:
+        return symbols
+    return tuple(config.trading.entry_symbols or config.trading.symbols)
 
 
 def _detect_strategy_mode(config: LiveAppConfig) -> str:

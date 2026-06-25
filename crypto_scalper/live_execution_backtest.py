@@ -1283,6 +1283,15 @@ def _vbp_enabled(config: Any) -> bool:
     return bool(getattr(getattr(config, "vbp_strategy", None), "enabled", False))
 
 
+def _vbp_symbols(config: Any) -> tuple[str, ...]:
+    vbp_symbols = tuple(getattr(getattr(config, "vbp_strategy", None), "enabled_symbols", ()) or ())
+    if not vbp_symbols:
+        return tuple(config.trading.symbols)
+    trading_symbols = set(config.trading.symbols)
+    entry_symbols = set(config.trading.entry_symbols or config.trading.symbols)
+    return tuple(symbol for symbol in vbp_symbols if symbol in trading_symbols and symbol in entry_symbols)
+
+
 def _is_vbp_position(position: PortfolioPosition) -> bool:
     return "vbp_" in str(position.entry_reason)
 
@@ -1927,9 +1936,10 @@ def _run_vbp_scan_1m(
     opened = 0
     max_new = max(1, int(config.trading.max_new_entries_per_cycle))
     entry_symbols = set(config.trading.entry_symbols or config.trading.symbols)
+    vbp_symbols = set(_vbp_symbols(config))
     candidates = []
-    for symbol in config.trading.symbols:
-        if symbol not in entry_symbols or symbol not in execution_candles_by_symbol:
+    for symbol in _vbp_symbols(config):
+        if symbol not in vbp_symbols or symbol not in entry_symbols or symbol not in execution_candles_by_symbol:
             continue
         if _vbp_symbol_on_cooldown(control, symbol, timestamp):
             _vbp_count(stats, "reject_symbol_cooldown")
@@ -2465,7 +2475,10 @@ def _build_vbp_feature_cache(config: Any, candles_by_symbol: dict[str, list[Cand
     consolidation_threshold = float(vbp.structure_filter.consolidation_threshold_pct)
     daily_lookback = max(1, int(vbp.structure_filter.daily_high_lookback_days) * 1440)
     daily_zone = float(vbp.structure_filter.daily_high_zone_pct)
+    allowed_symbols = set(_vbp_symbols(config))
     for symbol, candles in candles_by_symbol.items():
+        if symbol not in allowed_symbols:
+            continue
         quote = [max(candle.volume, 0.0) * max(candle.close, 0.0) for candle in candles]
         prefix = [0.0]
         for value in quote:
