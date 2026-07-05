@@ -244,6 +244,11 @@ class VbpEntryConfig:
     pullback_volume_ratio: float = 0.4
     timeout_bars: int = 15
     use_vwap_as_pullback_target: bool = True
+    relative_strength_enabled: bool = False
+    relative_strength_lookback_minutes: int = 60
+    relative_strength_min_vs_btc_pct: float = 0.0015
+    relative_strength_min_vs_market_pct: float = -1.0
+    relative_strength_max_rank_pct: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -252,6 +257,7 @@ class VbpExitConfig:
     tp1_rr_ratio: float = 1.5
     tp1_close_ratio: float = 0.5
     trailing_stop_after_tp1: bool = True
+    runner_after_tp1_enabled: bool = False
     peak_giveback_enabled: bool = True
     peak_giveback_trigger_pct: float = 0.012
     peak_giveback_floor_pct: float = 0.002
