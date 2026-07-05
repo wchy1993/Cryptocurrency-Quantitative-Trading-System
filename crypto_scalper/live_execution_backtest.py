@@ -1201,10 +1201,14 @@ def _manage_positions_1m(
             )
         exit_price = None
         reason = ""
+        vbp_runner_after_tp1 = (
+            _is_vbp_position(position)
+            and bool(getattr(config.vbp_strategy.exit, "runner_after_tp1_enabled", False))
+        )
         if position.direction == Direction.LONG:
             position.best_price = max(position.best_price, candle.high)
             stop_hit = candle.low <= position.stop_price
-            take_profit_hit = candle.high >= position.take_profit_price
+            take_profit_hit = (not vbp_runner_after_tp1) and candle.high >= position.take_profit_price
             if stop_hit and take_profit_hit:
                 execution_stats.same_bar_tp_sl_conflict_count += 1
             if stop_hit and (not take_profit_hit or execution_config.mode != "optimistic"):
@@ -1216,7 +1220,7 @@ def _manage_positions_1m(
         else:
             position.best_price = min(position.best_price, candle.low)
             stop_hit = candle.high >= position.stop_price
-            take_profit_hit = candle.low <= position.take_profit_price
+            take_profit_hit = (not vbp_runner_after_tp1) and candle.low <= position.take_profit_price
             if stop_hit and take_profit_hit:
                 execution_stats.same_bar_tp_sl_conflict_count += 1
             if stop_hit and (not take_profit_hit or execution_config.mode != "optimistic"):
@@ -1899,6 +1903,51 @@ def _vbp_market_breadth(candles_by_symbol: dict[str, list[Candle]], index: int) 
     }
 
 
+def _vbp_relative_strength_allows(
+    config: Any,
+    execution_candles_by_symbol: dict[str, list[Candle]],
+    symbol: str,
+    index: int,
+) -> tuple[bool, str]:
+    entry = config.vbp_strategy.entry
+    if not bool(getattr(entry, "relative_strength_enabled", False)):
+        return True, "ok"
+    lookback = max(1, int(getattr(entry, "relative_strength_lookback_minutes", 60)))
+    candles = execution_candles_by_symbol.get(symbol, [])
+    btc = execution_candles_by_symbol.get("BTCUSDT", [])
+    if index >= len(candles) or index >= len(btc) or index < lookback:
+        return False, "reject_vbp_relative_strength_missing"
+    symbol_ret = candles[index].close / max(candles[index - lookback].close, 1e-12) - 1.0
+    btc_ret = btc[index].close / max(btc[index - lookback].close, 1e-12) - 1.0
+    min_vs_btc = float(getattr(entry, "relative_strength_min_vs_btc_pct", 0.0))
+    if symbol_ret - btc_ret < min_vs_btc:
+        return False, "reject_vbp_relative_strength_btc"
+
+    min_vs_market = float(getattr(entry, "relative_strength_min_vs_market_pct", -1.0))
+    max_rank_pct = float(getattr(entry, "relative_strength_max_rank_pct", 1.0))
+    if min_vs_market <= -0.999 and max_rank_pct >= 0.999:
+        return True, "ok"
+
+    returns: list[float] = []
+    for market_symbol in _vbp_symbols(config):
+        market_candles = execution_candles_by_symbol.get(market_symbol, [])
+        if index < lookback or index >= len(market_candles):
+            continue
+        previous = market_candles[index - lookback].close
+        if previous > 0:
+            returns.append(market_candles[index].close / previous - 1.0)
+    if len(returns) < 10:
+        return False, "reject_vbp_relative_strength_market_missing"
+    returns.sort()
+    median_ret = returns[len(returns) // 2]
+    if symbol_ret - median_ret < min_vs_market:
+        return False, "reject_vbp_relative_strength_market"
+    rank_pct = sum(1 for value in returns if value > symbol_ret) / max(1, len(returns))
+    if rank_pct > max_rank_pct:
+        return False, "reject_vbp_relative_strength_rank"
+    return True, "ok"
+
+
 def rank_surge_detector(
     volumes_now: dict[str, float],
     volumes_previous: dict[str, float],
@@ -2154,6 +2203,10 @@ def _vbp_process_symbol(
     if not daily_ok:
         _vbp_count(stats, "reject_daily_high_zone")
         return cash, False
+    rs_allowed, rs_reason = _vbp_relative_strength_allows(config, execution_candles_by_symbol, symbol, execution_index)
+    if not rs_allowed:
+        _vbp_count(stats, rs_reason)
+        return cash, False
 
     candle_rvol = _vbp_cached_feature(feature_cache, symbol, "rvol_1m", execution_index)
     if candle_rvol < float(vbp.universe.rvol_trigger_threshold):
@@ -2241,6 +2294,11 @@ def _vbp_process_pending(
     if execution_index <= int(confirmed_index):
         return cash, False
     if not (candle.close > candle.open and candle.close >= pending.pullback_target):
+        return cash, False
+    rs_allowed, rs_reason = _vbp_relative_strength_allows(config, execution_candles_by_symbol, pending.symbol, execution_index)
+    if not rs_allowed:
+        breakouts.pop(pending.symbol, None)
+        _vbp_count(stats, rs_reason)
         return cash, False
 
     portfolio_allowed, portfolio_reason, portfolio_multiplier = _portfolio_entry_decision(
