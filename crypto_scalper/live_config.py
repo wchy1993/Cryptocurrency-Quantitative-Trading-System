@@ -271,6 +271,9 @@ class VbpExitConfig:
     peak_giveback_trigger_pct: float = 0.012
     peak_giveback_floor_pct: float = 0.002
     peak_giveback_retrace_pct: float = 0.008
+    peak_giveback_pre_tp1_trigger_pct: float = 0.020
+    peak_giveback_require_cost_coverage: bool = True
+    peak_tracking_mode: str = "close"
     large_bear_exit_enabled: bool = True
     large_bear_min_peak_profit_pct: float = 0.010
     large_bear_min_current_profit_pct: float = 0.002
@@ -327,6 +330,14 @@ class VbpRiskControlConfig:
     consecutive_loss_reduce_minutes: int = 1440
     consecutive_loss_reduced_size_multiplier: float = 0.65
     consecutive_loss_reduced_max_positions: int = 1
+    consecutive_loss_quality_filter_enabled: bool = False
+    consecutive_loss_quality_losses: int = 2
+    consecutive_loss_quality_minutes: int = 240
+    consecutive_loss_quality_rvol_multiplier: float = 1.25
+    consecutive_loss_quality_min_close_position: float = 0.65
+    consecutive_loss_quality_pullback_volume_ratio: float = 0.30
+    consecutive_loss_quality_size_multiplier: float = 0.50
+    consecutive_loss_quality_max_positions: int = 1
     frequency_control_enabled: bool = True
     symbol_entry_cooldown_minutes: int = 720
     max_24h_return_pct: float = 0.18
