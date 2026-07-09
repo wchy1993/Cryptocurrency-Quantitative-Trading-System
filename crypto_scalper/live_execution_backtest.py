@@ -103,6 +103,7 @@ class VbpRuntimeControl:
     loss_streak: int = 0
     pause_until: Any = None
     loss_reduce_until: Any = None
+    loss_quality_until: Any = None
     peak_equity: float = 0.0
     symbol_cooldown_until: dict[str, Any] | None = None
     daily_pnl: dict[Any, float] | None = None
@@ -1164,6 +1165,7 @@ def _manage_positions_1m(
         position.bars_held = max(0, signal_index - position.entry_index)
         _update_position_excursion(position, candle)
         if _is_vbp_position(position) and position.direction == Direction.LONG:
+            position.best_price = max(position.best_price, candle.close)
             cash = _update_vbp_partial_exit(
                 config,
                 cash,
@@ -1201,10 +1203,17 @@ def _manage_positions_1m(
             )
         exit_price = None
         reason = ""
+        vbp_runner_after_tp1 = (
+            _is_vbp_position(position)
+            and bool(getattr(config.vbp_strategy.exit, "runner_after_tp1_enabled", False))
+        )
         if position.direction == Direction.LONG:
-            position.best_price = max(position.best_price, candle.high)
+            if _is_vbp_position(position):
+                position.best_price = max(position.best_price, candle.close)
+            else:
+                position.best_price = max(position.best_price, candle.high)
             stop_hit = candle.low <= position.stop_price
-            take_profit_hit = candle.high >= position.take_profit_price
+            take_profit_hit = (not vbp_runner_after_tp1) and candle.high >= position.take_profit_price
             if stop_hit and take_profit_hit:
                 execution_stats.same_bar_tp_sl_conflict_count += 1
             if stop_hit and (not take_profit_hit or execution_config.mode != "optimistic"):
@@ -1216,7 +1225,7 @@ def _manage_positions_1m(
         else:
             position.best_price = min(position.best_price, candle.low)
             stop_hit = candle.high >= position.stop_price
-            take_profit_hit = candle.low <= position.take_profit_price
+            take_profit_hit = (not vbp_runner_after_tp1) and candle.low <= position.take_profit_price
             if stop_hit and take_profit_hit:
                 execution_stats.same_bar_tp_sl_conflict_count += 1
             if stop_hit and (not take_profit_hit or execution_config.mode != "optimistic"):
@@ -1414,23 +1423,25 @@ def _update_vbp_control_after_trades(
     stats: dict[str, int],
 ) -> None:
     risk = config.vbp_strategy.risk_control
-    if not bool(risk.enabled):
+    risk_enabled = bool(risk.enabled)
+    quality_enabled = bool(getattr(risk, "consecutive_loss_quality_filter_enabled", False))
+    if not risk_enabled and not quality_enabled:
         return
     for trade in closed_trades:
         if trade.get("strategy") != "volume_breakout_pullback":
             continue
         pnl = float(trade.get("net_pnl", 0.0) or 0.0)
-        if control.daily_pnl is not None:
+        if risk_enabled and control.daily_pnl is not None:
             control.daily_pnl[timestamp.date()] = control.daily_pnl.get(timestamp.date(), 0.0) + pnl
         if trade.get("exit_reason") == "vbp_tp1_partial":
             continue
         month_key = timestamp.strftime("%Y-%m") if hasattr(timestamp, "strftime") else str(timestamp)[:7]
-        if control.monthly_pnl is not None:
+        if risk_enabled and control.monthly_pnl is not None:
             control.monthly_pnl[month_key] = control.monthly_pnl.get(month_key, 0.0) + pnl
         week_key = _week_key(timestamp)
-        if control.weekly_pnl is not None:
+        if risk_enabled and control.weekly_pnl is not None:
             control.weekly_pnl[week_key] = control.weekly_pnl.get(week_key, 0.0) + pnl
-        if control.symbol_recent_pnl is not None:
+        if risk_enabled and control.symbol_recent_pnl is not None:
             symbol = str(trade.get("symbol"))
             recent = control.symbol_recent_pnl.setdefault(symbol, [])
             recent.append(pnl)
@@ -1447,7 +1458,15 @@ def _update_vbp_control_after_trades(
                     _vbp_count(stats, "symbol_performance_cooldown_count")
         if pnl < 0:
             control.loss_streak += 1
-            if bool(getattr(risk, "consecutive_loss_reduce_enabled", False)):
+            if quality_enabled:
+                quality_losses = max(1, int(getattr(risk, "consecutive_loss_quality_losses", 2)))
+                if control.loss_streak >= quality_losses:
+                    quality_minutes = max(1, int(getattr(risk, "consecutive_loss_quality_minutes", 240)))
+                    quality_until = timestamp + timedelta(minutes=quality_minutes)
+                    if control.loss_quality_until is None or quality_until > control.loss_quality_until:
+                        control.loss_quality_until = quality_until
+                    _vbp_count(stats, "consecutive_loss_quality_mode_count")
+            if risk_enabled and bool(getattr(risk, "consecutive_loss_reduce_enabled", False)):
                 reduce_losses = max(1, int(getattr(risk, "consecutive_loss_reduce_losses", 1)))
                 if control.loss_streak >= reduce_losses:
                     reduce_minutes = max(1, int(getattr(risk, "consecutive_loss_reduce_minutes", 1440)))
@@ -1455,19 +1474,19 @@ def _update_vbp_control_after_trades(
                     if control.loss_reduce_until is None or reduce_until > control.loss_reduce_until:
                         control.loss_reduce_until = reduce_until
                     _vbp_count(stats, "consecutive_loss_reduce_count")
-            if control.symbol_cooldown_until is not None:
+            if risk_enabled and control.symbol_cooldown_until is not None:
                 cooldown_minutes = max(0, int(risk.symbol_loss_cooldown_minutes))
                 if cooldown_minutes > 0:
                     control.symbol_cooldown_until[str(trade.get("symbol"))] = timestamp + timedelta(minutes=cooldown_minutes)
                     _vbp_count(stats, "symbol_loss_cooldown_count")
             limit = max(1, int(risk.consecutive_loss_limit))
-            if control.loss_streak >= limit:
+            if risk_enabled and control.loss_streak >= limit:
                 control.pause_until = timestamp + timedelta(minutes=max(1, int(risk.consecutive_loss_pause_minutes)))
                 control.loss_streak = 0
                 _vbp_count(stats, "consecutive_loss_pause_count")
         else:
             control.loss_streak = 0
-        if control.daily_pnl is not None:
+        if risk_enabled and control.daily_pnl is not None:
             daily_limit = -abs(float(risk.daily_loss_stop_pct)) * starting_equity
             if control.daily_pnl.get(timestamp.date(), 0.0) <= daily_limit:
                 _vbp_count(stats, "daily_loss_stop_count")
@@ -1766,6 +1785,12 @@ def _vbp_dynamic_exposure(
     risk = vbp.risk_control
     base_max_positions = max(1, int(vbp.position.max_positions))
     base_size_multiplier = float(vbp.position.size_multiplier)
+    if _vbp_quality_mode_active(config, control, timestamp):
+        return (
+            max(1, min(base_max_positions, int(getattr(risk, "consecutive_loss_quality_max_positions", 1)))),
+            min(base_size_multiplier, float(getattr(risk, "consecutive_loss_quality_size_multiplier", 0.50))),
+            "consecutive_loss_quality_mode",
+        )
     if not bool(risk.enabled) or not bool(risk.adaptive_exposure_enabled):
         return base_max_positions, base_size_multiplier, "base"
     if control.peak_equity <= 0:
@@ -1829,6 +1854,17 @@ def _vbp_dynamic_exposure(
         min(base_size_multiplier, float(risk.reduced_size_multiplier)),
         "reduced",
     )
+
+
+def _vbp_quality_mode_active(config: Any, control: VbpRuntimeControl, timestamp: Any) -> bool:
+    risk = config.vbp_strategy.risk_control
+    if not bool(getattr(risk, "consecutive_loss_quality_filter_enabled", False)):
+        return False
+    return control.loss_quality_until is not None and timestamp < control.loss_quality_until
+
+
+def _vbp_candle_close_position(candle: Candle) -> float:
+    return (candle.close - candle.low) / max(candle.high - candle.low, 1e-12)
 
 
 def _vbp_market_allows(
@@ -1897,6 +1933,51 @@ def _vbp_market_breadth(candles_by_symbol: dict[str, list[Candle]], index: int) 
         "up_1h": up_1h / denominator,
         "above_ema21": above_ema21 / denominator,
     }
+
+
+def _vbp_relative_strength_allows(
+    config: Any,
+    execution_candles_by_symbol: dict[str, list[Candle]],
+    symbol: str,
+    index: int,
+) -> tuple[bool, str]:
+    entry = config.vbp_strategy.entry
+    if not bool(getattr(entry, "relative_strength_enabled", False)):
+        return True, "ok"
+    lookback = max(1, int(getattr(entry, "relative_strength_lookback_minutes", 60)))
+    candles = execution_candles_by_symbol.get(symbol, [])
+    btc = execution_candles_by_symbol.get("BTCUSDT", [])
+    if index >= len(candles) or index >= len(btc) or index < lookback:
+        return False, "reject_vbp_relative_strength_missing"
+    symbol_ret = candles[index].close / max(candles[index - lookback].close, 1e-12) - 1.0
+    btc_ret = btc[index].close / max(btc[index - lookback].close, 1e-12) - 1.0
+    min_vs_btc = float(getattr(entry, "relative_strength_min_vs_btc_pct", 0.0))
+    if symbol_ret - btc_ret < min_vs_btc:
+        return False, "reject_vbp_relative_strength_btc"
+
+    min_vs_market = float(getattr(entry, "relative_strength_min_vs_market_pct", -1.0))
+    max_rank_pct = float(getattr(entry, "relative_strength_max_rank_pct", 1.0))
+    if min_vs_market <= -0.999 and max_rank_pct >= 0.999:
+        return True, "ok"
+
+    returns: list[float] = []
+    for market_symbol in _vbp_symbols(config):
+        market_candles = execution_candles_by_symbol.get(market_symbol, [])
+        if index < lookback or index >= len(market_candles):
+            continue
+        previous = market_candles[index - lookback].close
+        if previous > 0:
+            returns.append(market_candles[index].close / previous - 1.0)
+    if len(returns) < 10:
+        return False, "reject_vbp_relative_strength_market_missing"
+    returns.sort()
+    median_ret = returns[len(returns) // 2]
+    if symbol_ret - median_ret < min_vs_market:
+        return False, "reject_vbp_relative_strength_market"
+    rank_pct = sum(1 for value in returns if value > symbol_ret) / max(1, len(returns))
+    if rank_pct > max_rank_pct:
+        return False, "reject_vbp_relative_strength_rank"
+    return True, "ok"
 
 
 def rank_surge_detector(
@@ -2154,11 +2235,24 @@ def _vbp_process_symbol(
     if not daily_ok:
         _vbp_count(stats, "reject_daily_high_zone")
         return cash, False
+    rs_allowed, rs_reason = _vbp_relative_strength_allows(config, execution_candles_by_symbol, symbol, execution_index)
+    if not rs_allowed:
+        _vbp_count(stats, rs_reason)
+        return cash, False
 
     candle_rvol = _vbp_cached_feature(feature_cache, symbol, "rvol_1m", execution_index)
-    if candle_rvol < float(vbp.universe.rvol_trigger_threshold):
+    quality_mode = _vbp_quality_mode_active(config, control, timestamp)
+    rvol_threshold = float(vbp.universe.rvol_trigger_threshold)
+    if quality_mode:
+        rvol_threshold *= max(1.0, float(getattr(vbp.risk_control, "consecutive_loss_quality_rvol_multiplier", 1.25)))
+    if candle_rvol < rvol_threshold:
         _vbp_count(stats, "reject_no_breakout_rvol")
         return cash, False
+    if quality_mode:
+        min_close_position = float(getattr(vbp.risk_control, "consecutive_loss_quality_min_close_position", 0.65))
+        if _vbp_candle_close_position(candle) < min_close_position:
+            _vbp_count(stats, "reject_vbp_quality_close_position")
+            return cash, False
     previous_close = candles[execution_index - 1].close if execution_index > 0 else candle.open
     if not (previous_close <= zone_top and candle.close > zone_top):
         _vbp_count(stats, "reject_no_zone_breakout")
@@ -2219,7 +2313,14 @@ def _vbp_process_pending(
         _vbp_count(stats, "pending_failed_back_inside")
         return cash, False
 
-    pullback_volume_ok = candle.volume <= pending.breakout_volume * float(vbp.entry.pullback_volume_ratio)
+    quality_mode = _vbp_quality_mode_active(config, control, timestamp)
+    pullback_volume_ratio = float(vbp.entry.pullback_volume_ratio)
+    if quality_mode:
+        pullback_volume_ratio = min(
+            pullback_volume_ratio,
+            float(getattr(vbp.risk_control, "consecutive_loss_quality_pullback_volume_ratio", 0.30)),
+        )
+    pullback_volume_ok = candle.volume <= pending.breakout_volume * pullback_volume_ratio
     touched_target = candle.low <= pending.pullback_target <= candle.high or candle.low <= pending.pullback_target
     if touched_target and not pullback_volume_ok:
         breakouts.pop(pending.symbol, None)
@@ -2241,6 +2342,16 @@ def _vbp_process_pending(
     if execution_index <= int(confirmed_index):
         return cash, False
     if not (candle.close > candle.open and candle.close >= pending.pullback_target):
+        return cash, False
+    if quality_mode:
+        min_close_position = float(getattr(vbp.risk_control, "consecutive_loss_quality_min_close_position", 0.65))
+        if _vbp_candle_close_position(candle) < min_close_position:
+            _vbp_count(stats, "pending_reject_vbp_quality_close_position")
+            return cash, False
+    rs_allowed, rs_reason = _vbp_relative_strength_allows(config, execution_candles_by_symbol, pending.symbol, execution_index)
+    if not rs_allowed:
+        breakouts.pop(pending.symbol, None)
+        _vbp_count(stats, rs_reason)
         return cash, False
 
     portfolio_allowed, portfolio_reason, portfolio_multiplier = _portfolio_entry_decision(
@@ -2281,6 +2392,7 @@ def _vbp_process_pending(
         f"level={pending.breakout_level:.8g} bottom={pending.consolidation_bottom:.8g} "
         f"target={pending.pullback_target:.8g} "
         f"tp1={tp1_price:.8g} tp1_ratio={float(vbp.exit.tp1_close_ratio):.3f} stop={stop_loss_pct * 100:.3f}%"
+        + (" vbp_quality_mode=1" if quality_mode else "")
     )
     signal = Signal(
         Direction.LONG,
@@ -2390,15 +2502,26 @@ def _vbp_dynamic_exit_reason(
     current_profit = (candle.close - position.entry_price) / max(position.entry_price, 1e-12)
     peak_profit = (position.best_price - position.entry_price) / max(position.entry_price, 1e-12)
     pullback = max(0.0, (position.best_price - candle.close) / max(position.entry_price, 1e-12))
+    minimum_profit = _vbp_minimum_profit_exit_pct(config)
+    tp1_done = " vbp_tp1_done=1" in position.entry_reason
 
     if bool(getattr(exit_config, "peak_giveback_enabled", True)):
         trigger = max(0.0, float(getattr(exit_config, "peak_giveback_trigger_pct", 0.008)))
         floor = float(getattr(exit_config, "peak_giveback_floor_pct", 0.0015))
         retrace = max(0.0, float(getattr(exit_config, "peak_giveback_retrace_pct", 0.005)))
-        if peak_profit >= trigger and (current_profit <= floor or pullback >= retrace):
+        pre_tp1_trigger = max(0.0, float(getattr(exit_config, "peak_giveback_pre_tp1_trigger_pct", 0.020)))
+        current_profit_ok = current_profit >= minimum_profit
+        post_tp1_giveback = tp1_done and peak_profit >= trigger and (current_profit <= floor or pullback >= retrace)
+        pre_tp1_large_giveback = (
+            not tp1_done
+            and peak_profit >= pre_tp1_trigger
+            and pullback >= retrace
+        )
+        if current_profit_ok and (post_tp1_giveback or pre_tp1_large_giveback):
             _vbp_count(stats, "peak_giveback_exit_count")
+            tag = "vbp_peak_giveback" if tp1_done else "vbp_peak_giveback_pre_tp1"
             return (
-                f"vbp_peak_giveback peak={peak_profit * 100:.3f}% "
+                f"{tag} peak={peak_profit * 100:.3f}% "
                 f"now={current_profit * 100:.3f}% pullback={pullback * 100:.3f}%"
             )
 
@@ -2440,6 +2563,14 @@ def _vbp_dynamic_exit_reason(
             _vbp_count(stats, "fail_fast_lost_vwap_count")
             return "vbp_fail_fast_lost_vwap"
     return None
+
+
+def _vbp_minimum_profit_exit_pct(config: Any) -> float:
+    risk = config.risk
+    round_trip_fee = max(0.0, float(getattr(risk, "estimated_fee_bps", 0.0))) * 2.0 / 10_000.0
+    slippage = max(0.0, float(getattr(risk, "estimated_slippage_bps", 0.0))) / 10_000.0
+    net_buffer = max(0.0, float(getattr(risk, "min_profit_after_cost_pct", 0.0)))
+    return round_trip_fee + slippage + net_buffer
 
 
 def _vbp_large_bearish_candle_reason(candles: list[Candle], exit_config: Any) -> str | None:
