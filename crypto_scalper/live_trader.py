@@ -150,6 +150,10 @@ def _portfolio_bucket_from_reason(reason: str) -> str:
     return "other"
 
 
+def _vbp_candle_close_position(candle: Candle) -> float:
+    return (candle.close - candle.low) / max(candle.high - candle.low, 1e-12)
+
+
 def _vbp_symbol_enabled(config: LiveAppConfig, symbol: str) -> bool:
     enabled_symbols = tuple(getattr(config.vbp_strategy, "enabled_symbols", ()) or ())
     if not enabled_symbols:
@@ -240,6 +244,7 @@ class BinanceAutoTrader:
         self._vbp_live_week_peak_equity = config.risk.starting_capital_usdt
         self._vbp_live_loss_streak = 0
         self._vbp_live_loss_reduce_until = 0.0
+        self._vbp_live_loss_quality_until = 0.0
         self._vbp_watch_until: dict[str, datetime] = {}
         self._vbp_breakouts: dict[str, VbpLiveBreakoutState] = {}
         self._vbp_stats: dict[str, int] = {}
@@ -1176,9 +1181,18 @@ class BinanceAutoTrader:
         candle = candles[-1]
         previous_close = candles[-2].close
         candle_rvol = self._vbp_live_rvol_1m(candles)
-        if candle_rvol < float(vbp.universe.rvol_trigger_threshold):
+        vbp_quality_mode = self._vbp_live_quality_filter_active()
+        rvol_threshold = float(vbp.universe.rvol_trigger_threshold)
+        if vbp_quality_mode:
+            rvol_threshold *= max(1.0, float(getattr(vbp.risk_control, "consecutive_loss_quality_rvol_multiplier", 1.25)))
+        if candle_rvol < rvol_threshold:
             self._record_vbp_stat("reject_no_breakout_rvol")
             return None
+        if vbp_quality_mode:
+            min_close_position = float(getattr(vbp.risk_control, "consecutive_loss_quality_min_close_position", 0.65))
+            if _vbp_candle_close_position(candle) < min_close_position:
+                self._record_vbp_stat("reject_vbp_quality_close_position")
+                return None
         if not (previous_close <= zone_top and candle.close > zone_top):
             self._record_vbp_stat("reject_no_zone_breakout")
             return None
@@ -1201,6 +1215,7 @@ class BinanceAutoTrader:
         self.log(
             f"{symbol}: VBP突破确认 level={zone_top:.6g} bottom={zone_bottom:.6g} "
             f"target={pullback_target:.6g} rvol_1m={candle_rvol:.2f}x rvol_1h={rvol_1h:.2f}x"
+            + (" quality_mode=1" if vbp_quality_mode else "")
         )
         return None
 
@@ -1226,8 +1241,15 @@ class BinanceAutoTrader:
             self.log(f"{symbol}: VBP失败 跌回整理区 bottom={pending.consolidation_bottom:.6g}")
             return None
 
+        vbp_quality_mode = self._vbp_live_quality_filter_active()
         touched_target = candle.low <= pending.pullback_target <= candle.high or candle.low <= pending.pullback_target
-        pullback_volume_ok = candle.volume <= pending.breakout_volume * float(vbp.entry.pullback_volume_ratio)
+        pullback_volume_ratio = float(vbp.entry.pullback_volume_ratio)
+        if vbp_quality_mode:
+            pullback_volume_ratio = min(
+                pullback_volume_ratio,
+                float(getattr(vbp.risk_control, "consecutive_loss_quality_pullback_volume_ratio", 0.30)),
+            )
+        pullback_volume_ok = candle.volume <= pending.breakout_volume * pullback_volume_ratio
         if touched_target and not pullback_volume_ok:
             self._vbp_breakouts.pop(symbol, None)
             self._record_vbp_stat("pending_reject_high_volume_pullback")
@@ -1244,6 +1266,11 @@ class BinanceAutoTrader:
         if not (candle.close > candle.open and candle.close >= pending.pullback_target):
             self._record_vbp_stat("pending_wait_bull_reclaim")
             return None
+        if vbp_quality_mode:
+            min_close_position = float(getattr(vbp.risk_control, "consecutive_loss_quality_min_close_position", 0.65))
+            if _vbp_candle_close_position(candle) < min_close_position:
+                self._record_vbp_stat("pending_reject_vbp_quality_close_position")
+                return None
 
         market_allowed, market_reason = self._vbp_live_market_allows()
         if not market_allowed:
@@ -1274,6 +1301,7 @@ class BinanceAutoTrader:
             f"level={pending.breakout_level:.8g} bottom={pending.consolidation_bottom:.8g} "
             f"target={pending.pullback_target:.8g} "
             f"tp1={tp1_price:.8g} tp1_ratio={float(vbp.exit.tp1_close_ratio):.3f} stop={stop_loss_pct * 100:.3f}%"
+            + (" vbp_quality_mode=1" if vbp_quality_mode else "")
         )
         signal = Signal(
             Direction.LONG,
@@ -1292,6 +1320,7 @@ class BinanceAutoTrader:
         self.log(
             f"{symbol}: VBP入场确认 age={age_bars} pullback_target={pending.pullback_target:.6g} "
             f"entry={entry_price:.6g} stop={stop_loss_pct * 100:.2f}%"
+            + (" quality_mode=1" if vbp_quality_mode else "")
         )
         return EntryCandidate(symbol, signal, candle, rank_score, momentum_pct, volume_ratio, "vbp_volume_breakout_pullback")
 
@@ -1590,6 +1619,12 @@ class BinanceAutoTrader:
         risk = self.config.vbp_strategy.risk_control
         base_max = max(1, int(self.config.vbp_strategy.position.max_positions))
         base_multiplier = 1.0
+        if self._vbp_live_quality_filter_active():
+            return (
+                max(1, min(base_max, int(getattr(risk, "consecutive_loss_quality_max_positions", 1)))),
+                min(base_multiplier, float(getattr(risk, "consecutive_loss_quality_size_multiplier", 0.50))),
+                "vbp_consecutive_loss_quality_mode",
+            )
         if not bool(getattr(risk, "enabled", False)):
             return base_max, base_multiplier, "vbp_weekly_disabled"
         now = datetime.now(timezone.utc)
@@ -1624,6 +1659,12 @@ class BinanceAutoTrader:
                 "vbp_consecutive_loss_reduced",
             )
         return base_max, base_multiplier, "vbp_weekly_base"
+
+    def _vbp_live_quality_filter_active(self) -> bool:
+        risk = self.config.vbp_strategy.risk_control
+        if not bool(getattr(risk, "consecutive_loss_quality_filter_enabled", False)):
+            return False
+        return time.time() < self._vbp_live_loss_quality_until
 
     def _portfolio_live_bucket_count(self, account: AccountSnapshot, bucket: str) -> int:
         count = 0
@@ -3116,7 +3157,12 @@ class BinanceAutoTrader:
         return replace(base, high=high, low=low, close=close, volume=volume)
 
     def _update_profit_state_with_candle(self, position: LivePosition, state: ProfitState, candle: Candle) -> None:
-        if position.direction == Direction.LONG:
+        if _is_vbp_entry_reason(str(getattr(position, "entry_reason", ""))):
+            if position.direction == Direction.LONG:
+                state.best_price = max(state.best_price, candle.close)
+            elif position.direction == Direction.SHORT:
+                state.best_price = min(state.best_price, candle.close)
+        elif position.direction == Direction.LONG:
             state.best_price = max(state.best_price, candle.high)
         elif position.direction == Direction.SHORT:
             state.best_price = min(state.best_price, candle.low)
@@ -3136,14 +3182,27 @@ class BinanceAutoTrader:
         current_profit = _directional_profit_pct(position.direction, position.entry_price, candle.close)
         peak_profit = _directional_profit_pct(position.direction, position.entry_price, state.best_price)
         pullback = max(0.0, (state.best_price - candle.close) / max(position.entry_price, 1e-12))
+        reason = str(getattr(position, "entry_reason", "") or "")
+        state_data = self._position_state.get(position.symbol, {})
+        tp1_done = " vbp_tp1_done=1" in reason or bool(state_data.get("vbp_tp1_done", False))
+        minimum_profit = self._minimum_profit_exit_pct()
 
         if bool(getattr(exit_config, "peak_giveback_enabled", True)):
             trigger = max(0.0, float(getattr(exit_config, "peak_giveback_trigger_pct", 0.008)))
             floor = float(getattr(exit_config, "peak_giveback_floor_pct", 0.0015))
             retrace = max(0.0, float(getattr(exit_config, "peak_giveback_retrace_pct", 0.005)))
-            if peak_profit >= trigger and (current_profit <= floor or pullback >= retrace):
+            pre_tp1_trigger = max(0.0, float(getattr(exit_config, "peak_giveback_pre_tp1_trigger_pct", 0.020)))
+            current_profit_ok = current_profit >= minimum_profit
+            post_tp1_giveback = tp1_done and peak_profit >= trigger and (current_profit <= floor or pullback >= retrace)
+            pre_tp1_large_giveback = (
+                not tp1_done
+                and peak_profit >= pre_tp1_trigger
+                and pullback >= retrace
+            )
+            if current_profit_ok and (post_tp1_giveback or pre_tp1_large_giveback):
+                tag = "vbp_peak_giveback" if tp1_done else "vbp_peak_giveback_pre_tp1"
                 return (
-                    f"vbp_peak_giveback peak={peak_profit * 100:.3f}% "
+                    f"{tag} peak={peak_profit * 100:.3f}% "
                     f"now={current_profit * 100:.3f}% pullback={pullback * 100:.3f}%"
                 )
 
@@ -3335,13 +3394,31 @@ class BinanceAutoTrader:
             upper_wick = candle.high - max(candle.open, candle.close)
             broke_high = candle.high > upper_channel + buffer
             failed_close = candle.close < upper_channel - buffer * 0.25
-            if broke_high and failed_close and (candle.close < candle.open or upper_wick > body):
+            previous_failed_close = False
+            if len(candles) >= 2:
+                previous_failed_close = candles[-2].close < upper_channel - buffer * 0.25
+            deep_failed_close = candle.close < upper_channel - buffer * 1.25
+            if (
+                broke_high
+                and failed_close
+                and (previous_failed_close or deep_failed_close)
+                and (candle.close < candle.open or upper_wick > body)
+            ):
                 return f"false_long_breakout close={candle.close:.6g} upper={upper_channel:.6g}"
         elif direction == Direction.SHORT:
             lower_wick = min(candle.open, candle.close) - candle.low
             broke_low = candle.low < lower_channel - buffer
             failed_close = candle.close > lower_channel + buffer * 0.25
-            if broke_low and failed_close and (candle.close > candle.open or lower_wick > body):
+            previous_failed_close = False
+            if len(candles) >= 2:
+                previous_failed_close = candles[-2].close > lower_channel + buffer * 0.25
+            deep_failed_close = candle.close > lower_channel + buffer * 1.25
+            if (
+                broke_low
+                and failed_close
+                and (previous_failed_close or deep_failed_close)
+                and (candle.close > candle.open or lower_wick > body)
+            ):
                 return f"false_short_breakdown close={candle.close:.6g} lower={lower_channel:.6g}"
         return None
 
@@ -3577,9 +3654,18 @@ class BinanceAutoTrader:
     def _record_vbp_live_result(self, pnl: float, entry_reason: str | None) -> None:
         if _portfolio_bucket_from_reason(entry_reason or "") != "vbp":
             return
+        risk = self.config.vbp_strategy.risk_control
         if pnl < 0:
             self._vbp_live_loss_streak += 1
-            risk = self.config.vbp_strategy.risk_control
+            if bool(getattr(risk, "consecutive_loss_quality_filter_enabled", False)):
+                losses = max(1, int(getattr(risk, "consecutive_loss_quality_losses", 2)))
+                if self._vbp_live_loss_streak >= losses:
+                    minutes = max(1, int(getattr(risk, "consecutive_loss_quality_minutes", 240)))
+                    self._vbp_live_loss_quality_until = max(
+                        self._vbp_live_loss_quality_until,
+                        time.time() + minutes * 60.0,
+                    )
+                    self.log(f"VBP连续亏损进入质量降级模式 {minutes}分钟：更高RVOL/更强收盘/缩量回踩/降仓")
             if bool(getattr(risk, "consecutive_loss_reduce_enabled", False)):
                 losses = max(1, int(getattr(risk, "consecutive_loss_reduce_losses", 1)))
                 if self._vbp_live_loss_streak >= losses:
@@ -3631,6 +3717,7 @@ class BinanceAutoTrader:
                 losses += 1
             if entry_reason:
                 self._record_indicator_reversal_result(net_pnl, entry_reason)
+                self._record_vbp_live_result(net_pnl, entry_reason)
 
         self.stats.closed_trades += closed_count
         self.stats.winning_trades += wins
@@ -3894,7 +3981,14 @@ class BinanceAutoTrader:
             return None
         candle = current_candle or candles[-1]
         if state is not None:
-            if position.direction == Direction.LONG:
+            if _is_vbp_entry_reason(str(getattr(position, "entry_reason", ""))):
+                if position.direction == Direction.LONG:
+                    state.best_price = max(state.best_price, candle.close)
+                    best_price = state.best_price
+                else:
+                    state.best_price = min(state.best_price, candle.close)
+                    best_price = state.best_price
+            elif position.direction == Direction.LONG:
                 state.best_price = max(state.best_price, candle.high)
                 best_price = state.best_price
             else:
@@ -4861,6 +4955,15 @@ def _vbp_large_bearish_candle_reason(candles: list[Candle], exit_config: Any) ->
 
 def _is_indicator_reversal_entry_reason(reason: str) -> bool:
     return reason.lower().startswith("indicator_")
+
+
+def _indicator_reversal_direction_from_reason(reason: str) -> Direction:
+    normalized = reason.lower()
+    if normalized.startswith("indicator_long_") or "macd_golden_cross" in normalized:
+        return Direction.LONG
+    if normalized.startswith("indicator_short_") or "macd_dead_cross" in normalized:
+        return Direction.SHORT
+    return Direction.FLAT
 
 
 def _indicator_side_field(direction: Direction, suffix: str) -> str:
