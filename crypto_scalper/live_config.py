@@ -195,6 +195,15 @@ class LiveRiskConfig:
     funding_enabled: bool = False
     funding_data_dir: str = ""
     funding_default_rate: float = 0.0
+    dynamic_slippage_enabled: bool = False
+    impact_coefficient_bps: float = 25.0
+    impact_exponent: float = 0.5
+    max_bar_participation_rate: float = 0.003
+    min_partial_fill_ratio: float = 0.10
+    point_in_time_universe_enabled: bool = False
+    point_in_time_universe_top_n: int = 100
+    universe_lookback_days: int = 1
+    new_symbol_warmup_days: int = 20
     min_profit_after_cost_pct: float = 0.0010
     min_available_balance_usdt: float = 20.0
     min_order_notional_usdt: float = 5.0

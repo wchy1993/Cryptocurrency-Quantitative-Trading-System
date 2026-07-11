@@ -57,6 +57,10 @@ from .mtf_4h_rsi_regime import (
 )
 from .risk import BacktestExecutionConfig, BacktestExecutionStats, execution_config_from_live_config, market_exit_fill
 from .indicators import ema, macd
+from .realistic_data import load_funding_rate_directory
+
+
+_POINT_IN_TIME_UNIVERSE: dict[Any, frozenset[str]] = {}
 
 
 @dataclass
@@ -158,6 +162,7 @@ def run_execution_backtest(
     execution_candles = _load_symbol_data(execution_data_dir, tuple(config.trading.symbols), execution_timeframe)
     if not execution_candles:
         raise RuntimeError(f"no 1m execution data loaded from {execution_data_dir}")
+    execution_candles, alignment_report = _align_execution_candles_by_utc_timestamp(execution_candles)
 
     symbols = tuple(symbol for symbol in config.trading.symbols if symbol in execution_candles)
     config = replace(
@@ -217,7 +222,7 @@ def run_execution_backtest(
             }
             for timeframe in _mtf_required_timeframes(config)
         }
-    return run_execution_backtest_config(
+    result = run_execution_backtest_config(
         config,
         execution_candles,
         signal_candles,
@@ -235,6 +240,46 @@ def run_execution_backtest(
         backtest_mode=backtest_mode,
         mtf_candidate_cache=mtf_candidate_cache,
     )
+    result["time_alignment"] = alignment_report
+    return result
+
+
+def _align_execution_candles_by_utc_timestamp(
+    candles_by_symbol: dict[str, list[Candle]],
+) -> tuple[dict[str, list[Candle]], dict[str, Any]]:
+    """Build one explicit UTC clock shared by every execution series.
+
+    The engine is index-based internally, so indexes are safe only after every
+    symbol has been reordered against the same timestamp sequence.  A minute
+    missing from any symbol is excluded from the portfolio clock rather than
+    forward-filled or borrowed from a neighbouring candle.
+    """
+    if not candles_by_symbol:
+        return {}, {"mode": "utc_intersection", "symbols": 0, "aligned_minutes": 0}
+    original_counts = {symbol: len(candles) for symbol, candles in candles_by_symbol.items()}
+    first_symbol = next(iter(candles_by_symbol))
+    common_timestamps = {candle.timestamp for candle in candles_by_symbol[first_symbol]}
+    for symbol, candles in candles_by_symbol.items():
+        if symbol == first_symbol:
+            continue
+        common_timestamps.intersection_update(candle.timestamp for candle in candles)
+        if not common_timestamps:
+            raise RuntimeError(f"no common UTC execution timestamps remain after aligning {symbol}")
+    timeline = sorted(common_timestamps)
+    aligned: dict[str, list[Candle]] = {}
+    for symbol, candles in candles_by_symbol.items():
+        by_timestamp = {candle.timestamp: candle for candle in candles}
+        aligned[symbol] = [by_timestamp[timestamp] for timestamp in timeline]
+    return aligned, {
+        "mode": "utc_intersection",
+        "symbols": len(aligned),
+        "aligned_minutes": len(timeline),
+        "first_timestamp": timeline[0].isoformat() if timeline else None,
+        "last_timestamp": timeline[-1].isoformat() if timeline else None,
+        "original_min_minutes": min(original_counts.values()),
+        "original_max_minutes": max(original_counts.values()),
+        "dropped_minutes_from_shortest_series": min(original_counts.values()) - len(timeline),
+    }
 
 
 def run_execution_backtest_config(
@@ -260,6 +305,8 @@ def run_execution_backtest_config(
         for symbol in config.trading.symbols
         if symbol in execution_candles_by_symbol and symbol in signal_candles_by_symbol
     )
+    global _POINT_IN_TIME_UNIVERSE
+    _POINT_IN_TIME_UNIVERSE = _build_point_in_time_universe(config, execution_candles_by_symbol)
     execution_candles_by_symbol = {symbol: execution_candles_by_symbol[symbol] for symbol in symbols}
     signal_candles_by_symbol = {symbol: signal_candles_by_symbol[symbol] for symbol in symbols}
     if entry_timing_candles_by_symbol:
@@ -343,6 +390,11 @@ def run_execution_backtest_config(
         client = HistoricalClient(signal_candles_by_symbol, config.trading.timeframe, historical_filter_timeframes)
     trader = BinanceAutoTrader(config, client)
     execution_config = execution_config_from_live_config(config, cost_experiment=cost_experiment, mode=backtest_mode)
+    if execution_config.funding_enabled and getattr(config.risk, "funding_data_dir", ""):
+        execution_config = replace(
+            execution_config,
+            funding_rates_by_symbol=load_funding_rate_directory(config.risk.funding_data_dir, symbols),
+        )
     execution_stats = BacktestExecutionStats()
     common_signal_length = min(len(candles) for candles in signal_candles_by_symbol.values())
     common_execution_length = min(len(candles) for candles in execution_candles_by_symbol.values())
@@ -711,6 +763,8 @@ def _fill_pending_entries_1m(
     max_fills = max(1, int(config.trading.max_new_entries_per_cycle))
     for pending in pending_entries:
         candidate = pending.candidate
+        if not _point_in_time_symbol_allowed(config, candidate.symbol, timestamp):
+            continue
         if pending.earliest_execution_index > execution_index:
             remaining.append(pending)
             continue
@@ -1290,6 +1344,42 @@ def _vbp_symbols(config: Any) -> tuple[str, ...]:
     trading_symbols = set(config.trading.symbols)
     entry_symbols = set(config.trading.entry_symbols or config.trading.symbols)
     return tuple(symbol for symbol in vbp_symbols if symbol in trading_symbols and symbol in entry_symbols)
+
+
+def _point_in_time_symbol_allowed(config: Any, symbol: str, timestamp: Any) -> bool:
+    if not bool(getattr(config.risk, "point_in_time_universe_enabled", False)):
+        return True
+    day = timestamp.date() if hasattr(timestamp, "date") else None
+    return day is not None and symbol in _POINT_IN_TIME_UNIVERSE.get(day, frozenset())
+
+
+def _build_point_in_time_universe(config: Any, candles_by_symbol: dict[str, list[Candle]]) -> dict[Any, frozenset[str]]:
+    if not bool(getattr(config.risk, "point_in_time_universe_enabled", False)):
+        return {}
+    top_n = max(1, int(getattr(config.risk, "point_in_time_universe_top_n", 100)))
+    lookback_days = max(1, int(getattr(config.risk, "universe_lookback_days", 1)))
+    warmup_days = max(0, int(getattr(config.risk, "new_symbol_warmup_days", 20)))
+    daily: dict[Any, dict[str, float]] = {}
+    first_day: dict[str, Any] = {}
+    for symbol, candles in candles_by_symbol.items():
+        for candle in candles:
+            day = candle.timestamp.date()
+            first_day.setdefault(symbol, day)
+            bucket = daily.setdefault(day, {})
+            bucket[symbol] = bucket.get(symbol, 0.0) + max(0.0, candle.volume * candle.close)
+    days = sorted(daily)
+    result: dict[Any, frozenset[str]] = {}
+    for index, day in enumerate(days):
+        prior_days = days[max(0, index - lookback_days):index]
+        scores: dict[str, float] = {}
+        for prior_day in prior_days:
+            for symbol, quote_volume in daily[prior_day].items():
+                if (day - first_day[symbol]).days < warmup_days:
+                    continue
+                scores[symbol] = scores.get(symbol, 0.0) + quote_volume
+        ranked = sorted(scores, key=lambda symbol: (-scores[symbol], symbol))[:top_n]
+        result[day] = frozenset(ranked)
+    return result
 
 
 def _is_vbp_position(position: PortfolioPosition) -> bool:
@@ -1939,6 +2029,8 @@ def _run_vbp_scan_1m(
     vbp_symbols = set(_vbp_symbols(config))
     candidates = []
     for symbol in _vbp_symbols(config):
+        if not _point_in_time_symbol_allowed(config, symbol, timestamp):
+            continue
         if symbol not in vbp_symbols or symbol not in entry_symbols or symbol not in execution_candles_by_symbol:
             continue
         if _vbp_symbol_on_cooldown(control, symbol, timestamp):
@@ -2137,6 +2229,17 @@ def _vbp_process_pending(
         pending.touched_pullback = True
     if not pending.touched_pullback:
         return cash, False
+
+    # A pullback is only known after the current 1m candle has closed.  Do not
+    # fill at that same close: arm the entry and execute from the next candle.
+    confirmed_index = getattr(pending, "entry_confirmed_index", None)
+    if confirmed_index is None:
+        setattr(pending, "entry_confirmed_index", execution_index)
+        setattr(pending, "entry_confirmed_price", candle.close)
+        _vbp_count(stats, "entry_deferred_to_next_open")
+        return cash, False
+    if execution_index <= int(confirmed_index):
+        return cash, False
     if not (candle.close > candle.open and candle.close >= pending.pullback_target):
         return cash, False
 
@@ -2158,7 +2261,11 @@ def _vbp_process_pending(
         _vbp_count(stats, f"reject_{portfolio_reason}")
         return cash, False
 
-    entry_price = candle.close
+    # For a long entry, waiting must not award a better price than the close
+    # that confirmed the signal.  Adverse gaps are retained; favorable gaps
+    # are ignored before the normal pessimistic slippage model is applied.
+    confirmed_price = float(getattr(pending, "entry_confirmed_price", candle.open))
+    entry_price = max(candle.open, confirmed_price)
     stop_price = max(pending.consolidation_bottom, entry_price * (1.0 - float(vbp.exit.stop_loss_pct)))
     stop_loss_pct = (entry_price - stop_price) / max(entry_price, 1e-12)
     if stop_loss_pct <= 0:
