@@ -46,6 +46,8 @@ from .risk import (
     BacktestExecutionStats,
     execution_config_from_live_config,
     funding_cashflow,
+    funding_rates_between,
+    capacity_limited_quantity,
     market_entry_fill,
     market_exit_fill,
     validate_order_size,
@@ -78,6 +80,9 @@ class PortfolioPosition:
     signal_available_time: Any = None
     mfe: float = 0.0
     mae: float = 0.0
+    entry_participation_rate: float = 0.0
+    capacity_fill_ratio: float = 1.0
+    liquidity_reference_quote_volume: float = 0.0
 
     def unrealized_pnl(self, mark_price: float) -> float:
         return self.direction.value * self.quantity * (mark_price - self.entry_price)
@@ -2391,7 +2396,14 @@ def _open_position(
     execution_config = execution_config or execution_config_from_live_config(config)
     rules = rules or SymbolRules(symbol, "0.001", "0.001", "0.01", "5")
     raw_price = candle.close if raw_entry_price is None else raw_entry_price
-    fill = market_entry_fill(execution_config, rules, signal.direction, quantity, raw_price)
+    requested_quantity = quantity
+    bar_quote_volume = abs(candle.volume * raw_price)
+    quantity, capacity_fill_ratio, _ = capacity_limited_quantity(
+        execution_config, rules, quantity, raw_price, bar_quote_volume
+    )
+    if quantity <= 0:
+        return cash
+    fill = market_entry_fill(execution_config, rules, signal.direction, quantity, raw_price, bar_quote_volume)
     size_reason = validate_order_size(rules, quantity, fill.price, getattr(config.risk, "min_order_notional_usdt", 0.0))
     if size_reason != "ok":
         return cash
@@ -2425,6 +2437,9 @@ def _open_position(
         entry_liquidity=fill.liquidity,
         signal_time=signal_time,
         signal_available_time=signal_available_time,
+        entry_participation_rate=fill.participation_rate,
+        capacity_fill_ratio=quantity / requested_quantity if requested_quantity > 0 else capacity_fill_ratio,
+        liquidity_reference_quote_volume=bar_quote_volume,
     )
     return cash
 
@@ -2441,7 +2456,14 @@ def _add_to_position(
 ) -> float:
     execution_config = execution_config or execution_config_from_live_config(config)
     rules = rules or SymbolRules(position.symbol, "0.001", "0.001", "0.01", "5")
-    fill = market_entry_fill(execution_config, rules, signal.direction, quantity, candle.close)
+    requested_quantity = quantity
+    bar_quote_volume = abs(candle.volume * candle.close)
+    quantity, capacity_fill_ratio, _ = capacity_limited_quantity(
+        execution_config, rules, quantity, candle.close, bar_quote_volume
+    )
+    if quantity <= 0:
+        return cash
+    fill = market_entry_fill(execution_config, rules, signal.direction, quantity, candle.close, bar_quote_volume)
     size_reason = validate_order_size(rules, quantity, fill.price, getattr(config.risk, "min_order_notional_usdt", 0.0))
     if size_reason != "ok":
         return cash
@@ -2471,6 +2493,9 @@ def _add_to_position(
     position.entry_fee += entry_fee
     position.entry_slippage_cost += fill.slippage_cost
     position.scale_ins += 1
+    position.capacity_fill_ratio = min(position.capacity_fill_ratio, quantity / requested_quantity if requested_quantity > 0 else capacity_fill_ratio)
+    position.entry_participation_rate = max(position.entry_participation_rate, fill.participation_rate)
+    position.liquidity_reference_quote_volume = max(position.liquidity_reference_quote_volume, bar_quote_volume)
     return cash
 
 
@@ -2491,7 +2516,15 @@ def _close_position(
     execution_config = execution_config or execution_config_from_live_config(config)
     rules = rules or SymbolRules(symbol, "0.001", "0.001", "0.01", "5")
     exit_order_type = _exit_order_type(reason)
-    fill = market_exit_fill(execution_config, rules, position.direction, position.quantity, exit_price, exit_order_type)
+    fill = market_exit_fill(
+        execution_config,
+        rules,
+        position.direction,
+        position.quantity,
+        exit_price,
+        exit_order_type,
+        position.liquidity_reference_quote_volume or None,
+    )
     executed_exit = fill.price
     raw_entry = position.raw_entry_price or position.entry_price
     raw_gross_pnl = position.direction.value * position.quantity * (exit_price - raw_entry)
@@ -2547,6 +2580,9 @@ def _close_position(
             "signal_time": position.signal_time.isoformat() if hasattr(position.signal_time, "isoformat") else position.signal_time,
             "signal_available_time": position.signal_available_time.isoformat() if hasattr(position.signal_available_time, "isoformat") else position.signal_available_time,
             "skip_reason": "",
+            "entry_participation_rate": position.entry_participation_rate,
+            "exit_participation_rate": fill.participation_rate,
+            "capacity_fill_ratio": position.capacity_fill_ratio,
         }
     )
     return cash
@@ -2570,13 +2606,14 @@ def _hold_minutes(entry_time: Any, exit_time: Any) -> float:
 def _funding_for_position(execution_config: BacktestExecutionConfig, position: PortfolioPosition, exit_time: Any) -> float:
     if not execution_config.funding_enabled:
         return 0.0
-    if execution_config.funding_default_rate == 0:
-        return 0.0
     if not hasattr(position.entry_time, "timestamp") or not hasattr(exit_time, "timestamp"):
         return 0.0
-    # No bundled funding history exists yet. This preserves the accounting path
-    # for tests and future data loaders without inventing exchange data.
-    return funding_cashflow(position.direction, abs(position.quantity * position.entry_price), [])
+    histories = execution_config.funding_rates_by_symbol or {}
+    history = histories.get(position.symbol, ())
+    rates = funding_rates_between(history, position.entry_time, exit_time)
+    if not rates and execution_config.funding_default_rate:
+        rates = [execution_config.funding_default_rate]
+    return funding_cashflow(position.direction, abs(position.quantity * position.entry_price), rates)
 
 
 def _update_position_excursion(position: PortfolioPosition, candle: Candle) -> None:

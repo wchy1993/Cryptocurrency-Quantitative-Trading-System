@@ -137,6 +137,12 @@ class BacktestExecutionConfig:
     taker_fee_rate: float = 0.0005
     funding_enabled: bool = False
     funding_default_rate: float = 0.0
+    funding_rates_by_symbol: dict[str, tuple[FundingRate, ...]] | None = None
+    dynamic_slippage_enabled: bool = False
+    impact_coefficient_bps: float = 25.0
+    impact_exponent: float = 0.5
+    max_bar_participation_rate: float = 0.003
+    min_partial_fill_ratio: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -148,6 +154,7 @@ class ExecutionFill:
     slippage_cost: float
     order_type: str
     liquidity: str
+    participation_rate: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -180,6 +187,11 @@ def execution_config_from_live_config(
     experiment = str(cost_experiment or getattr(risk, "cost_experiment", "full_cost") or "full_cost").lower()
     funding_enabled = bool(getattr(risk, "funding_enabled", False))
     funding_default_rate = float(getattr(risk, "funding_default_rate", 0.0))
+    dynamic_slippage_enabled = bool(getattr(risk, "dynamic_slippage_enabled", False))
+    impact_coefficient_bps = float(getattr(risk, "impact_coefficient_bps", 25.0))
+    impact_exponent = float(getattr(risk, "impact_exponent", 0.5))
+    max_bar_participation_rate = float(getattr(risk, "max_bar_participation_rate", 0.003))
+    min_partial_fill_ratio = float(getattr(risk, "min_partial_fill_ratio", 0.10))
 
     if experiment == "no_cost":
         maker_fee_rate = taker_fee_rate = 0.0
@@ -217,6 +229,11 @@ def execution_config_from_live_config(
         taker_fee_rate=max(0.0, taker_fee_rate),
         funding_enabled=funding_enabled,
         funding_default_rate=funding_default_rate,
+        dynamic_slippage_enabled=dynamic_slippage_enabled,
+        impact_coefficient_bps=max(0.0, impact_coefficient_bps),
+        impact_exponent=max(0.1, impact_exponent),
+        max_bar_participation_rate=max(0.0, max_bar_participation_rate),
+        min_partial_fill_ratio=max(0.0, min(1.0, min_partial_fill_ratio)),
     )
 
 
@@ -226,9 +243,10 @@ def market_entry_fill(
     direction: Direction,
     quantity: float,
     raw_open_price: float,
+    bar_quote_volume: float | None = None,
 ) -> ExecutionFill:
     side = "buy" if direction == Direction.LONG else "sell"
-    return _fill_with_slippage(config, rules, direction, side, quantity, raw_open_price, config.market_slippage_bps, "market", "taker")
+    return _fill_with_slippage(config, rules, direction, side, quantity, raw_open_price, config.market_slippage_bps, "market", "taker", bar_quote_volume)
 
 
 def market_exit_fill(
@@ -238,6 +256,7 @@ def market_exit_fill(
     quantity: float,
     raw_price: float,
     order_type: str = "market",
+    bar_quote_volume: float | None = None,
 ) -> ExecutionFill:
     side = "sell" if direction == Direction.LONG else "buy"
     slip_bps = config.market_slippage_bps
@@ -246,7 +265,27 @@ def market_exit_fill(
         slip_bps = config.stop_slippage_bps
     elif "take_profit" in normalized or "take-profit" in normalized:
         slip_bps = config.take_profit_slippage_bps
-    return _fill_with_slippage(config, rules, direction, side, quantity, raw_price, slip_bps, order_type, "taker")
+    return _fill_with_slippage(config, rules, direction, side, quantity, raw_price, slip_bps, order_type, "taker", bar_quote_volume)
+
+
+def capacity_limited_quantity(
+    config: BacktestExecutionConfig,
+    rules: SymbolRules,
+    quantity: float,
+    raw_price: float,
+    bar_quote_volume: float,
+) -> tuple[float, float, str]:
+    requested = max(0.0, quantity)
+    if requested <= 0:
+        return 0.0, 0.0, "zero_quantity"
+    if not config.dynamic_slippage_enabled or config.max_bar_participation_rate <= 0 or bar_quote_volume <= 0:
+        return requested, 1.0, "full_fill"
+    capacity_notional = bar_quote_volume * config.max_bar_participation_rate
+    filled = conservative_quantity(rules, min(requested, capacity_notional / max(raw_price, 1e-12)))
+    fill_ratio = filled / requested if requested > 0 else 0.0
+    if fill_ratio < config.min_partial_fill_ratio:
+        return 0.0, fill_ratio, "capacity_rejected"
+    return filled, min(1.0, fill_ratio), "full_fill" if fill_ratio >= 0.999999 else "partial_fill"
 
 
 def limit_order_filled(rules: SymbolRules, side: str, candle: Candle, limit_price: float) -> tuple[bool, bool]:
@@ -324,8 +363,15 @@ def _fill_with_slippage(
     slippage_bps: float,
     order_type: str,
     liquidity: str,
+    bar_quote_volume: float | None = None,
 ) -> ExecutionFill:
-    slip = max(0.0, slippage_bps) / 10_000.0
+    requested_notional = abs(quantity * raw_price)
+    participation = 0.0
+    effective_slippage_bps = max(0.0, slippage_bps)
+    if config.dynamic_slippage_enabled and bar_quote_volume is not None and bar_quote_volume > 0:
+        participation = requested_notional / bar_quote_volume
+        effective_slippage_bps += config.impact_coefficient_bps * (max(0.0, participation) ** config.impact_exponent)
+    slip = effective_slippage_bps / 10_000.0
     slipped = raw_price * (1.0 + slip) if side == "buy" else raw_price * (1.0 - slip)
     executed = conservative_price(rules, slipped, side)
     fee_rate = config.taker_fee_rate if liquidity == "taker" else config.maker_fee_rate
@@ -344,6 +390,7 @@ def _fill_with_slippage(
         slippage_cost=slip_cost,
         order_type=order_type,
         liquidity=liquidity,
+        participation_rate=participation,
     )
 
 

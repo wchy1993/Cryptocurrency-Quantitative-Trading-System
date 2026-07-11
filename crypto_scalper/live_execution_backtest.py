@@ -57,6 +57,17 @@ from .mtf_4h_rsi_regime import (
 )
 from .risk import BacktestExecutionConfig, BacktestExecutionStats, execution_config_from_live_config, market_exit_fill
 from .indicators import ema, macd
+from .realistic_data import load_funding_rate_directory
+from .vbp_quality import (
+    VbpQualityInputs,
+    score_vbp_quality,
+    vbp_atr_pct_5m,
+    vbp_quality_report,
+    vbp_runner_exit_reason,
+)
+
+
+_POINT_IN_TIME_UNIVERSE: dict[Any, frozenset[str]] = {}
 
 
 @dataclass
@@ -99,6 +110,7 @@ class VbpRuntimeControl:
     loss_streak: int = 0
     pause_until: Any = None
     loss_reduce_until: Any = None
+    loss_quality_until: Any = None
     peak_equity: float = 0.0
     symbol_cooldown_until: dict[str, Any] | None = None
     daily_pnl: dict[Any, float] | None = None
@@ -158,6 +170,7 @@ def run_execution_backtest(
     execution_candles = _load_symbol_data(execution_data_dir, tuple(config.trading.symbols), execution_timeframe)
     if not execution_candles:
         raise RuntimeError(f"no 1m execution data loaded from {execution_data_dir}")
+    execution_candles, alignment_report = _align_execution_candles_by_utc_timestamp(execution_candles)
 
     symbols = tuple(symbol for symbol in config.trading.symbols if symbol in execution_candles)
     config = replace(
@@ -217,7 +230,7 @@ def run_execution_backtest(
             }
             for timeframe in _mtf_required_timeframes(config)
         }
-    return run_execution_backtest_config(
+    result = run_execution_backtest_config(
         config,
         execution_candles,
         signal_candles,
@@ -235,6 +248,46 @@ def run_execution_backtest(
         backtest_mode=backtest_mode,
         mtf_candidate_cache=mtf_candidate_cache,
     )
+    result["time_alignment"] = alignment_report
+    return result
+
+
+def _align_execution_candles_by_utc_timestamp(
+    candles_by_symbol: dict[str, list[Candle]],
+) -> tuple[dict[str, list[Candle]], dict[str, Any]]:
+    """Build one explicit UTC clock shared by every execution series.
+
+    The engine is index-based internally, so indexes are safe only after every
+    symbol has been reordered against the same timestamp sequence.  A minute
+    missing from any symbol is excluded from the portfolio clock rather than
+    forward-filled or borrowed from a neighbouring candle.
+    """
+    if not candles_by_symbol:
+        return {}, {"mode": "utc_intersection", "symbols": 0, "aligned_minutes": 0}
+    original_counts = {symbol: len(candles) for symbol, candles in candles_by_symbol.items()}
+    first_symbol = next(iter(candles_by_symbol))
+    common_timestamps = {candle.timestamp for candle in candles_by_symbol[first_symbol]}
+    for symbol, candles in candles_by_symbol.items():
+        if symbol == first_symbol:
+            continue
+        common_timestamps.intersection_update(candle.timestamp for candle in candles)
+        if not common_timestamps:
+            raise RuntimeError(f"no common UTC execution timestamps remain after aligning {symbol}")
+    timeline = sorted(common_timestamps)
+    aligned: dict[str, list[Candle]] = {}
+    for symbol, candles in candles_by_symbol.items():
+        by_timestamp = {candle.timestamp: candle for candle in candles}
+        aligned[symbol] = [by_timestamp[timestamp] for timestamp in timeline]
+    return aligned, {
+        "mode": "utc_intersection",
+        "symbols": len(aligned),
+        "aligned_minutes": len(timeline),
+        "first_timestamp": timeline[0].isoformat() if timeline else None,
+        "last_timestamp": timeline[-1].isoformat() if timeline else None,
+        "original_min_minutes": min(original_counts.values()),
+        "original_max_minutes": max(original_counts.values()),
+        "dropped_minutes_from_shortest_series": min(original_counts.values()) - len(timeline),
+    }
 
 
 def run_execution_backtest_config(
@@ -260,6 +313,8 @@ def run_execution_backtest_config(
         for symbol in config.trading.symbols
         if symbol in execution_candles_by_symbol and symbol in signal_candles_by_symbol
     )
+    global _POINT_IN_TIME_UNIVERSE
+    _POINT_IN_TIME_UNIVERSE = _build_point_in_time_universe(config, execution_candles_by_symbol)
     execution_candles_by_symbol = {symbol: execution_candles_by_symbol[symbol] for symbol in symbols}
     signal_candles_by_symbol = {symbol: signal_candles_by_symbol[symbol] for symbol in symbols}
     if entry_timing_candles_by_symbol:
@@ -343,6 +398,11 @@ def run_execution_backtest_config(
         client = HistoricalClient(signal_candles_by_symbol, config.trading.timeframe, historical_filter_timeframes)
     trader = BinanceAutoTrader(config, client)
     execution_config = execution_config_from_live_config(config, cost_experiment=cost_experiment, mode=backtest_mode)
+    if execution_config.funding_enabled and getattr(config.risk, "funding_data_dir", ""):
+        execution_config = replace(
+            execution_config,
+            funding_rates_by_symbol=load_funding_rate_directory(config.risk.funding_data_dir, symbols),
+        )
     execution_stats = BacktestExecutionStats()
     common_signal_length = min(len(candles) for candles in signal_candles_by_symbol.values())
     common_execution_length = min(len(candles) for candles in execution_candles_by_symbol.values())
@@ -678,6 +738,7 @@ def run_execution_backtest_config(
         payload["low_base_ignition_stats"] = dict(sorted(low_base_stats.items()))
     if vbp_stats:
         payload["vbp_stats"] = dict(sorted(vbp_stats.items()))
+    payload["vbp_quality_summary"] = vbp_quality_report(trades)
     if portfolio_control_stats:
         payload["portfolio_control_stats"] = dict(sorted(portfolio_control_stats.items()))
     if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False):
@@ -711,6 +772,8 @@ def _fill_pending_entries_1m(
     max_fills = max(1, int(config.trading.max_new_entries_per_cycle))
     for pending in pending_entries:
         candidate = pending.candidate
+        if not _point_in_time_symbol_allowed(config, candidate.symbol, timestamp):
+            continue
         if pending.earliest_execution_index > execution_index:
             remaining.append(pending)
             continue
@@ -1110,6 +1173,7 @@ def _manage_positions_1m(
         position.bars_held = max(0, signal_index - position.entry_index)
         _update_position_excursion(position, candle)
         if _is_vbp_position(position) and position.direction == Direction.LONG:
+            position.best_price = max(position.best_price, candle.close)
             cash = _update_vbp_partial_exit(
                 config,
                 cash,
@@ -1147,10 +1211,17 @@ def _manage_positions_1m(
             )
         exit_price = None
         reason = ""
+        vbp_runner_after_tp1 = (
+            _is_vbp_position(position)
+            and bool(getattr(config.vbp_strategy.exit, "runner_after_tp1_enabled", False))
+        )
         if position.direction == Direction.LONG:
-            position.best_price = max(position.best_price, candle.high)
+            if _is_vbp_position(position):
+                position.best_price = max(position.best_price, candle.close)
+            else:
+                position.best_price = max(position.best_price, candle.high)
             stop_hit = candle.low <= position.stop_price
-            take_profit_hit = candle.high >= position.take_profit_price
+            take_profit_hit = (not vbp_runner_after_tp1) and candle.high >= position.take_profit_price
             if stop_hit and take_profit_hit:
                 execution_stats.same_bar_tp_sl_conflict_count += 1
             if stop_hit and (not take_profit_hit or execution_config.mode != "optimistic"):
@@ -1162,7 +1233,7 @@ def _manage_positions_1m(
         else:
             position.best_price = min(position.best_price, candle.low)
             stop_hit = candle.high >= position.stop_price
-            take_profit_hit = candle.low <= position.take_profit_price
+            take_profit_hit = (not vbp_runner_after_tp1) and candle.low <= position.take_profit_price
             if stop_hit and take_profit_hit:
                 execution_stats.same_bar_tp_sl_conflict_count += 1
             if stop_hit and (not take_profit_hit or execution_config.mode != "optimistic"):
@@ -1292,6 +1363,42 @@ def _vbp_symbols(config: Any) -> tuple[str, ...]:
     return tuple(symbol for symbol in vbp_symbols if symbol in trading_symbols and symbol in entry_symbols)
 
 
+def _point_in_time_symbol_allowed(config: Any, symbol: str, timestamp: Any) -> bool:
+    if not bool(getattr(config.risk, "point_in_time_universe_enabled", False)):
+        return True
+    day = timestamp.date() if hasattr(timestamp, "date") else None
+    return day is not None and symbol in _POINT_IN_TIME_UNIVERSE.get(day, frozenset())
+
+
+def _build_point_in_time_universe(config: Any, candles_by_symbol: dict[str, list[Candle]]) -> dict[Any, frozenset[str]]:
+    if not bool(getattr(config.risk, "point_in_time_universe_enabled", False)):
+        return {}
+    top_n = max(1, int(getattr(config.risk, "point_in_time_universe_top_n", 100)))
+    lookback_days = max(1, int(getattr(config.risk, "universe_lookback_days", 1)))
+    warmup_days = max(0, int(getattr(config.risk, "new_symbol_warmup_days", 20)))
+    daily: dict[Any, dict[str, float]] = {}
+    first_day: dict[str, Any] = {}
+    for symbol, candles in candles_by_symbol.items():
+        for candle in candles:
+            day = candle.timestamp.date()
+            first_day.setdefault(symbol, day)
+            bucket = daily.setdefault(day, {})
+            bucket[symbol] = bucket.get(symbol, 0.0) + max(0.0, candle.volume * candle.close)
+    days = sorted(daily)
+    result: dict[Any, frozenset[str]] = {}
+    for index, day in enumerate(days):
+        prior_days = days[max(0, index - lookback_days):index]
+        scores: dict[str, float] = {}
+        for prior_day in prior_days:
+            for symbol, quote_volume in daily[prior_day].items():
+                if (day - first_day[symbol]).days < warmup_days:
+                    continue
+                scores[symbol] = scores.get(symbol, 0.0) + quote_volume
+        ranked = sorted(scores, key=lambda symbol: (-scores[symbol], symbol))[:top_n]
+        result[day] = frozenset(ranked)
+    return result
+
+
 def _is_vbp_position(position: PortfolioPosition) -> bool:
     return "vbp_" in str(position.entry_reason)
 
@@ -1324,23 +1431,25 @@ def _update_vbp_control_after_trades(
     stats: dict[str, int],
 ) -> None:
     risk = config.vbp_strategy.risk_control
-    if not bool(risk.enabled):
+    risk_enabled = bool(risk.enabled)
+    quality_enabled = bool(getattr(risk, "consecutive_loss_quality_filter_enabled", False))
+    if not risk_enabled and not quality_enabled:
         return
     for trade in closed_trades:
         if trade.get("strategy") != "volume_breakout_pullback":
             continue
         pnl = float(trade.get("net_pnl", 0.0) or 0.0)
-        if control.daily_pnl is not None:
+        if risk_enabled and control.daily_pnl is not None:
             control.daily_pnl[timestamp.date()] = control.daily_pnl.get(timestamp.date(), 0.0) + pnl
         if trade.get("exit_reason") == "vbp_tp1_partial":
             continue
         month_key = timestamp.strftime("%Y-%m") if hasattr(timestamp, "strftime") else str(timestamp)[:7]
-        if control.monthly_pnl is not None:
+        if risk_enabled and control.monthly_pnl is not None:
             control.monthly_pnl[month_key] = control.monthly_pnl.get(month_key, 0.0) + pnl
         week_key = _week_key(timestamp)
-        if control.weekly_pnl is not None:
+        if risk_enabled and control.weekly_pnl is not None:
             control.weekly_pnl[week_key] = control.weekly_pnl.get(week_key, 0.0) + pnl
-        if control.symbol_recent_pnl is not None:
+        if risk_enabled and control.symbol_recent_pnl is not None:
             symbol = str(trade.get("symbol"))
             recent = control.symbol_recent_pnl.setdefault(symbol, [])
             recent.append(pnl)
@@ -1357,7 +1466,15 @@ def _update_vbp_control_after_trades(
                     _vbp_count(stats, "symbol_performance_cooldown_count")
         if pnl < 0:
             control.loss_streak += 1
-            if bool(getattr(risk, "consecutive_loss_reduce_enabled", False)):
+            if quality_enabled:
+                quality_losses = max(1, int(getattr(risk, "consecutive_loss_quality_losses", 2)))
+                if control.loss_streak >= quality_losses:
+                    quality_minutes = max(1, int(getattr(risk, "consecutive_loss_quality_minutes", 240)))
+                    quality_until = timestamp + timedelta(minutes=quality_minutes)
+                    if control.loss_quality_until is None or quality_until > control.loss_quality_until:
+                        control.loss_quality_until = quality_until
+                    _vbp_count(stats, "consecutive_loss_quality_mode_count")
+            if risk_enabled and bool(getattr(risk, "consecutive_loss_reduce_enabled", False)):
                 reduce_losses = max(1, int(getattr(risk, "consecutive_loss_reduce_losses", 1)))
                 if control.loss_streak >= reduce_losses:
                     reduce_minutes = max(1, int(getattr(risk, "consecutive_loss_reduce_minutes", 1440)))
@@ -1365,19 +1482,19 @@ def _update_vbp_control_after_trades(
                     if control.loss_reduce_until is None or reduce_until > control.loss_reduce_until:
                         control.loss_reduce_until = reduce_until
                     _vbp_count(stats, "consecutive_loss_reduce_count")
-            if control.symbol_cooldown_until is not None:
+            if risk_enabled and control.symbol_cooldown_until is not None:
                 cooldown_minutes = max(0, int(risk.symbol_loss_cooldown_minutes))
                 if cooldown_minutes > 0:
                     control.symbol_cooldown_until[str(trade.get("symbol"))] = timestamp + timedelta(minutes=cooldown_minutes)
                     _vbp_count(stats, "symbol_loss_cooldown_count")
             limit = max(1, int(risk.consecutive_loss_limit))
-            if control.loss_streak >= limit:
+            if risk_enabled and control.loss_streak >= limit:
                 control.pause_until = timestamp + timedelta(minutes=max(1, int(risk.consecutive_loss_pause_minutes)))
                 control.loss_streak = 0
                 _vbp_count(stats, "consecutive_loss_pause_count")
         else:
             control.loss_streak = 0
-        if control.daily_pnl is not None:
+        if risk_enabled and control.daily_pnl is not None:
             daily_limit = -abs(float(risk.daily_loss_stop_pct)) * starting_equity
             if control.daily_pnl.get(timestamp.date(), 0.0) <= daily_limit:
                 _vbp_count(stats, "daily_loss_stop_count")
@@ -1676,6 +1793,12 @@ def _vbp_dynamic_exposure(
     risk = vbp.risk_control
     base_max_positions = max(1, int(vbp.position.max_positions))
     base_size_multiplier = float(vbp.position.size_multiplier)
+    if _vbp_quality_mode_active(config, control, timestamp):
+        return (
+            max(1, min(base_max_positions, int(getattr(risk, "consecutive_loss_quality_max_positions", 1)))),
+            min(base_size_multiplier, float(getattr(risk, "consecutive_loss_quality_size_multiplier", 0.50))),
+            "consecutive_loss_quality_mode",
+        )
     if not bool(risk.enabled) or not bool(risk.adaptive_exposure_enabled):
         return base_max_positions, base_size_multiplier, "base"
     if control.peak_equity <= 0:
@@ -1738,6 +1861,72 @@ def _vbp_dynamic_exposure(
         max(1, min(base_max_positions, int(risk.reduced_max_positions))),
         min(base_size_multiplier, float(risk.reduced_size_multiplier)),
         "reduced",
+    )
+
+
+def _vbp_quality_mode_active(config: Any, control: VbpRuntimeControl, timestamp: Any) -> bool:
+    risk = config.vbp_strategy.risk_control
+    if not bool(getattr(risk, "consecutive_loss_quality_filter_enabled", False)):
+        return False
+    return control.loss_quality_until is not None and timestamp < control.loss_quality_until
+
+
+def _vbp_candle_close_position(candle: Candle) -> float:
+    return (candle.close - candle.low) / max(candle.high - candle.low, 1e-12)
+
+
+def _vbp_entry_quality_decision(
+    config: Any,
+    candles_by_symbol: dict[str, list[Candle]],
+    pending: VbpBreakoutState,
+    index: int,
+    candle: Candle,
+    pullback_volume_ratio: float,
+) -> Any:
+    entry = config.vbp_strategy.entry
+    lookback = max(1, int(getattr(entry, "relative_strength_lookback_minutes", 60)))
+    symbol_candles = candles_by_symbol.get(pending.symbol, [])
+    btc_candles = candles_by_symbol.get("BTCUSDT", [])
+    symbol_ret = 0.0
+    btc_ret = 0.0
+    if index >= lookback and index < len(symbol_candles):
+        symbol_ret = symbol_candles[index].close / max(symbol_candles[index - lookback].close, 1e-12) - 1.0
+    if index >= lookback and index < len(btc_candles):
+        btc_ret = btc_candles[index].close / max(btc_candles[index - lookback].close, 1e-12) - 1.0
+    relative_vs_btc = 0.0 if pending.symbol == "BTCUSDT" else symbol_ret - btc_ret
+    rank_pct = None
+    use_market_rank = not (
+        float(getattr(entry, "relative_strength_min_vs_market_pct", -1.0)) <= -0.999
+        and float(getattr(entry, "relative_strength_max_rank_pct", 1.0)) >= 0.999
+    )
+    if use_market_rank:
+        market_returns = []
+        for symbol in _vbp_symbols(config):
+            rows = candles_by_symbol.get(symbol, [])
+            if index >= lookback and index < len(rows):
+                market_returns.append(rows[index].close / max(rows[index - lookback].close, 1e-12) - 1.0)
+        if market_returns:
+            rank_pct = sum(1 for value in market_returns if value > symbol_ret) / len(market_returns)
+    consolidation_range = (pending.breakout_level - pending.consolidation_bottom) / max(pending.breakout_close, 1e-12)
+    pullback_depth = max(0.0, (pending.breakout_close - candle.low) / max(pending.breakout_close, 1e-12))
+    reclaim_strength = max(0.0, (candle.close - pending.pullback_target) / max(pending.pullback_target, 1e-12))
+    momentum_rank = min(1.0, float(getattr(pending, "rvol_1h", 0.0)) / max(float(config.vbp_strategy.universe.rvol_entry_threshold) * 2.0, 1e-12))
+    return score_vbp_quality(
+        VbpQualityInputs(
+            rvol=float(getattr(pending, "breakout_rvol", 0.0)),
+            rvol_threshold=float(config.vbp_strategy.universe.rvol_trigger_threshold),
+            relative_vs_btc=relative_vs_btc,
+            relative_rank_pct=rank_pct,
+            consolidation_range_pct=max(0.0, consolidation_range),
+            consolidation_threshold_pct=float(config.vbp_strategy.structure_filter.consolidation_threshold_pct),
+            breakout_close_position=float(getattr(pending, "breakout_close_position", 0.5)),
+            breakout_upper_wick_ratio=float(getattr(pending, "breakout_upper_wick_ratio", 0.5)),
+            pullback_volume_ratio=pullback_volume_ratio,
+            pullback_depth_pct=pullback_depth,
+            reclaim_strength_pct=reclaim_strength,
+            momentum_rank_score=momentum_rank,
+        ),
+        entry,
     )
 
 
@@ -1807,6 +1996,51 @@ def _vbp_market_breadth(candles_by_symbol: dict[str, list[Candle]], index: int) 
         "up_1h": up_1h / denominator,
         "above_ema21": above_ema21 / denominator,
     }
+
+
+def _vbp_relative_strength_allows(
+    config: Any,
+    execution_candles_by_symbol: dict[str, list[Candle]],
+    symbol: str,
+    index: int,
+) -> tuple[bool, str]:
+    entry = config.vbp_strategy.entry
+    if not bool(getattr(entry, "relative_strength_enabled", False)):
+        return True, "ok"
+    lookback = max(1, int(getattr(entry, "relative_strength_lookback_minutes", 60)))
+    candles = execution_candles_by_symbol.get(symbol, [])
+    btc = execution_candles_by_symbol.get("BTCUSDT", [])
+    if index >= len(candles) or index >= len(btc) or index < lookback:
+        return False, "reject_vbp_relative_strength_missing"
+    symbol_ret = candles[index].close / max(candles[index - lookback].close, 1e-12) - 1.0
+    btc_ret = btc[index].close / max(btc[index - lookback].close, 1e-12) - 1.0
+    min_vs_btc = float(getattr(entry, "relative_strength_min_vs_btc_pct", 0.0))
+    if symbol != "BTCUSDT" and symbol_ret - btc_ret < min_vs_btc:
+        return False, "reject_vbp_relative_strength_btc"
+
+    min_vs_market = float(getattr(entry, "relative_strength_min_vs_market_pct", -1.0))
+    max_rank_pct = float(getattr(entry, "relative_strength_max_rank_pct", 1.0))
+    if min_vs_market <= -0.999 and max_rank_pct >= 0.999:
+        return True, "ok"
+
+    returns: list[float] = []
+    for market_symbol in _vbp_symbols(config):
+        market_candles = execution_candles_by_symbol.get(market_symbol, [])
+        if index < lookback or index >= len(market_candles):
+            continue
+        previous = market_candles[index - lookback].close
+        if previous > 0:
+            returns.append(market_candles[index].close / previous - 1.0)
+    if len(returns) < 10:
+        return False, "reject_vbp_relative_strength_market_missing"
+    returns.sort()
+    median_ret = returns[len(returns) // 2]
+    if symbol_ret - median_ret < min_vs_market:
+        return False, "reject_vbp_relative_strength_market"
+    rank_pct = sum(1 for value in returns if value > symbol_ret) / max(1, len(returns))
+    if rank_pct > max_rank_pct:
+        return False, "reject_vbp_relative_strength_rank"
+    return True, "ok"
 
 
 def rank_surge_detector(
@@ -1939,6 +2173,8 @@ def _run_vbp_scan_1m(
     vbp_symbols = set(_vbp_symbols(config))
     candidates = []
     for symbol in _vbp_symbols(config):
+        if not _point_in_time_symbol_allowed(config, symbol, timestamp):
+            continue
         if symbol not in vbp_symbols or symbol not in entry_symbols or symbol not in execution_candles_by_symbol:
             continue
         if _vbp_symbol_on_cooldown(control, symbol, timestamp):
@@ -2062,11 +2298,24 @@ def _vbp_process_symbol(
     if not daily_ok:
         _vbp_count(stats, "reject_daily_high_zone")
         return cash, False
+    rs_allowed, rs_reason = _vbp_relative_strength_allows(config, execution_candles_by_symbol, symbol, execution_index)
+    if not rs_allowed:
+        _vbp_count(stats, rs_reason)
+        return cash, False
 
     candle_rvol = _vbp_cached_feature(feature_cache, symbol, "rvol_1m", execution_index)
-    if candle_rvol < float(vbp.universe.rvol_trigger_threshold):
+    quality_mode = _vbp_quality_mode_active(config, control, timestamp)
+    rvol_threshold = float(vbp.universe.rvol_trigger_threshold)
+    if quality_mode:
+        rvol_threshold *= max(1.0, float(getattr(vbp.risk_control, "consecutive_loss_quality_rvol_multiplier", 1.25)))
+    if candle_rvol < rvol_threshold:
         _vbp_count(stats, "reject_no_breakout_rvol")
         return cash, False
+    if quality_mode:
+        min_close_position = float(getattr(vbp.risk_control, "consecutive_loss_quality_min_close_position", 0.65))
+        if _vbp_candle_close_position(candle) < min_close_position:
+            _vbp_count(stats, "reject_vbp_quality_close_position")
+            return cash, False
     previous_close = candles[execution_index - 1].close if execution_index > 0 else candle.open
     if not (previous_close <= zone_top and candle.close > zone_top):
         _vbp_count(stats, "reject_no_zone_breakout")
@@ -2076,7 +2325,7 @@ def _vbp_process_symbol(
     if bool(vbp.entry.use_vwap_as_pullback_target):
         pullback_target = max(zone_top, _vbp_vwap(candles[max(0, execution_index - int(structure.consolidation_bars)):execution_index + 1]))
     tp2_price = _vbp_tp2_price(candles, execution_index, candle.close, zone_bottom, float(vbp.exit.tp1_rr_ratio))
-    breakouts[symbol] = VbpBreakoutState(
+    breakout_state = VbpBreakoutState(
         symbol=symbol,
         breakout_index=execution_index,
         breakout_time=timestamp,
@@ -2087,6 +2336,12 @@ def _vbp_process_symbol(
         breakout_close=candle.close,
         tp2_price=tp2_price,
     )
+    setattr(breakout_state, "breakout_rvol", candle_rvol)
+    setattr(breakout_state, "rvol_1h", rvol_1h)
+    setattr(breakout_state, "breakout_close_position", _vbp_candle_close_position(candle))
+    candle_range = max(candle.high - candle.low, 1e-12)
+    setattr(breakout_state, "breakout_upper_wick_ratio", (candle.high - max(candle.open, candle.close)) / candle_range)
+    breakouts[symbol] = breakout_state
     _vbp_count(stats, "breakout_detected")
     return cash, False
 
@@ -2127,7 +2382,15 @@ def _vbp_process_pending(
         _vbp_count(stats, "pending_failed_back_inside")
         return cash, False
 
-    pullback_volume_ok = candle.volume <= pending.breakout_volume * float(vbp.entry.pullback_volume_ratio)
+    quality_mode = _vbp_quality_mode_active(config, control, timestamp)
+    pullback_volume_ratio = float(vbp.entry.pullback_volume_ratio)
+    if quality_mode:
+        pullback_volume_ratio = min(
+            pullback_volume_ratio,
+            float(getattr(vbp.risk_control, "consecutive_loss_quality_pullback_volume_ratio", 0.30)),
+        )
+    pullback_volume_ok = candle.volume <= pending.breakout_volume * pullback_volume_ratio
+    actual_pullback_volume_ratio = candle.volume / max(pending.breakout_volume, 1e-12)
     touched_target = candle.low <= pending.pullback_target <= candle.high or candle.low <= pending.pullback_target
     if touched_target and not pullback_volume_ok:
         breakouts.pop(pending.symbol, None)
@@ -2137,7 +2400,28 @@ def _vbp_process_pending(
         pending.touched_pullback = True
     if not pending.touched_pullback:
         return cash, False
+
+    # A pullback is only known after the current 1m candle has closed.  Do not
+    # fill at that same close: arm the entry and execute from the next candle.
+    confirmed_index = getattr(pending, "entry_confirmed_index", None)
+    if confirmed_index is None:
+        setattr(pending, "entry_confirmed_index", execution_index)
+        setattr(pending, "entry_confirmed_price", candle.close)
+        _vbp_count(stats, "entry_deferred_to_next_open")
+        return cash, False
+    if execution_index <= int(confirmed_index):
+        return cash, False
     if not (candle.close > candle.open and candle.close >= pending.pullback_target):
+        return cash, False
+    if quality_mode:
+        min_close_position = float(getattr(vbp.risk_control, "consecutive_loss_quality_min_close_position", 0.65))
+        if _vbp_candle_close_position(candle) < min_close_position:
+            _vbp_count(stats, "pending_reject_vbp_quality_close_position")
+            return cash, False
+    rs_allowed, rs_reason = _vbp_relative_strength_allows(config, execution_candles_by_symbol, pending.symbol, execution_index)
+    if not rs_allowed:
+        breakouts.pop(pending.symbol, None)
+        _vbp_count(stats, rs_reason)
         return cash, False
 
     portfolio_allowed, portfolio_reason, portfolio_multiplier = _portfolio_entry_decision(
@@ -2158,7 +2442,11 @@ def _vbp_process_pending(
         _vbp_count(stats, f"reject_{portfolio_reason}")
         return cash, False
 
-    entry_price = candle.close
+    # For a long entry, waiting must not award a better price than the close
+    # that confirmed the signal.  Adverse gaps are retained; favorable gaps
+    # are ignored before the normal pessimistic slippage model is applied.
+    confirmed_price = float(getattr(pending, "entry_confirmed_price", candle.open))
+    entry_price = max(candle.open, confirmed_price)
     stop_price = max(pending.consolidation_bottom, entry_price * (1.0 - float(vbp.exit.stop_loss_pct)))
     stop_loss_pct = (entry_price - stop_price) / max(entry_price, 1e-12)
     if stop_loss_pct <= 0:
@@ -2166,6 +2454,28 @@ def _vbp_process_pending(
         _vbp_count(stats, "reject_invalid_stop")
         return cash, False
     risk = entry_price - stop_price
+    quality_decision = _vbp_entry_quality_decision(
+        config,
+        execution_candles_by_symbol,
+        pending,
+        execution_index,
+        candle,
+        actual_pullback_volume_ratio,
+    )
+    if bool(getattr(vbp.entry, "quality_score_enabled", False)) and not quality_decision.allowed:
+        breakouts.pop(pending.symbol, None)
+        _vbp_count(stats, "reject_vbp_quality_score")
+        return cash, False
+    tp1_close_ratio = (
+        quality_decision.tp1_close_ratio
+        if bool(getattr(vbp.entry, "quality_score_enabled", False))
+        else float(vbp.exit.tp1_close_ratio)
+    )
+    quality_risk_multiplier = (
+        quality_decision.risk_multiplier
+        if bool(getattr(vbp.entry, "quality_score_enabled", False))
+        else 1.0
+    )
     tp1_price = entry_price + risk * float(vbp.exit.tp1_rr_ratio)
     tp2_price = max(pending.tp2_price, tp1_price + risk)
     take_profit_pct = max((tp2_price - entry_price) / max(entry_price, 1e-12), stop_loss_pct * float(vbp.exit.tp1_rr_ratio))
@@ -2173,7 +2483,9 @@ def _vbp_process_pending(
         "vbp_volume_breakout_pullback "
         f"level={pending.breakout_level:.8g} bottom={pending.consolidation_bottom:.8g} "
         f"target={pending.pullback_target:.8g} "
-        f"tp1={tp1_price:.8g} tp1_ratio={float(vbp.exit.tp1_close_ratio):.3f} stop={stop_loss_pct * 100:.3f}%"
+        f"tp1={tp1_price:.8g} tp1_ratio={tp1_close_ratio:.3f} stop={stop_loss_pct * 100:.3f}% "
+        f"quality_tier={quality_decision.tier} quality_score={quality_decision.score:.2f}"
+        + (" vbp_quality_mode=1" if quality_mode else "")
     )
     signal = Signal(
         Direction.LONG,
@@ -2181,7 +2493,7 @@ def _vbp_process_pending(
         reason,
         stop_loss_pct,
         take_profit_pct,
-        risk_multiplier=float(effective_size_multiplier) * portfolio_multiplier,
+        risk_multiplier=float(effective_size_multiplier) * portfolio_multiplier * quality_risk_multiplier,
         max_holding_bars=max(1, int(vbp.entry.timeout_bars) * 4),
     )
     account = _account_snapshot(
@@ -2277,35 +2589,31 @@ def _vbp_dynamic_exit_reason(
     recent_1m_candles: list[Candle] | None = None,
 ) -> str | None:
     risk = config.vbp_strategy.risk_control
-    if not bool(risk.enabled):
-        return None
     exit_config = config.vbp_strategy.exit
     current_profit = (candle.close - position.entry_price) / max(position.entry_price, 1e-12)
     peak_profit = (position.best_price - position.entry_price) / max(position.entry_price, 1e-12)
-    pullback = max(0.0, (position.best_price - candle.close) / max(position.entry_price, 1e-12))
-
-    if bool(getattr(exit_config, "peak_giveback_enabled", True)):
-        trigger = max(0.0, float(getattr(exit_config, "peak_giveback_trigger_pct", 0.008)))
-        floor = float(getattr(exit_config, "peak_giveback_floor_pct", 0.0015))
-        retrace = max(0.0, float(getattr(exit_config, "peak_giveback_retrace_pct", 0.005)))
-        if peak_profit >= trigger and (current_profit <= floor or pullback >= retrace):
-            _vbp_count(stats, "peak_giveback_exit_count")
-            return (
-                f"vbp_peak_giveback peak={peak_profit * 100:.3f}% "
-                f"now={current_profit * 100:.3f}% pullback={pullback * 100:.3f}%"
-            )
-
+    minimum_profit = _vbp_minimum_profit_exit_pct(config)
+    tp1_done = " vbp_tp1_done=1" in position.entry_reason
+    bear_reason = None
     if bool(getattr(exit_config, "large_bear_exit_enabled", True)) and recent_1m_candles:
         min_peak = float(getattr(exit_config, "large_bear_min_peak_profit_pct", 0.006))
         min_current = float(getattr(exit_config, "large_bear_min_current_profit_pct", -0.001))
         if peak_profit >= min_peak and current_profit >= min_current:
             bear_reason = _vbp_large_bearish_candle_reason(recent_1m_candles, exit_config)
-            if bear_reason:
-                _vbp_count(stats, "large_bear_exit_count")
-                return (
-                    f"vbp_high_volume_bear_exit {bear_reason} "
-                    f"peak={peak_profit * 100:.3f}% now={current_profit * 100:.3f}%"
-                )
+    shared_exit = vbp_runner_exit_reason(
+        exit_config,
+        current_profit,
+        peak_profit,
+        tp1_done,
+        minimum_profit,
+        vbp_atr_pct_5m(recent_1m_candles or []),
+        bear_reason,
+    )
+    if shared_exit:
+        _vbp_count(stats, "runner_exit_count")
+        return shared_exit
+    if not bool(risk.enabled):
+        return None
 
     risk_price = _vbp_risk_price(position)
     mfe_r = position.mfe / max(risk_price * position.quantity, 1e-12)
@@ -2333,6 +2641,14 @@ def _vbp_dynamic_exit_reason(
             _vbp_count(stats, "fail_fast_lost_vwap_count")
             return "vbp_fail_fast_lost_vwap"
     return None
+
+
+def _vbp_minimum_profit_exit_pct(config: Any) -> float:
+    risk = config.risk
+    round_trip_fee = max(0.0, float(getattr(risk, "estimated_fee_bps", 0.0))) * 2.0 / 10_000.0
+    slippage = max(0.0, float(getattr(risk, "estimated_slippage_bps", 0.0))) / 10_000.0
+    net_buffer = max(0.0, float(getattr(risk, "min_profit_after_cost_pct", 0.0)))
+    return round_trip_fee + slippage + net_buffer
 
 
 def _vbp_large_bearish_candle_reason(candles: list[Candle], exit_config: Any) -> str | None:
@@ -2367,7 +2683,7 @@ def _vbp_risk_price(position: PortfolioPosition) -> float:
     return max(abs(position.entry_price - position.stop_price), 1e-12)
 
 
-def _close_vbp_partial_position(
+def _close_vbp_partial_position_legacy(
     config: Any,
     cash: float,
     position: PortfolioPosition,
@@ -3011,6 +3327,75 @@ def main() -> int:
     )
     return 0
 
+
+from .live_portfolio_backtest import (
+    _close_position as _close_position_legacy,
+    _update_position_excursion as _update_position_excursion_legacy,
+)
+
+
+# MFE is tracked as a price return independently of mutable position quantity.
+# Each close segment converts that return to its own notional-based MFE amount.
+def _update_position_excursion(position: PortfolioPosition, candle: Candle) -> None:
+    _update_position_excursion_legacy(position, candle)
+    entry_price = max(abs(float(position.entry_price)), 1e-12)
+    raw_entry_price = max(abs(float(position.raw_entry_price or position.entry_price)), 1e-12)
+    direction_value = float(position.direction.value)
+    favorable_price = float(candle.high) if direction_value > 0 else float(candle.low)
+    favorable_return = max(0.0, direction_value * (favorable_price - float(position.entry_price)) / entry_price)
+    raw_favorable_return = max(
+        0.0,
+        direction_value * (favorable_price - float(position.raw_entry_price or position.entry_price)) / raw_entry_price,
+    )
+    position.mfe_return_pct = max(float(getattr(position, "mfe_return_pct", 0.0)), favorable_return)
+    position.mfe_raw_return_pct = max(
+        float(getattr(position, "mfe_raw_return_pct", 0.0)),
+        raw_favorable_return,
+    )
+
+
+def _segment_mfe_return(position: PortfolioPosition) -> float:
+    explicit = float(getattr(position, "mfe_raw_return_pct", 0.0))
+    if explicit > 0:
+        return explicit
+    notional = abs(float(position.quantity) * float(position.entry_price))
+    return max(0.0, float(position.mfe)) / max(notional, 1e-12)
+
+
+def _apply_segment_mfe(row: dict[str, Any], mfe_return_pct: float) -> None:
+    quantity = abs(float(row.get("quantity", row.get("qty", 0.0))))
+    raw_entry_price = abs(float(row.get("raw_entry_price", row.get("entry_price", 0.0))))
+    raw_notional = quantity * raw_entry_price
+    realized_favorable = max(0.0, float(row.get("gross_pnl", 0.0)))
+    tracked_mfe = max(0.0, float(mfe_return_pct)) * raw_notional
+    row["mfe"] = max(tracked_mfe, realized_favorable)
+    row["mfe_return_pct"] = row["mfe"] / max(raw_notional, 1e-12)
+    row["mfe_max_pnl"] = row["mfe"]
+    row["mfe_realized_favorable_pnl"] = realized_favorable
+
+
+def _close_position(*args: Any, **kwargs: Any) -> float:
+    positions = kwargs["positions"] if "positions" in kwargs else args[2]
+    trades = kwargs["trades"] if "trades" in kwargs else args[3]
+    symbol = kwargs["symbol"] if "symbol" in kwargs else args[4]
+    position = positions.get(symbol)
+    mfe_return_pct = _segment_mfe_return(position) if position is not None else 0.0
+    before = len(trades)
+    cash = _close_position_legacy(*args, **kwargs)
+    if len(trades) > before:
+        _apply_segment_mfe(trades[-1], mfe_return_pct)
+    return cash
+
+
+def _close_vbp_partial_position(*args: Any, **kwargs: Any) -> float:
+    position = kwargs["position"] if "position" in kwargs else args[2]
+    trades = kwargs["trades"] if "trades" in kwargs else args[3]
+    mfe_return_pct = _segment_mfe_return(position)
+    before = len(trades)
+    cash = _close_vbp_partial_position_legacy(*args, **kwargs)
+    if len(trades) > before:
+        _apply_segment_mfe(trades[-1], mfe_return_pct)
+    return cash
 
 if __name__ == "__main__":
     raise SystemExit(main())
