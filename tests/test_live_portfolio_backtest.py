@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,6 +10,8 @@ from crypto_scalper.data import write_candles_csv
 from crypto_scalper.live_config import default_live_config
 from crypto_scalper.live_portfolio_backtest import (
     HistoricalClient,
+    PortfolioPosition,
+    _add_to_position,
     _align_candles_by_common_timestamps,
     _entry_scan_cycles_for_bar,
     _load_symbol_data,
@@ -16,10 +19,34 @@ from crypto_scalper.live_portfolio_backtest import (
     _starting_capital_drawdown_stop_hit,
     _weekly_profit_drawdown_stop_hit,
 )
-from crypto_scalper.models import Candle
+from crypto_scalper.binance_client import SymbolRules
+from crypto_scalper.models import Candle, Direction, Signal
 
 
 class LivePortfolioBacktestTests(unittest.TestCase):
+    def test_scale_in_uses_symbol_tick_for_sub_cent_asset(self) -> None:
+        config = default_live_config()
+        position = PortfolioPosition(
+            symbol="GALAUSDT",
+            direction=Direction.LONG,
+            quantity=1000.0,
+            entry_price=0.003,
+            stop_price=0.0028,
+            take_profit_price=0.0035,
+            entry_fee=0.0,
+            entry_index=0,
+            max_holding_bars=10,
+            best_price=0.003,
+        )
+        candle = Candle(datetime(2026, 1, 1), 0.0031, 0.0032, 0.0030, 0.0031, 10_000_000.0)
+        signal = Signal(Direction.LONG, 0.7, "indicator_long_macd_golden_cross", 0.02, 0.03)
+        rules = SymbolRules("GALAUSDT", Decimal("1"), Decimal("1"), Decimal("0.000001"), Decimal("5"))
+
+        _add_to_position(config, 100.0, position, signal, candle, 5000.0, rules=rules)
+
+        self.assertGreater(position.entry_price, 0.003)
+        self.assertLess(position.entry_price, 0.004)
+
     def test_historical_client_resamples_15m_to_30m_and_1h(self) -> None:
         candles = _candles(12)
         client = HistoricalClient({"BTCUSDT": candles}, "15m", ("15m", "30m", "1h"))

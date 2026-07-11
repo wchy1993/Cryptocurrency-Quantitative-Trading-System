@@ -2334,7 +2334,15 @@ def _maybe_scale_in_position(
     quantity = float(quantity_text)
     if reason != "ok" or quantity <= 0:
         return cash
-    return _add_to_position(config, cash, position, signal, candle, quantity)
+    return _add_to_position(
+        config,
+        cash,
+        position,
+        signal,
+        candle,
+        quantity,
+        rules=client.symbol_rules(symbol),
+    )
 
 
 def _update_profit_protection(trader: BinanceAutoTrader, config: Any, position: PortfolioPosition, candle: Candle) -> None:
