@@ -3,6 +3,9 @@ name = "crypto-scalper"
 version = "0.1.0"
 description = "Research-first crypto futures scalping backtest toolkit"
 requires-python = ">=3.10"
+dependencies = [
+    "websocket-client>=1.8,<2",
+]
 
 [project.scripts]
 crypto-scalper = "crypto_scalper.cli:main"

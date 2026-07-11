@@ -12,6 +12,7 @@ from crypto_scalper.gui import (
     STRATEGY_MODE_INDICATOR,
     STRATEGY_MODE_MTF,
     STRATEGY_MODE_SUPER_VOLUME,
+    _config_with_strategy_selection,
     _config_with_strategy_mode,
     _position_symbols_first,
 )
@@ -30,6 +31,37 @@ from crypto_scalper.models import Candle, Direction, Signal
 
 
 class LiveConfigTests(unittest.TestCase):
+    def test_gui_ofas_selection_forces_paper_only_and_disables_other_strategies(self) -> None:
+        base = default_live_config()
+        config = _config_with_strategy_selection(
+            base,
+            indicator_enabled=True,
+            vbp_enabled=True,
+            ofas_enabled=True,
+        )
+
+        self.assertTrue(config.ofas_strategy.enabled)
+        self.assertTrue(config.trading.dry_run)
+        self.assertEqual(config.trading.max_open_positions, 1)
+        self.assertEqual(config.trading.max_scale_ins_per_symbol, 0)
+        self.assertFalse(config.vbp_strategy.enabled)
+        self.assertFalse(config.filters.enabled)
+        self.assertFalse(config.filters.extreme_reversal_entry_enabled)
+        self.assertFalse(config.strategy.super_volume_breakout_enabled)
+        self.assertFalse(config.strategy.mtf_4h_rsi_regime_enabled)
+        self.assertFalse(config.strategy.oi_flush_reversal_enabled)
+        self.assertFalse(config.macro_events.enabled)
+        self.assertEqual(config.portfolio_control.max_indicator_positions, 0)
+        self.assertEqual(config.portfolio_control.max_vbp_positions, 0)
+
+    def test_ofas_gui_default_config_is_mainnet_market_data_dry_run(self) -> None:
+        config = load_live_config("config.ofas.json")
+        self.assertEqual(config.exchange.environment, "mainnet")
+        self.assertTrue(config.trading.dry_run)
+        self.assertTrue(config.ofas_strategy.enabled)
+        self.assertEqual(len(config.ofas_strategy.symbols), 60)
+        self.assertFalse(config.vbp_strategy.enabled)
+
     def test_position_symbols_are_ordered_with_active_positions_first(self) -> None:
         symbols = ("BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT")
         rows_by_symbol = {"BNBUSDT": [object()], "BTCUSDT": [object()]}
@@ -101,6 +133,36 @@ class LiveConfigTests(unittest.TestCase):
             loaded = load_live_config(path)
         self.assertIn("BTCUSDT", loaded.trading.symbols)
         self.assertTrue(loaded.trading.dry_run)
+
+    def test_live_config_supports_extends(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir) / "base.json"
+            child = Path(temp_dir) / "child.json"
+            base.write_text(
+                """
+{
+  "trading": {"max_open_positions": 4, "dry_run": true},
+  "ofas_strategy": {"trade_stale_ms": 1500}
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            child.write_text(
+                """
+{
+  "extends": "base.json",
+  "trading": {"max_open_positions": 1},
+  "ofas_strategy": {"enabled": true, "trade_stale_ms": 5000}
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            loaded = load_live_config(child)
+
+        self.assertEqual(loaded.trading.max_open_positions, 1)
+        self.assertTrue(loaded.trading.dry_run)
+        self.assertTrue(loaded.ofas_strategy.enabled)
+        self.assertEqual(loaded.ofas_strategy.trade_stale_ms, 5000)
 
     def test_default_live_config_uses_ultra_short_multi_timeframe_universe(self) -> None:
         config = default_live_config()

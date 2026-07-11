@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
+import ssl
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -72,6 +74,9 @@ class BinanceFuturesClient:
         self.environment = normalized
         self.base_url = TESTNET_BASE_URL if normalized == "testnet" else MAINNET_BASE_URL
         self._rules: dict[str, SymbolRules] = {}
+        self._rules_loaded = False
+        ca_file = "/etc/ssl/cert.pem"
+        self._ssl_context = ssl.create_default_context(cafile=ca_file if os.path.exists(ca_file) else None)
 
     def ping(self) -> dict[str, Any]:
         return self._request("GET", "/fapi/v1/ping")
@@ -88,24 +93,52 @@ class BinanceFuturesClient:
         cached = self._rules.get(symbol)
         if cached:
             return cached
+        if not self._rules_loaded:
+            self._load_symbol_rules()
+        cached = self._rules.get(symbol)
+        if cached:
+            return cached
+        raise BinanceApiError(None, f"symbol not found in exchangeInfo: {symbol}")
+
+    def _load_symbol_rules(self) -> None:
         info = self.exchange_info()
         for item in info.get("symbols", []):
-            if item.get("symbol") != symbol:
+            item_symbol = str(item.get("symbol", "")).upper()
+            if not item_symbol:
                 continue
             filters = {entry["filterType"]: entry for entry in item.get("filters", [])}
             lot = filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE") or {}
             price = filters.get("PRICE_FILTER") or {}
             notional = filters.get("MIN_NOTIONAL") or {}
             rules = SymbolRules(
-                symbol=symbol,
+                symbol=item_symbol,
                 quantity_step=Decimal(str(lot.get("stepSize", "0.001"))),
                 min_quantity=Decimal(str(lot.get("minQty", "0"))),
                 price_tick=Decimal(str(price.get("tickSize", "0.01"))),
                 min_notional=Decimal(str(notional.get("notional", notional.get("minNotional", "5")))),
             )
-            self._rules[symbol] = rules
-            return rules
-        raise BinanceApiError(None, f"symbol not found in exchangeInfo: {symbol}")
+            self._rules[item_symbol] = rules
+        self._rules_loaded = True
+
+    def depth(self, symbol: str, limit: int = 100) -> dict[str, Any]:
+        if limit not in {5, 10, 20, 50, 100, 500, 1000}:
+            raise ValueError("depth limit must be one of 5, 10, 20, 50, 100, 500, 1000")
+        payload = self._request("GET", "/fapi/v1/depth", {"symbol": symbol.upper(), "limit": limit})
+        if not isinstance(payload, dict):
+            raise BinanceApiError(None, f"invalid depth response for {symbol}")
+        return payload
+
+    def premium_index(self, symbol: str) -> dict[str, Any]:
+        payload = self._request("GET", "/fapi/v1/premiumIndex", {"symbol": symbol.upper()})
+        if not isinstance(payload, dict):
+            raise BinanceApiError(None, f"invalid premium index response for {symbol}")
+        return payload
+
+    def premium_indexes(self) -> list[dict[str, Any]]:
+        payload = self._request("GET", "/fapi/v1/premiumIndex")
+        if not isinstance(payload, list):
+            raise BinanceApiError(None, "invalid premium index response")
+        return [row for row in payload if isinstance(row, dict)]
 
     def klines(self, symbol: str, interval: str, limit: int = 200) -> list[Candle]:
         rows = self._request("GET", "/fapi/v1/klines", {"symbol": symbol.upper(), "interval": interval, "limit": limit})
@@ -188,6 +221,36 @@ class BinanceFuturesClient:
     def cancel_all_open_orders(self, symbol: str) -> dict[str, Any]:
         return self._signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol.upper()})
 
+    def cancel_order(
+        self,
+        symbol: str,
+        order_id: int | None = None,
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        if order_id is None and not client_order_id:
+            raise ValueError("order_id or client_order_id is required")
+        params: dict[str, Any] = {"symbol": symbol.upper()}
+        if order_id is not None:
+            params["orderId"] = order_id
+        if client_order_id:
+            params["origClientOrderId"] = client_order_id
+        return self._signed_request("DELETE", "/fapi/v1/order", params)
+
+    def query_order(
+        self,
+        symbol: str,
+        order_id: int | None = None,
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        if order_id is None and not client_order_id:
+            raise ValueError("order_id or client_order_id is required")
+        params: dict[str, Any] = {"symbol": symbol.upper()}
+        if order_id is not None:
+            params["orderId"] = order_id
+        if client_order_id:
+            params["origClientOrderId"] = client_order_id
+        return self._signed_request("GET", "/fapi/v1/order", params)
+
     def cancel_all_algo_open_orders(self, symbol: str) -> dict[str, Any]:
         return self._signed_request("DELETE", "/fapi/v1/algoOpenOrders", {"symbol": symbol.upper()})
 
@@ -208,6 +271,27 @@ class BinanceFuturesClient:
         }
         if reduce_only:
             params["reduceOnly"] = "true"
+        if new_client_order_id:
+            params["newClientOrderId"] = new_client_order_id
+        return self._signed_request("POST", "/fapi/v1/order", params)
+
+    def new_post_only_order(
+        self,
+        symbol: str,
+        side: str,
+        price: str,
+        quantity: str,
+        new_client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "side": side.upper(),
+            "type": "LIMIT",
+            "timeInForce": "GTX",
+            "price": price,
+            "quantity": quantity,
+            "newOrderRespType": "ACK",
+        }
         if new_client_order_id:
             params["newClientOrderId"] = new_client_order_id
         return self._signed_request("POST", "/fapi/v1/order", params)
@@ -287,7 +371,7 @@ class BinanceFuturesClient:
 
         request = Request(url, data=data, headers=headers, method=method.upper())
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen(request, timeout=self.timeout_seconds, context=self._ssl_context) as response:
                 body = response.read().decode("utf-8")
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")

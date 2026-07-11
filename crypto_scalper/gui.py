@@ -21,10 +21,11 @@ from .live_config import (
     write_live_config,
 )
 from .live_trader import AccountSnapshot, BinanceAutoTrader
+from .ofas_live import OfasPaperTrader
 from .secrets import mask_secret, read_secret
 
 
-DEFAULT_CONFIG_PATH = "config.live_safe.json"
+DEFAULT_CONFIG_PATH = "config.ofas.json"
 FALLBACK_CONFIG_PATH = "config.live.example.json"
 STRATEGY_MODE_INDICATOR = "指标反转稳定版"
 STRATEGY_MODE_SUPER_VOLUME = "强放量突破"
@@ -141,6 +142,7 @@ class TradingApp(tk.Tk):
         self.strategy_mode_summary = tk.StringVar(value=STRATEGY_MODE_SUMMARIES[STRATEGY_MODE_INDICATOR])
         self.strategy_indicator_enabled = tk.BooleanVar(value=True)
         self.strategy_vbp_enabled = tk.BooleanVar(value=True)
+        self.strategy_ofas_enabled = tk.BooleanVar(value=False)
         self.fast_ema = tk.StringVar()
         self.slow_ema = tk.StringVar()
         self.atr_period = tk.StringVar()
@@ -665,14 +667,31 @@ class TradingApp(tk.Tk):
             variable=self.strategy_vbp_enabled,
             command=self._update_strategy_mode_summary,
         ).grid(row=0, column=2, sticky=tk.W, padx=(0, 12), pady=5)
-        ttk.Button(selector, text="应用分仓", command=self._apply_selected_strategy_to_form).grid(row=0, column=3, sticky=tk.E, pady=5)
+        ttk.Checkbutton(
+            selector,
+            text="OFAS 订单流吸收",
+            variable=self.strategy_ofas_enabled,
+            command=self._on_ofas_toggle,
+        ).grid(row=0, column=3, sticky=tk.W, padx=(0, 12), pady=5)
+        ttk.Button(selector, text="应用分仓", command=self._apply_selected_strategy_to_form).grid(row=0, column=4, sticky=tk.E, pady=5)
         ttk.Label(
             selector,
             textvariable=self.strategy_mode_summary,
             style="Muted.TLabel",
             wraplength=350,
             justify=tk.LEFT,
-        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+        ).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+
+    def _on_ofas_toggle(self) -> None:
+        if self.strategy_ofas_enabled.get():
+            self.strategy_indicator_enabled.set(False)
+            self.strategy_vbp_enabled.set(False)
+            self.dry_run.set(True)
+            self.max_open_positions.set("1")
+            self.max_scale_ins_per_symbol.set("0")
+            self.scale_in_entry_fraction.set("0")
+            self.allow_loss_scale_in.set(False)
+        self._update_strategy_mode_summary()
 
     def _on_strategy_mode_selected(self, _event: tk.Event | None = None) -> None:
         self._update_strategy_mode_summary()
@@ -683,8 +702,13 @@ class TradingApp(tk.Tk):
             enabled.append("IND")
         if self.strategy_vbp_enabled.get():
             enabled.append("VBP")
+        if self.strategy_ofas_enabled.get():
+            enabled.append("OFAS")
         text = "+".join(enabled) if enabled else "无"
-        self.strategy_mode_summary.set(f"当前启用：{text}。分仓限制：IND最多3仓，VBP最多2仓，总持仓最多5仓。策略内部参数保持配置文件原值。")
+        if self.strategy_ofas_enabled.get():
+            self.strategy_mode_summary.set("当前启用：OFAS only。实时订单流、仅虚拟盘、最多1仓、不加仓；其他策略强制关闭。")
+        else:
+            self.strategy_mode_summary.set(f"当前启用：{text}。分仓限制：IND最多3仓，VBP最多2仓，总持仓最多5仓。")
 
     def _selected_strategy_mode(self) -> str:
         mode = self.strategy_mode.get().strip()
@@ -692,8 +716,12 @@ class TradingApp(tk.Tk):
 
     def _apply_selected_strategy_to_form(self) -> None:
         self._update_strategy_mode_summary()
-        self.max_open_positions.set("5")
-        self.log("已应用分仓: IND最多3仓，VBP最多2仓，总持仓最多5仓。策略内部参数未修改。")
+        if self.strategy_ofas_enabled.get():
+            self._on_ofas_toggle()
+            self.log("已应用 OFAS only：DRY-RUN、最多1仓、不加仓，其他策略关闭。")
+        else:
+            self.max_open_positions.set("5")
+            self.log("已应用分仓: IND最多3仓，VBP最多2仓，总持仓最多5仓。")
 
     def _load_initial_config(self) -> None:
         path = Path(DEFAULT_CONFIG_PATH)
@@ -835,7 +863,10 @@ class TradingApp(tk.Tk):
                     messagebox.showerror("主网确认缺失", "真实主网下单前，主网确认文本必须填写 CONFIRM_MAINNET")
                     return
             client = self._client_for_config(config)
-            trader = BinanceAutoTrader(config, client, logger=self.log_from_thread, account_callback=self.account_from_thread)
+            if config.ofas_strategy.enabled:
+                trader = OfasPaperTrader(config, client, logger=self.log_from_thread, account_callback=self.account_from_thread)
+            else:
+                trader = BinanceAutoTrader(config, client, logger=self.log_from_thread, account_callback=self.account_from_thread)
             self.stop_event = threading.Event()
             self.worker = threading.Thread(target=self._run_trader_worker, args=(trader, self.stop_event), daemon=True)
             self.worker.start()
@@ -964,6 +995,17 @@ class TradingApp(tk.Tk):
         self.strategy_mode.set(_detect_strategy_mode(config))
         self.strategy_indicator_enabled.set(_indicator_strategy_enabled(config))
         self.strategy_vbp_enabled.set(bool(getattr(config.vbp_strategy, "enabled", False)))
+        self.strategy_ofas_enabled.set(bool(getattr(config.ofas_strategy, "enabled", False)))
+        if self.strategy_ofas_enabled.get():
+            self.strategy_indicator_enabled.set(False)
+            self.strategy_vbp_enabled.set(False)
+            self._set_symbols_value(config.ofas_strategy.symbols)
+            self.entry_symbols.set(",".join(config.ofas_strategy.symbols))
+            self.dry_run.set(True)
+            self.max_open_positions.set("1")
+            self.max_scale_ins_per_symbol.set("0")
+            self.scale_in_entry_fraction.set("0")
+            self.allow_loss_scale_in.set(False)
         self._update_strategy_mode_summary()
         self.status_var.set(f"{config.exchange.environment.upper()} / {'DRY-RUN' if config.trading.dry_run else 'LIVE'}")
 
@@ -1087,11 +1129,13 @@ class TradingApp(tk.Tk):
             macro_events=macro_events,
             vbp_strategy=base.vbp_strategy,
             portfolio_control=base.portfolio_control,
+            ofas_strategy=replace(base.ofas_strategy, symbols=trading.symbols),
         )
         return _config_with_strategy_selection(
             config,
             indicator_enabled=bool(self.strategy_indicator_enabled.get()),
             vbp_enabled=bool(self.strategy_vbp_enabled.get()),
+            ofas_enabled=bool(self.strategy_ofas_enabled.get()),
         )
 
     def _apply_symbol_preset(self) -> None:
@@ -1434,6 +1478,8 @@ def _strategy_short_name(entry_reason: str | None) -> str:
         return "未知"
     if reason.startswith("vbp_") or "volume_breakout_pullback" in reason:
         return "VBP"
+    if reason.startswith("ofas") or "order_flow_absorption" in reason:
+        return "OFAS"
     if "indicator_" in reason or "macd_" in reason:
         return "IND"
     if "super_volume" in reason or "startup_breakout" in reason:
@@ -1450,7 +1496,49 @@ def _config_with_strategy_selection(
     *,
     indicator_enabled: bool,
     vbp_enabled: bool,
+    ofas_enabled: bool = False,
 ) -> LiveAppConfig:
+    if ofas_enabled:
+        strategy = replace(
+            config.strategy,
+            super_volume_breakout_enabled=False,
+            startup_breakout_enabled=False,
+            ordinary_breakout_enabled=False,
+            pullback_reclaim_enabled=False,
+            fast_breakout_enabled=False,
+            spike_trade_enabled=False,
+            rsi_reversal_enabled=False,
+            mtf_4h_rsi_regime_enabled=False,
+            mtf_disable_legacy_strategies=False,
+            oi_flush_reversal_enabled=False,
+        )
+        trading = replace(
+            config.trading,
+            dry_run=True,
+            max_open_positions=1,
+            max_new_entries_per_cycle=1,
+            initial_entry_fraction=1.0,
+            scale_in_entry_fraction=0.0,
+            max_scale_ins_per_symbol=0,
+            allow_loss_scale_in=False,
+            super_volume_extra_slot_enabled=False,
+        )
+        return replace(
+            config,
+            trading=trading,
+            strategy=strategy,
+            filters=replace(config.filters, enabled=False, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False),
+            macro_events=replace(config.macro_events, enabled=False),
+            vbp_strategy=replace(config.vbp_strategy, enabled=False),
+            ofas_strategy=replace(config.ofas_strategy, enabled=True, symbols=trading.symbols),
+            portfolio_control=replace(
+                config.portfolio_control,
+                enabled=True,
+                max_open_positions=1,
+                max_indicator_positions=0,
+                max_vbp_positions=0,
+            ),
+        )
     trading = replace(config.trading, max_open_positions=5)
     vbp_strategy = replace(config.vbp_strategy, enabled=vbp_enabled)
     portfolio_control = replace(
@@ -1469,6 +1557,7 @@ def _config_with_strategy_selection(
         filters=filters,
         vbp_strategy=vbp_strategy,
         portfolio_control=portfolio_control,
+        ofas_strategy=replace(config.ofas_strategy, enabled=False),
     )
 
 

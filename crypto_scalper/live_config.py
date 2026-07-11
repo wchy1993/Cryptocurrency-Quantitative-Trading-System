@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from .config import StrategyConfig
+from .order_flow_absorption_scalper import OfasConfig
 
 
 DEFAULT_SYMBOLS = (
@@ -378,6 +379,7 @@ class LiveAppConfig:
     macro_events: MacroEventConfig
     vbp_strategy: VbpStrategyConfig = field(default_factory=VbpStrategyConfig)
     portfolio_control: PortfolioControlConfig = field(default_factory=PortfolioControlConfig)
+    ofas_strategy: OfasConfig = field(default_factory=OfasConfig)
 
 
 T = TypeVar("T")
@@ -412,6 +414,9 @@ def _coerce_dataclass(cls: type[T], values: dict[str, Any]) -> T:
         else:
             parts = list(raw_types)
         values["event_types"] = tuple(str(item).strip().upper() for item in parts if str(item).strip())
+    if cls is OfasConfig and "symbols" in values:
+        values = dict(values)
+        values["symbols"] = tuple(_normalize_symbols(values["symbols"]))
     return cls(**values)
 
 
@@ -462,7 +467,7 @@ def _coerce_vbp_config(values: dict[str, Any]) -> VbpStrategyConfig:
 
 
 def load_live_config(path: str | Path) -> LiveAppConfig:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw = _load_raw_config(Path(path))
     return LiveAppConfig(
         exchange=_coerce_dataclass(ExchangeConfig, raw.get("exchange", {})),
         trading=_coerce_dataclass(LiveTradingConfig, raw.get("trading", {})),
@@ -472,7 +477,34 @@ def load_live_config(path: str | Path) -> LiveAppConfig:
         macro_events=_coerce_dataclass(MacroEventConfig, raw.get("macro_events", {})),
         vbp_strategy=_coerce_vbp_config(raw.get("vbp_strategy", {})),
         portfolio_control=_coerce_dataclass(PortfolioControlConfig, raw.get("portfolio_control", {})),
+        ofas_strategy=_coerce_dataclass(OfasConfig, raw.get("ofas_strategy", {})),
     )
+
+
+def _load_raw_config(path: Path, seen: set[Path] | None = None) -> dict[str, Any]:
+    resolved = path.resolve()
+    seen = set() if seen is None else seen
+    if resolved in seen:
+        raise ValueError(f"cyclic config extends detected for {path}")
+    seen.add(resolved)
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    extends = raw.pop("extends", None)
+    if extends:
+        base_path = (path.parent / str(extends)).resolve()
+        base = _load_raw_config(base_path, seen)
+        return _deep_merge_dicts(base, raw)
+    return raw
+
+
+def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dicts(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def write_live_config(path: str | Path, config: LiveAppConfig) -> None:
@@ -485,6 +517,7 @@ def write_live_config(path: str | Path, config: LiveAppConfig) -> None:
         "macro_events": asdict(config.macro_events),
         "vbp_strategy": asdict(config.vbp_strategy),
         "portfolio_control": asdict(config.portfolio_control),
+        "ofas_strategy": asdict(config.ofas_strategy),
     }
     Path(path).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
