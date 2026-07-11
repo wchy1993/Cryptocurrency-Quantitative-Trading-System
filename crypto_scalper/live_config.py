@@ -204,6 +204,7 @@ class LiveRiskConfig:
     point_in_time_universe_top_n: int = 100
     universe_lookback_days: int = 1
     new_symbol_warmup_days: int = 20
+    alpha_diagnostics_enabled: bool = False
     min_profit_after_cost_pct: float = 0.0010
     min_available_balance_usdt: float = 20.0
     min_order_notional_usdt: float = 5.0

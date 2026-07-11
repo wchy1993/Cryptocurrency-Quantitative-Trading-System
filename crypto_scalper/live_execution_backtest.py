@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from .alpha_diagnostics import AlphaCandidateDiagnostics
 from .data import interval_to_milliseconds, parse_timestamp
 from .live_config import load_live_config
 from .live_portfolio_backtest import (
@@ -85,6 +86,7 @@ class VbpBreakoutState:
     breakout_close: float
     tp2_price: float
     touched_pullback: bool = False
+    alpha_event_id: str | None = None
 
 
 @dataclass
@@ -441,6 +443,17 @@ def run_execution_backtest_config(
     vbp_watch_until: dict[str, Any] = {}
     vbp_breakouts: dict[str, VbpBreakoutState] = {}
     vbp_stats: dict[str, int] = {}
+    alpha_diagnostics = AlphaCandidateDiagnostics(
+        bool(getattr(config.risk, "alpha_diagnostics_enabled", False)),
+        full_round_trip_cost_pct=(
+            2.0 * execution_config.taker_fee_rate
+            + (execution_config.market_slippage_bps + execution_config.take_profit_slippage_bps) / 10_000.0
+        ),
+        stop_round_trip_cost_pct=(
+            2.0 * execution_config.taker_fee_rate
+            + (execution_config.market_slippage_bps + execution_config.stop_slippage_bps) / 10_000.0
+        ),
+    )
     portfolio_control_stats: dict[str, int] = {}
     portfolio_symbol_cooldown_until: dict[str, Any] = {}
     portfolio_runtime = PortfolioRuntimeControl()
@@ -602,6 +615,7 @@ def run_execution_backtest_config(
                 portfolio_symbol_cooldown_until,
                 portfolio_control_stats,
                 portfolio_runtime,
+                alpha_diagnostics,
             )
             if len(positions) > opened_before:
                 _record_monthly_equity(monthly_stats, timestamp, _mark_equity(cash, positions, execution_candles_by_symbol, execution_index))
@@ -636,6 +650,7 @@ def run_execution_backtest_config(
             signal_index,
             timestamp,
             indicator_reversal_pause_until_time,
+            alpha_diagnostics,
         )
         pending_symbols = {entry.candidate.symbol for entry in pending_entries}
         candidates = [candidate for candidate in candidates if candidate.symbol not in pending_symbols]
@@ -731,6 +746,8 @@ def run_execution_backtest_config(
         payload["low_base_ignition_stats"] = dict(sorted(low_base_stats.items()))
     if vbp_stats:
         payload["vbp_stats"] = dict(sorted(vbp_stats.items()))
+    if alpha_diagnostics.enabled:
+        payload["alpha_candidate_diagnostics"] = alpha_diagnostics.finalize(execution_candles_by_symbol, trades)
     if portfolio_control_stats:
         payload["portfolio_control_stats"] = dict(sorted(portfolio_control_stats.items()))
     if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False):
@@ -922,6 +939,7 @@ def _entry_candidates_for_scan(
     signal_index: int,
     timestamp: Any,
     indicator_reversal_pause_until_time: dict[Direction, Any],
+    alpha_diagnostics: AlphaCandidateDiagnostics,
 ) -> list[Any]:
     candidates = []
     entry_symbols = set(config.trading.entry_symbols or config.trading.symbols)
@@ -936,6 +954,13 @@ def _entry_candidates_for_scan(
         if not legacy_disabled:
             main_signal = signal_cache[symbol][signal_index]
             reversal_signal = reversal_cache[symbol][signal_index]
+            if reversal_signal.direction != Direction.FLAT:
+                alpha_diagnostics.record_reversal(
+                    symbol,
+                    reversal_signal,
+                    signal_candles_by_symbol[symbol],
+                    signal_index,
+                )
             normal_signal_available = low_base_only or main_signal.direction != Direction.FLAT or reversal_signal.direction != Direction.FLAT
             if (
                 not low_base_only
@@ -999,6 +1024,14 @@ def _entry_candidates_for_scan(
                 positions,
             )
         if candidate:
+            if "indicator_" in str(candidate.signal.reason):
+                alpha_diagnostics.mark_reversal_accepted(
+                    symbol,
+                    signal_candles_by_symbol[symbol][signal_index].timestamp,
+                    candidate.signal.direction,
+                    candidate.rank_score,
+                    candidate.filter_reason,
+                )
             candidates.append(candidate)
     candidates.sort(key=lambda item: item.rank_score, reverse=True)
     return candidates
@@ -2077,6 +2110,7 @@ def _run_vbp_scan_1m(
     portfolio_symbol_cooldown_until: dict[str, Any],
     portfolio_control_stats: dict[str, int],
     portfolio_runtime: PortfolioRuntimeControl,
+    alpha_diagnostics: AlphaCandidateDiagnostics,
 ) -> float:
     vbp = config.vbp_strategy
     market_allowed, market_reason = _vbp_market_allows(config, execution_candles_by_symbol, execution_index)
@@ -2163,6 +2197,7 @@ def _run_vbp_scan_1m(
             portfolio_symbol_cooldown_until,
             portfolio_control_stats,
             portfolio_runtime,
+            alpha_diagnostics,
         )
         if did_open:
             opened += 1
@@ -2191,6 +2226,7 @@ def _vbp_process_symbol(
     portfolio_symbol_cooldown_until: dict[str, Any],
     portfolio_control_stats: dict[str, int],
     portfolio_runtime: PortfolioRuntimeControl,
+    alpha_diagnostics: AlphaCandidateDiagnostics,
 ) -> tuple[float, bool]:
     vbp = config.vbp_strategy
     candles = execution_candles_by_symbol[symbol]
@@ -2217,6 +2253,7 @@ def _vbp_process_symbol(
             portfolio_symbol_cooldown_until,
             portfolio_control_stats,
             portfolio_runtime,
+            alpha_diagnostics,
         )
 
     structure = vbp.structure_filter
@@ -2262,6 +2299,14 @@ def _vbp_process_symbol(
     if bool(vbp.entry.use_vwap_as_pullback_target):
         pullback_target = max(zone_top, _vbp_vwap(candles[max(0, execution_index - int(structure.consolidation_bars)):execution_index + 1]))
     tp2_price = _vbp_tp2_price(candles, execution_index, candle.close, zone_bottom, float(vbp.exit.tp1_rr_ratio))
+    alpha_event_id = alpha_diagnostics.record_vbp_breakout(
+        symbol,
+        candles,
+        execution_index,
+        zone_top,
+        zone_bottom,
+        candle_rvol,
+    )
     breakouts[symbol] = VbpBreakoutState(
         symbol=symbol,
         breakout_index=execution_index,
@@ -2272,6 +2317,7 @@ def _vbp_process_symbol(
         breakout_volume=candle.volume,
         breakout_close=candle.close,
         tp2_price=tp2_price,
+        alpha_event_id=alpha_event_id,
     )
     _vbp_count(stats, "breakout_detected")
     return cash, False
@@ -2297,18 +2343,28 @@ def _vbp_process_pending(
     portfolio_symbol_cooldown_until: dict[str, Any],
     portfolio_control_stats: dict[str, int],
     portfolio_runtime: PortfolioRuntimeControl,
+    alpha_diagnostics: AlphaCandidateDiagnostics,
 ) -> tuple[float, bool]:
     vbp = config.vbp_strategy
     candles = execution_candles_by_symbol[pending.symbol]
     candle = candles[execution_index]
     age = execution_index - pending.breakout_index
+    alpha_diagnostics.update_vbp_pullback(
+        pending.alpha_event_id,
+        candle,
+        age,
+        pending.breakout_close,
+        pending.breakout_volume,
+    )
     if age <= 0:
         return cash, False
     if age > int(vbp.entry.timeout_bars):
+        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "pending_timeout")
         breakouts.pop(pending.symbol, None)
         _vbp_count(stats, "pending_timeout")
         return cash, False
     if candle.close < pending.consolidation_bottom:
+        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "pending_failed_back_inside")
         breakouts.pop(pending.symbol, None)
         _vbp_count(stats, "pending_failed_back_inside")
         return cash, False
@@ -2323,6 +2379,7 @@ def _vbp_process_pending(
     pullback_volume_ok = candle.volume <= pending.breakout_volume * pullback_volume_ratio
     touched_target = candle.low <= pending.pullback_target <= candle.high or candle.low <= pending.pullback_target
     if touched_target and not pullback_volume_ok:
+        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "pending_reject_high_volume_pullback")
         breakouts.pop(pending.symbol, None)
         _vbp_count(stats, "pending_reject_high_volume_pullback")
         return cash, False
@@ -2337,6 +2394,11 @@ def _vbp_process_pending(
     if confirmed_index is None:
         setattr(pending, "entry_confirmed_index", execution_index)
         setattr(pending, "entry_confirmed_price", candle.close)
+        alpha_diagnostics.mark_vbp(
+            pending.alpha_event_id,
+            "pullback_confirmed",
+            confirmation_time=candle.timestamp.isoformat(),
+        )
         _vbp_count(stats, "entry_deferred_to_next_open")
         return cash, False
     if execution_index <= int(confirmed_index):
@@ -2346,10 +2408,16 @@ def _vbp_process_pending(
     if quality_mode:
         min_close_position = float(getattr(vbp.risk_control, "consecutive_loss_quality_min_close_position", 0.65))
         if _vbp_candle_close_position(candle) < min_close_position:
+            alpha_diagnostics.mark_vbp(
+                pending.alpha_event_id,
+                "waiting_confirmation",
+                "pending_reject_vbp_quality_close_position",
+            )
             _vbp_count(stats, "pending_reject_vbp_quality_close_position")
             return cash, False
     rs_allowed, rs_reason = _vbp_relative_strength_allows(config, execution_candles_by_symbol, pending.symbol, execution_index)
     if not rs_allowed:
+        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", rs_reason)
         breakouts.pop(pending.symbol, None)
         _vbp_count(stats, rs_reason)
         return cash, False
@@ -2368,6 +2436,11 @@ def _vbp_process_pending(
         portfolio_runtime,
     )
     if not portfolio_allowed:
+        alpha_diagnostics.mark_vbp(
+            pending.alpha_event_id,
+            "blocked_by_portfolio",
+            portfolio_reason,
+        )
         _portfolio_count(portfolio_control_stats, portfolio_reason)
         _vbp_count(stats, f"reject_{portfolio_reason}")
         return cash, False
@@ -2380,6 +2453,7 @@ def _vbp_process_pending(
     stop_price = max(pending.consolidation_bottom, entry_price * (1.0 - float(vbp.exit.stop_loss_pct)))
     stop_loss_pct = (entry_price - stop_price) / max(entry_price, 1e-12)
     if stop_loss_pct <= 0:
+        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "reject_invalid_stop")
         breakouts.pop(pending.symbol, None)
         _vbp_count(stats, "reject_invalid_stop")
         return cash, False
@@ -2393,6 +2467,7 @@ def _vbp_process_pending(
         f"target={pending.pullback_target:.8g} "
         f"tp1={tp1_price:.8g} tp1_ratio={float(vbp.exit.tp1_close_ratio):.3f} stop={stop_loss_pct * 100:.3f}%"
         + (" vbp_quality_mode=1" if quality_mode else "")
+        + (f" alpha_event_id={pending.alpha_event_id}" if pending.alpha_event_id else "")
     )
     signal = Signal(
         Direction.LONG,
@@ -2413,6 +2488,7 @@ def _vbp_process_pending(
     quantity_text, size_reason = trader._size_order(pending.symbol, entry_price, signal, account)
     quantity = float(quantity_text)
     if size_reason != "ok" or quantity <= 0:
+        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", f"reject_size_{size_reason}")
         _vbp_count(stats, f"reject_size_{size_reason}")
         return cash, False
     execution_candle = replace(candle, open=entry_price, high=entry_price, low=entry_price, close=entry_price)
@@ -2435,6 +2511,23 @@ def _vbp_process_pending(
     )
     breakouts.pop(pending.symbol, None)
     if not before and pending.symbol in positions:
+        candle_range = max(candle.high - candle.low, 1e-12)
+        alpha_diagnostics.mark_vbp(
+            pending.alpha_event_id,
+            "traded",
+            entry_time=timestamp.isoformat(),
+            anchor_timestamp=timestamp.isoformat(),
+            anchor_price=entry_price,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            target_to_full_cost_ratio=take_profit_pct / max(alpha_diagnostics.full_round_trip_cost_pct, 1e-12),
+            stop_to_full_cost_ratio=stop_loss_pct / max(alpha_diagnostics.stop_round_trip_cost_pct, 1e-12),
+            confirmation_body_atr=abs(candle.close - candle.open) / max(float(alpha_diagnostics.rows.get(pending.alpha_event_id or "", {}).get("breakout_atr", 0.0)), 1e-12),
+            confirmation_close_position=(candle.close - candle.low) / candle_range,
+            confirmation_wick_ratio=(candle.high - max(candle.open, candle.close)) / candle_range,
+            confirmation_volume_ratio=candle.volume / max(pending.breakout_volume, 1e-12),
+            entry_chase_distance_atr=(entry_price - pending.breakout_level) / max(float(alpha_diagnostics.rows.get(pending.alpha_event_id or "", {}).get("breakout_atr", 0.0)), 1e-12),
+        )
         _record_monthly_open(monthly_stats, timestamp, Direction.LONG)
         _vbp_count(stats, "entry_count")
         risk = config.vbp_strategy.risk_control
@@ -2446,6 +2539,7 @@ def _vbp_process_pending(
                 _vbp_count(stats, "symbol_entry_cooldown_count")
         return cash, True
     _vbp_count(stats, "reject_open_failed")
+    alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "reject_open_failed")
     return cash, False
 
 
