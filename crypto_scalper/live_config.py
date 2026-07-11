@@ -212,6 +212,51 @@ class LiveRiskConfig:
 
 
 @dataclass(frozen=True)
+class RegimeScoreConfig:
+    enabled: bool = False
+    shadow_mode: bool = True
+    minimum_history_bars: int = 30
+    trend_min_score: float = 60.0
+    reversal_min_score: float = 60.0
+    minimum_score_gap: float = 10.0
+    trend_ema_slope_weight: float = 20.0
+    trend_ema_alignment_weight: float = 20.0
+    trend_macd_weight: float = 15.0
+    trend_atr_expansion_weight: float = 10.0
+    trend_btc_weight: float = 20.0
+    trend_breadth_weight: float = 15.0
+    reversal_extension_weight: float = 25.0
+    reversal_rsi_weight: float = 15.0
+    reversal_kdj_weight: float = 10.0
+    reversal_macd_weight: float = 20.0
+    reversal_no_extreme_weight: float = 15.0
+    reversal_btc_weight: float = 10.0
+    reversal_exhaustion_weight: float = 5.0
+    ema_slope_lookback_bars: int = 3
+    ema_slope_full_score_atr: float = 0.08
+    ema_alignment_full_score_atr: float = 0.50
+    macd_level_full_score_atr: float = 0.12
+    macd_delta_full_score_atr: float = 0.06
+    atr_expansion_min_ratio: float = 0.90
+    atr_expansion_full_score_ratio: float = 1.25
+    atr_chaos_ratio: float = 2.0
+    btc_15m_full_score_return: float = 0.006
+    btc_1h_full_score_return: float = 0.015
+    btc_alignment_full_score_atr: float = 0.40
+    btc_adverse_return_limit: float = 0.015
+    breadth_full_score: float = 0.68
+    trend_max_extension_atr: float = 3.0
+    reversal_recovery_lookback_bars: int = 5
+    reversal_extension_min_atr: float = 0.50
+    reversal_extension_full_score_atr: float = 2.0
+    reversal_rsi_neutral: float = 50.0
+    reversal_rsi_extreme: float = 35.0
+    reversal_rsi_full_score: float = 25.0
+    reversal_kdj_extreme: float = 30.0
+    reversal_macd_delta_full_score_atr: float = 0.06
+
+
+@dataclass(frozen=True)
 class MacroEventConfig:
     enabled: bool = False
     events_path: str = "data/macro_events_us_major_2025_2026.csv"
@@ -407,6 +452,7 @@ class LiveAppConfig:
     macro_events: MacroEventConfig
     vbp_strategy: VbpStrategyConfig = field(default_factory=VbpStrategyConfig)
     portfolio_control: PortfolioControlConfig = field(default_factory=PortfolioControlConfig)
+    regime_score: RegimeScoreConfig = field(default_factory=RegimeScoreConfig)
 
 
 T = TypeVar("T")
@@ -523,6 +569,7 @@ def load_live_config(path: str | Path) -> LiveAppConfig:
         macro_events=_coerce_dataclass(MacroEventConfig, raw.get("macro_events", {})),
         vbp_strategy=_coerce_vbp_config(raw.get("vbp_strategy", {})),
         portfolio_control=_coerce_dataclass(PortfolioControlConfig, raw.get("portfolio_control", {})),
+        regime_score=_coerce_dataclass(RegimeScoreConfig, raw.get("regime_score", {})),
     )
 
 
@@ -536,6 +583,7 @@ def write_live_config(path: str | Path, config: LiveAppConfig) -> None:
         "macro_events": asdict(config.macro_events),
         "vbp_strategy": asdict(config.vbp_strategy),
         "portfolio_control": asdict(config.portfolio_control),
+        "regime_score": asdict(config.regime_score),
     }
     Path(path).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 

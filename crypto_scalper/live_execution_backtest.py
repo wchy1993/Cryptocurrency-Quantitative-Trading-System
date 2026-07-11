@@ -59,6 +59,7 @@ from .mtf_4h_rsi_regime import (
 from .risk import BacktestExecutionConfig, BacktestExecutionStats, execution_config_from_live_config, market_exit_fill
 from .indicators import ema, macd
 from .realistic_data import load_funding_rate_directory
+from .regime_score import RegimeScoreEngine
 
 
 _POINT_IN_TIME_UNIVERSE: dict[Any, frozenset[str]] = {}
@@ -443,8 +444,22 @@ def run_execution_backtest_config(
     vbp_watch_until: dict[str, Any] = {}
     vbp_breakouts: dict[str, VbpBreakoutState] = {}
     vbp_stats: dict[str, int] = {}
+    alpha_diagnostics_enabled = bool(getattr(config.risk, "alpha_diagnostics_enabled", False))
+    regime_score_config = getattr(config, "regime_score", None)
+    regime_score_engine = None
+    if alpha_diagnostics_enabled and regime_score_config is not None and bool(getattr(regime_score_config, "enabled", False)):
+        regime_score_engine = RegimeScoreEngine(
+            regime_score_config,
+            {
+                timeframe: {
+                    symbol: _resample_to_timeframe(candles, "1m", timeframe)
+                    for symbol, candles in execution_candles_by_symbol.items()
+                }
+                for timeframe in ("15m", "30m", "1h")
+            },
+        )
     alpha_diagnostics = AlphaCandidateDiagnostics(
-        bool(getattr(config.risk, "alpha_diagnostics_enabled", False)),
+        alpha_diagnostics_enabled,
         full_round_trip_cost_pct=(
             2.0 * execution_config.taker_fee_rate
             + (execution_config.market_slippage_bps + execution_config.take_profit_slippage_bps) / 10_000.0
@@ -453,6 +468,7 @@ def run_execution_backtest_config(
             2.0 * execution_config.taker_fee_rate
             + (execution_config.market_slippage_bps + execution_config.stop_slippage_bps) / 10_000.0
         ),
+        regime_score_engine=regime_score_engine,
     )
     portfolio_control_stats: dict[str, int] = {}
     portfolio_symbol_cooldown_until: dict[str, Any] = {}
@@ -960,6 +976,7 @@ def _entry_candidates_for_scan(
                     reversal_signal,
                     signal_candles_by_symbol[symbol],
                     signal_index,
+                    decision_time=timestamp,
                 )
             normal_signal_available = low_base_only or main_signal.direction != Direction.FLAT or reversal_signal.direction != Direction.FLAT
             if (
@@ -2306,6 +2323,7 @@ def _vbp_process_symbol(
         zone_top,
         zone_bottom,
         candle_rvol,
+        decision_time=timestamp,
     )
     breakouts[symbol] = VbpBreakoutState(
         symbol=symbol,

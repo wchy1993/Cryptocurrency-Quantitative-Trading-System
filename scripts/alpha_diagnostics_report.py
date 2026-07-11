@@ -55,6 +55,24 @@ def _boolean_buckets(rows: list[dict[str, Any]], field: str) -> list[dict[str, A
     return [{"bucket": name, **_metrics(grouped[name])} for name in sorted(grouped)]
 
 
+def _categorical_buckets(rows: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get(field, "missing")), []).append(row)
+    return [{"bucket": name, **_metrics(grouped[name])} for name in sorted(grouped)]
+
+
+def _score_analysis(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    score_bounds = [-math.inf, 20.0, 40.0, 50.0, 60.0, 70.0, 80.0, math.inf]
+    gap_bounds = [-math.inf, -30.0, -10.0, 0.0, 10.0, 30.0, math.inf]
+    return {
+        "by_trend_score": _numeric_buckets(rows, "trend_score", score_bounds),
+        "by_reversal_score": _numeric_buckets(rows, "reversal_score", score_bounds),
+        "by_score_gap": _numeric_buckets(rows, "score_gap", gap_bounds),
+        "by_shadow_regime": _categorical_buckets(rows, "shadow_regime"),
+    }
+
+
 def build(payload: dict[str, Any]) -> dict[str, Any]:
     candidates = list(payload.get("alpha_candidate_diagnostics", []))
     vbp = [row for row in candidates if row.get("strategy") == "volume_breakout_pullback"]
@@ -67,6 +85,10 @@ def build(payload: dict[str, Any]) -> dict[str, Any]:
             for key in ("initial_equity", "final_equity", "net_pnl", "trade_count", "profit_factor", "max_drawdown_pct")
         },
         "candidate_count": len(candidates),
+        "regime_score_analysis": {
+            "vbp": _score_analysis(vbp),
+            "reversal": _score_analysis(reversal),
+        },
         "vbp": {
             "summary": _metrics(vbp),
             "status_distribution": dict(Counter(str(row.get("status")) for row in vbp)),

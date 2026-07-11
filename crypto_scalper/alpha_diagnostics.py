@@ -8,6 +8,7 @@ from typing import Any
 
 from .indicators import atr, ema, kdj, macd, rsi
 from .models import Candle, Direction, Signal
+from .regime_score import snapshot_payload
 
 
 _EVENT_TOKEN = re.compile(r"alpha_event_id=([^ ]+)")
@@ -18,6 +19,7 @@ class AlphaCandidateDiagnostics:
     enabled: bool = False
     full_round_trip_cost_pct: float = 0.0
     stop_round_trip_cost_pct: float = 0.0
+    regime_score_engine: Any = None
     rows: dict[str, dict[str, Any]] = field(default_factory=dict)
     reversal_keys: dict[tuple[str, str, str], str] = field(default_factory=dict)
 
@@ -27,6 +29,7 @@ class AlphaCandidateDiagnostics:
         signal: Signal,
         candles: list[Candle],
         index: int,
+        decision_time: Any = None,
     ) -> str | None:
         if not self.enabled or signal.direction == Direction.FLAT or index >= len(candles):
             return None
@@ -47,6 +50,11 @@ class AlphaCandidateDiagnostics:
         atr_value = max(atr_values[-1], 1e-12)
         recent_lows = [row.low for row in window[-5:]]
         recent_highs = [row.high for row in window[-5:]]
+        regime_snapshot = (
+            self.regime_score_engine.score(symbol, decision_time or candle.timestamp, signal.direction)
+            if self.regime_score_engine is not None
+            else None
+        )
         self.rows[event_id] = {
             "event_id": event_id,
             "strategy": "indicator_reversal",
@@ -74,6 +82,7 @@ class AlphaCandidateDiagnostics:
             "reclaim_ema21": candle.close > ema21[-1],
             "no_new_low_3": recent_lows[-1] > min(recent_lows[:-1]),
             "no_new_high_3": recent_highs[-1] < max(recent_highs[:-1]),
+            **snapshot_payload(regime_snapshot),
         }
         self.reversal_keys[key] = event_id
         return event_id
@@ -106,6 +115,7 @@ class AlphaCandidateDiagnostics:
         breakout_level: float,
         consolidation_bottom: float,
         breakout_volume_ratio: float,
+        decision_time: Any = None,
     ) -> str | None:
         if not self.enabled or index >= len(candles):
             return None
@@ -123,6 +133,11 @@ class AlphaCandidateDiagnostics:
         atr_history = atr_values[-80:-1]
         atr_percentile = sum(value <= atr_value for value in atr_history) / max(1, len(atr_history))
         failed_breakouts = sum(row.high > breakout_level and row.close <= breakout_level for row in previous[-48:])
+        regime_snapshot = (
+            self.regime_score_engine.score(symbol, decision_time or candle.timestamp, Direction.LONG)
+            if self.regime_score_engine is not None
+            else None
+        )
         self.rows[event_id] = {
             "event_id": event_id,
             "strategy": "volume_breakout_pullback",
@@ -154,6 +169,7 @@ class AlphaCandidateDiagnostics:
             "pullback_broke_vbp_bottom": False,
             "full_round_trip_cost_pct": self.full_round_trip_cost_pct,
             "stop_round_trip_cost_pct": self.stop_round_trip_cost_pct,
+            **snapshot_payload(regime_snapshot),
         }
         return event_id
 
