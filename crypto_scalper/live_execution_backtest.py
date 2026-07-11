@@ -58,6 +58,13 @@ from .mtf_4h_rsi_regime import (
 from .risk import BacktestExecutionConfig, BacktestExecutionStats, execution_config_from_live_config, market_exit_fill
 from .indicators import ema, macd
 from .realistic_data import load_funding_rate_directory
+from .vbp_quality import (
+    VbpQualityInputs,
+    score_vbp_quality,
+    vbp_atr_pct_5m,
+    vbp_quality_report,
+    vbp_runner_exit_reason,
+)
 
 
 _POINT_IN_TIME_UNIVERSE: dict[Any, frozenset[str]] = {}
@@ -731,6 +738,7 @@ def run_execution_backtest_config(
         payload["low_base_ignition_stats"] = dict(sorted(low_base_stats.items()))
     if vbp_stats:
         payload["vbp_stats"] = dict(sorted(vbp_stats.items()))
+    payload["vbp_quality_summary"] = vbp_quality_report(trades)
     if portfolio_control_stats:
         payload["portfolio_control_stats"] = dict(sorted(portfolio_control_stats.items()))
     if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False):
@@ -1867,6 +1875,61 @@ def _vbp_candle_close_position(candle: Candle) -> float:
     return (candle.close - candle.low) / max(candle.high - candle.low, 1e-12)
 
 
+def _vbp_entry_quality_decision(
+    config: Any,
+    candles_by_symbol: dict[str, list[Candle]],
+    pending: VbpBreakoutState,
+    index: int,
+    candle: Candle,
+    pullback_volume_ratio: float,
+) -> Any:
+    entry = config.vbp_strategy.entry
+    lookback = max(1, int(getattr(entry, "relative_strength_lookback_minutes", 60)))
+    symbol_candles = candles_by_symbol.get(pending.symbol, [])
+    btc_candles = candles_by_symbol.get("BTCUSDT", [])
+    symbol_ret = 0.0
+    btc_ret = 0.0
+    if index >= lookback and index < len(symbol_candles):
+        symbol_ret = symbol_candles[index].close / max(symbol_candles[index - lookback].close, 1e-12) - 1.0
+    if index >= lookback and index < len(btc_candles):
+        btc_ret = btc_candles[index].close / max(btc_candles[index - lookback].close, 1e-12) - 1.0
+    relative_vs_btc = 0.0 if pending.symbol == "BTCUSDT" else symbol_ret - btc_ret
+    rank_pct = None
+    use_market_rank = not (
+        float(getattr(entry, "relative_strength_min_vs_market_pct", -1.0)) <= -0.999
+        and float(getattr(entry, "relative_strength_max_rank_pct", 1.0)) >= 0.999
+    )
+    if use_market_rank:
+        market_returns = []
+        for symbol in _vbp_symbols(config):
+            rows = candles_by_symbol.get(symbol, [])
+            if index >= lookback and index < len(rows):
+                market_returns.append(rows[index].close / max(rows[index - lookback].close, 1e-12) - 1.0)
+        if market_returns:
+            rank_pct = sum(1 for value in market_returns if value > symbol_ret) / len(market_returns)
+    consolidation_range = (pending.breakout_level - pending.consolidation_bottom) / max(pending.breakout_close, 1e-12)
+    pullback_depth = max(0.0, (pending.breakout_close - candle.low) / max(pending.breakout_close, 1e-12))
+    reclaim_strength = max(0.0, (candle.close - pending.pullback_target) / max(pending.pullback_target, 1e-12))
+    momentum_rank = min(1.0, float(getattr(pending, "rvol_1h", 0.0)) / max(float(config.vbp_strategy.universe.rvol_entry_threshold) * 2.0, 1e-12))
+    return score_vbp_quality(
+        VbpQualityInputs(
+            rvol=float(getattr(pending, "breakout_rvol", 0.0)),
+            rvol_threshold=float(config.vbp_strategy.universe.rvol_trigger_threshold),
+            relative_vs_btc=relative_vs_btc,
+            relative_rank_pct=rank_pct,
+            consolidation_range_pct=max(0.0, consolidation_range),
+            consolidation_threshold_pct=float(config.vbp_strategy.structure_filter.consolidation_threshold_pct),
+            breakout_close_position=float(getattr(pending, "breakout_close_position", 0.5)),
+            breakout_upper_wick_ratio=float(getattr(pending, "breakout_upper_wick_ratio", 0.5)),
+            pullback_volume_ratio=pullback_volume_ratio,
+            pullback_depth_pct=pullback_depth,
+            reclaim_strength_pct=reclaim_strength,
+            momentum_rank_score=momentum_rank,
+        ),
+        entry,
+    )
+
+
 def _vbp_market_allows(
     config: Any,
     execution_candles_by_symbol: dict[str, list[Candle]],
@@ -1952,7 +2015,7 @@ def _vbp_relative_strength_allows(
     symbol_ret = candles[index].close / max(candles[index - lookback].close, 1e-12) - 1.0
     btc_ret = btc[index].close / max(btc[index - lookback].close, 1e-12) - 1.0
     min_vs_btc = float(getattr(entry, "relative_strength_min_vs_btc_pct", 0.0))
-    if symbol_ret - btc_ret < min_vs_btc:
+    if symbol != "BTCUSDT" and symbol_ret - btc_ret < min_vs_btc:
         return False, "reject_vbp_relative_strength_btc"
 
     min_vs_market = float(getattr(entry, "relative_strength_min_vs_market_pct", -1.0))
@@ -2262,7 +2325,7 @@ def _vbp_process_symbol(
     if bool(vbp.entry.use_vwap_as_pullback_target):
         pullback_target = max(zone_top, _vbp_vwap(candles[max(0, execution_index - int(structure.consolidation_bars)):execution_index + 1]))
     tp2_price = _vbp_tp2_price(candles, execution_index, candle.close, zone_bottom, float(vbp.exit.tp1_rr_ratio))
-    breakouts[symbol] = VbpBreakoutState(
+    breakout_state = VbpBreakoutState(
         symbol=symbol,
         breakout_index=execution_index,
         breakout_time=timestamp,
@@ -2273,6 +2336,12 @@ def _vbp_process_symbol(
         breakout_close=candle.close,
         tp2_price=tp2_price,
     )
+    setattr(breakout_state, "breakout_rvol", candle_rvol)
+    setattr(breakout_state, "rvol_1h", rvol_1h)
+    setattr(breakout_state, "breakout_close_position", _vbp_candle_close_position(candle))
+    candle_range = max(candle.high - candle.low, 1e-12)
+    setattr(breakout_state, "breakout_upper_wick_ratio", (candle.high - max(candle.open, candle.close)) / candle_range)
+    breakouts[symbol] = breakout_state
     _vbp_count(stats, "breakout_detected")
     return cash, False
 
@@ -2321,6 +2390,7 @@ def _vbp_process_pending(
             float(getattr(vbp.risk_control, "consecutive_loss_quality_pullback_volume_ratio", 0.30)),
         )
     pullback_volume_ok = candle.volume <= pending.breakout_volume * pullback_volume_ratio
+    actual_pullback_volume_ratio = candle.volume / max(pending.breakout_volume, 1e-12)
     touched_target = candle.low <= pending.pullback_target <= candle.high or candle.low <= pending.pullback_target
     if touched_target and not pullback_volume_ok:
         breakouts.pop(pending.symbol, None)
@@ -2384,6 +2454,28 @@ def _vbp_process_pending(
         _vbp_count(stats, "reject_invalid_stop")
         return cash, False
     risk = entry_price - stop_price
+    quality_decision = _vbp_entry_quality_decision(
+        config,
+        execution_candles_by_symbol,
+        pending,
+        execution_index,
+        candle,
+        actual_pullback_volume_ratio,
+    )
+    if bool(getattr(vbp.entry, "quality_score_enabled", False)) and not quality_decision.allowed:
+        breakouts.pop(pending.symbol, None)
+        _vbp_count(stats, "reject_vbp_quality_score")
+        return cash, False
+    tp1_close_ratio = (
+        quality_decision.tp1_close_ratio
+        if bool(getattr(vbp.entry, "quality_score_enabled", False))
+        else float(vbp.exit.tp1_close_ratio)
+    )
+    quality_risk_multiplier = (
+        quality_decision.risk_multiplier
+        if bool(getattr(vbp.entry, "quality_score_enabled", False))
+        else 1.0
+    )
     tp1_price = entry_price + risk * float(vbp.exit.tp1_rr_ratio)
     tp2_price = max(pending.tp2_price, tp1_price + risk)
     take_profit_pct = max((tp2_price - entry_price) / max(entry_price, 1e-12), stop_loss_pct * float(vbp.exit.tp1_rr_ratio))
@@ -2391,7 +2483,8 @@ def _vbp_process_pending(
         "vbp_volume_breakout_pullback "
         f"level={pending.breakout_level:.8g} bottom={pending.consolidation_bottom:.8g} "
         f"target={pending.pullback_target:.8g} "
-        f"tp1={tp1_price:.8g} tp1_ratio={float(vbp.exit.tp1_close_ratio):.3f} stop={stop_loss_pct * 100:.3f}%"
+        f"tp1={tp1_price:.8g} tp1_ratio={tp1_close_ratio:.3f} stop={stop_loss_pct * 100:.3f}% "
+        f"quality_tier={quality_decision.tier} quality_score={quality_decision.score:.2f}"
         + (" vbp_quality_mode=1" if quality_mode else "")
     )
     signal = Signal(
@@ -2400,7 +2493,7 @@ def _vbp_process_pending(
         reason,
         stop_loss_pct,
         take_profit_pct,
-        risk_multiplier=float(effective_size_multiplier) * portfolio_multiplier,
+        risk_multiplier=float(effective_size_multiplier) * portfolio_multiplier * quality_risk_multiplier,
         max_holding_bars=max(1, int(vbp.entry.timeout_bars) * 4),
     )
     account = _account_snapshot(
@@ -2496,46 +2589,31 @@ def _vbp_dynamic_exit_reason(
     recent_1m_candles: list[Candle] | None = None,
 ) -> str | None:
     risk = config.vbp_strategy.risk_control
-    if not bool(risk.enabled):
-        return None
     exit_config = config.vbp_strategy.exit
     current_profit = (candle.close - position.entry_price) / max(position.entry_price, 1e-12)
     peak_profit = (position.best_price - position.entry_price) / max(position.entry_price, 1e-12)
-    pullback = max(0.0, (position.best_price - candle.close) / max(position.entry_price, 1e-12))
     minimum_profit = _vbp_minimum_profit_exit_pct(config)
     tp1_done = " vbp_tp1_done=1" in position.entry_reason
-
-    if bool(getattr(exit_config, "peak_giveback_enabled", True)):
-        trigger = max(0.0, float(getattr(exit_config, "peak_giveback_trigger_pct", 0.008)))
-        floor = float(getattr(exit_config, "peak_giveback_floor_pct", 0.0015))
-        retrace = max(0.0, float(getattr(exit_config, "peak_giveback_retrace_pct", 0.005)))
-        pre_tp1_trigger = max(0.0, float(getattr(exit_config, "peak_giveback_pre_tp1_trigger_pct", 0.020)))
-        current_profit_ok = current_profit >= minimum_profit
-        post_tp1_giveback = tp1_done and peak_profit >= trigger and (current_profit <= floor or pullback >= retrace)
-        pre_tp1_large_giveback = (
-            not tp1_done
-            and peak_profit >= pre_tp1_trigger
-            and pullback >= retrace
-        )
-        if current_profit_ok and (post_tp1_giveback or pre_tp1_large_giveback):
-            _vbp_count(stats, "peak_giveback_exit_count")
-            tag = "vbp_peak_giveback" if tp1_done else "vbp_peak_giveback_pre_tp1"
-            return (
-                f"{tag} peak={peak_profit * 100:.3f}% "
-                f"now={current_profit * 100:.3f}% pullback={pullback * 100:.3f}%"
-            )
-
+    bear_reason = None
     if bool(getattr(exit_config, "large_bear_exit_enabled", True)) and recent_1m_candles:
         min_peak = float(getattr(exit_config, "large_bear_min_peak_profit_pct", 0.006))
         min_current = float(getattr(exit_config, "large_bear_min_current_profit_pct", -0.001))
         if peak_profit >= min_peak and current_profit >= min_current:
             bear_reason = _vbp_large_bearish_candle_reason(recent_1m_candles, exit_config)
-            if bear_reason:
-                _vbp_count(stats, "large_bear_exit_count")
-                return (
-                    f"vbp_high_volume_bear_exit {bear_reason} "
-                    f"peak={peak_profit * 100:.3f}% now={current_profit * 100:.3f}%"
-                )
+    shared_exit = vbp_runner_exit_reason(
+        exit_config,
+        current_profit,
+        peak_profit,
+        tp1_done,
+        minimum_profit,
+        vbp_atr_pct_5m(recent_1m_candles or []),
+        bear_reason,
+    )
+    if shared_exit:
+        _vbp_count(stats, "runner_exit_count")
+        return shared_exit
+    if not bool(risk.enabled):
+        return None
 
     risk_price = _vbp_risk_price(position)
     mfe_r = position.mfe / max(risk_price * position.quantity, 1e-12)
@@ -2605,7 +2683,7 @@ def _vbp_risk_price(position: PortfolioPosition) -> float:
     return max(abs(position.entry_price - position.stop_price), 1e-12)
 
 
-def _close_vbp_partial_position(
+def _close_vbp_partial_position_legacy(
     config: Any,
     cash: float,
     position: PortfolioPosition,
@@ -3249,6 +3327,75 @@ def main() -> int:
     )
     return 0
 
+
+from .live_portfolio_backtest import (
+    _close_position as _close_position_legacy,
+    _update_position_excursion as _update_position_excursion_legacy,
+)
+
+
+# MFE is tracked as a price return independently of mutable position quantity.
+# Each close segment converts that return to its own notional-based MFE amount.
+def _update_position_excursion(position: PortfolioPosition, candle: Candle) -> None:
+    _update_position_excursion_legacy(position, candle)
+    entry_price = max(abs(float(position.entry_price)), 1e-12)
+    raw_entry_price = max(abs(float(position.raw_entry_price or position.entry_price)), 1e-12)
+    direction_value = float(position.direction.value)
+    favorable_price = float(candle.high) if direction_value > 0 else float(candle.low)
+    favorable_return = max(0.0, direction_value * (favorable_price - float(position.entry_price)) / entry_price)
+    raw_favorable_return = max(
+        0.0,
+        direction_value * (favorable_price - float(position.raw_entry_price or position.entry_price)) / raw_entry_price,
+    )
+    position.mfe_return_pct = max(float(getattr(position, "mfe_return_pct", 0.0)), favorable_return)
+    position.mfe_raw_return_pct = max(
+        float(getattr(position, "mfe_raw_return_pct", 0.0)),
+        raw_favorable_return,
+    )
+
+
+def _segment_mfe_return(position: PortfolioPosition) -> float:
+    explicit = float(getattr(position, "mfe_raw_return_pct", 0.0))
+    if explicit > 0:
+        return explicit
+    notional = abs(float(position.quantity) * float(position.entry_price))
+    return max(0.0, float(position.mfe)) / max(notional, 1e-12)
+
+
+def _apply_segment_mfe(row: dict[str, Any], mfe_return_pct: float) -> None:
+    quantity = abs(float(row.get("quantity", row.get("qty", 0.0))))
+    raw_entry_price = abs(float(row.get("raw_entry_price", row.get("entry_price", 0.0))))
+    raw_notional = quantity * raw_entry_price
+    realized_favorable = max(0.0, float(row.get("gross_pnl", 0.0)))
+    tracked_mfe = max(0.0, float(mfe_return_pct)) * raw_notional
+    row["mfe"] = max(tracked_mfe, realized_favorable)
+    row["mfe_return_pct"] = row["mfe"] / max(raw_notional, 1e-12)
+    row["mfe_max_pnl"] = row["mfe"]
+    row["mfe_realized_favorable_pnl"] = realized_favorable
+
+
+def _close_position(*args: Any, **kwargs: Any) -> float:
+    positions = kwargs["positions"] if "positions" in kwargs else args[2]
+    trades = kwargs["trades"] if "trades" in kwargs else args[3]
+    symbol = kwargs["symbol"] if "symbol" in kwargs else args[4]
+    position = positions.get(symbol)
+    mfe_return_pct = _segment_mfe_return(position) if position is not None else 0.0
+    before = len(trades)
+    cash = _close_position_legacy(*args, **kwargs)
+    if len(trades) > before:
+        _apply_segment_mfe(trades[-1], mfe_return_pct)
+    return cash
+
+
+def _close_vbp_partial_position(*args: Any, **kwargs: Any) -> float:
+    position = kwargs["position"] if "position" in kwargs else args[2]
+    trades = kwargs["trades"] if "trades" in kwargs else args[3]
+    mfe_return_pct = _segment_mfe_return(position)
+    before = len(trades)
+    cash = _close_vbp_partial_position_legacy(*args, **kwargs)
+    if len(trades) > before:
+        _apply_segment_mfe(trades[-1], mfe_return_pct)
+    return cash
 
 if __name__ == "__main__":
     raise SystemExit(main())

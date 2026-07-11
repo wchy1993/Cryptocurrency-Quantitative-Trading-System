@@ -258,6 +258,16 @@ class VbpEntryConfig:
     relative_strength_min_vs_btc_pct: float = 0.0015
     relative_strength_min_vs_market_pct: float = -1.0
     relative_strength_max_rank_pct: float = 1.0
+    quality_score_enabled: bool = False
+    quality_min_score: float = 45.0
+    quality_a_score: float = 60.0
+    quality_a_plus_score: float = 75.0
+    quality_a_plus_risk_multiplier: float = 1.20
+    quality_a_risk_multiplier: float = 0.80
+    quality_b_risk_multiplier: float = 0.40
+    quality_a_plus_tp1_close_ratio: float = 0.25
+    quality_a_tp1_close_ratio: float = 0.40
+    quality_b_tp1_close_ratio: float = 0.50
 
 
 @dataclass(frozen=True)
@@ -274,6 +284,9 @@ class VbpExitConfig:
     peak_giveback_pre_tp1_trigger_pct: float = 0.020
     peak_giveback_require_cost_coverage: bool = True
     peak_tracking_mode: str = "close"
+    runner_atr_multiplier: float = 1.20
+    runner_min_retrace_pct: float = 0.0045
+    runner_max_retrace_pct: float = 0.030
     large_bear_exit_enabled: bool = True
     large_bear_min_peak_profit_pct: float = 0.010
     large_bear_min_current_profit_pct: float = 0.002
