@@ -308,6 +308,13 @@ class VbpEntryConfig:
     pullback_volume_ratio: float = 0.4
     timeout_bars: int = 15
     use_vwap_as_pullback_target: bool = True
+    breakout_quality_enabled: bool = False
+    breakout_distance_atr_min: float = 0.0
+    breakout_distance_atr_max: float = 999.0
+    breakout_body_atr_min: float = 0.0
+    breakout_close_position_min: float = 0.0
+    breakout_upper_wick_ratio_max: float = 1.0
+    breakout_volume_ratio_min: float = 0.0
     relative_strength_enabled: bool = False
     relative_strength_lookback_minutes: int = 60
     relative_strength_min_vs_btc_pct: float = 0.0015

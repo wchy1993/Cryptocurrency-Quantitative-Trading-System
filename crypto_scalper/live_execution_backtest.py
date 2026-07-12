@@ -142,6 +142,7 @@ class VbpCompressionMetrics:
     range_atr: float
     volume_contraction: float
     prior_move_atr: float
+    atr_value: float = 0.0
 
     def diagnostic_fields(self) -> dict[str, float]:
         return {
@@ -149,6 +150,24 @@ class VbpCompressionMetrics:
             "pre_breakout_range_compression_atr": self.range_atr,
             "pre_breakout_volume_contraction": self.volume_contraction,
             "pre_breakout_prior_move_atr": self.prior_move_atr,
+        }
+
+
+@dataclass(frozen=True)
+class VbpBreakoutMetrics:
+    distance_atr: float
+    body_atr: float
+    close_position: float
+    upper_wick_ratio: float
+    volume_ratio: float
+
+    def diagnostic_fields(self) -> dict[str, float]:
+        return {
+            "breakout_distance_atr": self.distance_atr,
+            "breakout_body_atr": self.body_atr,
+            "breakout_close_position": self.close_position,
+            "upper_wick_ratio": self.upper_wick_ratio,
+            "breakout_volume_ratio": self.volume_ratio,
         }
 
 
@@ -2329,6 +2348,7 @@ def _vbp_process_symbol(
         return cash, False
 
     compression = _vbp_compression_metrics(candles, execution_index, zone_top, zone_bottom, structure)
+    breakout = _vbp_breakout_metrics(candle, zone_top, candle_rvol, compression.atr_value)
     alpha_event_id = alpha_diagnostics.record_vbp_breakout(
         symbol,
         candles,
@@ -2338,11 +2358,17 @@ def _vbp_process_symbol(
         candle_rvol,
         decision_time=timestamp,
         compression_metrics=compression.diagnostic_fields(),
+        breakout_metrics=breakout.diagnostic_fields(),
     )
     compression_allowed, compression_reason = _vbp_compression_allows(structure, compression)
     if not compression_allowed:
         alpha_diagnostics.mark_vbp(alpha_event_id, "rejected", compression_reason)
         _vbp_count(stats, compression_reason)
+        return cash, False
+    breakout_allowed, breakout_reason = _vbp_breakout_quality_allows(vbp.entry, breakout)
+    if not breakout_allowed:
+        alpha_diagnostics.mark_vbp(alpha_event_id, "rejected", breakout_reason)
+        _vbp_count(stats, breakout_reason)
         return cash, False
 
     pullback_target = zone_top
@@ -2400,6 +2426,7 @@ def _vbp_compression_metrics(
         range_atr=max(0.0, zone_top - zone_bottom) / atr_value,
         volume_contraction=volume_contraction,
         prior_move_atr=prior_move,
+        atr_value=atr_value,
     )
 
 
@@ -2414,6 +2441,41 @@ def _vbp_compression_allows(config: Any, metrics: VbpCompressionMetrics) -> tupl
         return False, "reject_compression_volume_contraction"
     if metrics.prior_move_atr > float(getattr(config, "compression_prior_move_max_atr", 999.0)):
         return False, "reject_compression_prior_extension"
+    return True, "ok"
+
+
+def _vbp_breakout_metrics(
+    candle: Candle,
+    breakout_level: float,
+    volume_ratio: float,
+    atr_value: float,
+) -> VbpBreakoutMetrics:
+    normalized_atr = max(atr_value, 1e-12)
+    candle_range = max(candle.high - candle.low, 1e-12)
+    return VbpBreakoutMetrics(
+        distance_atr=max(0.0, candle.close - breakout_level) / normalized_atr,
+        body_atr=abs(candle.close - candle.open) / normalized_atr,
+        close_position=(candle.close - candle.low) / candle_range,
+        upper_wick_ratio=(candle.high - max(candle.open, candle.close)) / candle_range,
+        volume_ratio=volume_ratio,
+    )
+
+
+def _vbp_breakout_quality_allows(config: Any, metrics: VbpBreakoutMetrics) -> tuple[bool, str]:
+    if not bool(getattr(config, "breakout_quality_enabled", False)):
+        return True, "ok"
+    if metrics.distance_atr < float(getattr(config, "breakout_distance_atr_min", 0.0)):
+        return False, "reject_breakout_distance_too_small"
+    if metrics.distance_atr > float(getattr(config, "breakout_distance_atr_max", 999.0)):
+        return False, "reject_breakout_distance_too_large"
+    if metrics.body_atr < float(getattr(config, "breakout_body_atr_min", 0.0)):
+        return False, "reject_breakout_body_atr"
+    if metrics.close_position < float(getattr(config, "breakout_close_position_min", 0.0)):
+        return False, "reject_breakout_close_position"
+    if metrics.upper_wick_ratio > float(getattr(config, "breakout_upper_wick_ratio_max", 1.0)):
+        return False, "reject_breakout_upper_wick"
+    if metrics.volume_ratio < float(getattr(config, "breakout_volume_ratio_min", 0.0)):
+        return False, "reject_breakout_volume_ratio"
     return True, "ok"
 
 

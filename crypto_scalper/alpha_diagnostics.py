@@ -117,6 +117,7 @@ class AlphaCandidateDiagnostics:
         breakout_volume_ratio: float,
         decision_time: Any = None,
         compression_metrics: dict[str, float] | None = None,
+        breakout_metrics: dict[str, float] | None = None,
     ) -> str | None:
         if not self.enabled or index >= len(candles):
             return None
@@ -172,6 +173,7 @@ class AlphaCandidateDiagnostics:
             "stop_round_trip_cost_pct": self.stop_round_trip_cost_pct,
             **snapshot_payload(regime_snapshot),
             **(compression_metrics or {}),
+            **(breakout_metrics or {}),
         }
         return event_id
 
