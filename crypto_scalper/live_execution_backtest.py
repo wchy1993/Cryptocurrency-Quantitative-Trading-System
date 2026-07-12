@@ -60,6 +60,7 @@ from .risk import BacktestExecutionConfig, BacktestExecutionStats, execution_con
 from .indicators import atr, ema, macd
 from .realistic_data import load_funding_rate_directory
 from .regime_score import RegimeScoreEngine
+from .reversal_alpha import ReversalAlphaEngine
 
 
 _POINT_IN_TIME_UNIVERSE: dict[Any, frozenset[str]] = {}
@@ -519,6 +520,19 @@ def run_execution_backtest_config(
                 for timeframe in ("15m", "30m", "1h")
             },
         )
+    reversal_alpha_config = getattr(config, "reversal_alpha", None)
+    reversal_alpha_engine = None
+    if alpha_diagnostics_enabled and reversal_alpha_config is not None and bool(getattr(reversal_alpha_config, "enabled", False)):
+        reversal_alpha_engine = ReversalAlphaEngine(
+            reversal_alpha_config,
+            {
+                timeframe: {
+                    symbol: _resample_to_timeframe(candles, "1m", timeframe)
+                    for symbol, candles in execution_candles_by_symbol.items()
+                }
+                for timeframe in ("5m", "15m", "30m", "1h")
+            },
+        )
     alpha_diagnostics = AlphaCandidateDiagnostics(
         alpha_diagnostics_enabled,
         full_round_trip_cost_pct=(
@@ -530,6 +544,7 @@ def run_execution_backtest_config(
             + (execution_config.market_slippage_bps + execution_config.stop_slippage_bps) / 10_000.0
         ),
         regime_score_engine=regime_score_engine,
+        reversal_alpha_engine=reversal_alpha_engine,
     )
     portfolio_control_stats: dict[str, int] = {}
     portfolio_symbol_cooldown_until: dict[str, Any] = {}

@@ -257,6 +257,28 @@ class RegimeScoreConfig:
 
 
 @dataclass(frozen=True)
+class ReversalAlphaConfig:
+    enabled: bool = False
+    shadow_mode: bool = True
+    setup_lookback_bars: int = 5
+    setup_extension_atr_min: float = 0.50
+    setup_long_rsi_extreme_max: float = 40.0
+    setup_short_rsi_extreme_min: float = 60.0
+    setup_long_kdj_extreme_max: float = 35.0
+    setup_short_kdj_extreme_min: float = 65.0
+    setup_require_rsi_recovery: bool = True
+    setup_require_kdj_recovery: bool = True
+    setup_macd_improvement_bars: int = 2
+    setup_require_no_new_extreme: bool = True
+    trigger_ema_period: int = 9
+    trigger_require_directional_candle: bool = True
+    trigger_close_position_min: float = 0.55
+    trigger_require_macd_improvement: bool = True
+    btc_adverse_15m_return: float = 0.006
+    btc_adverse_1h_return: float = 0.012
+
+
+@dataclass(frozen=True)
 class MacroEventConfig:
     enabled: bool = False
     events_path: str = "data/macro_events_us_major_2025_2026.csv"
@@ -480,6 +502,7 @@ class LiveAppConfig:
     vbp_strategy: VbpStrategyConfig = field(default_factory=VbpStrategyConfig)
     portfolio_control: PortfolioControlConfig = field(default_factory=PortfolioControlConfig)
     regime_score: RegimeScoreConfig = field(default_factory=RegimeScoreConfig)
+    reversal_alpha: ReversalAlphaConfig = field(default_factory=ReversalAlphaConfig)
 
 
 T = TypeVar("T")
@@ -597,6 +620,7 @@ def load_live_config(path: str | Path) -> LiveAppConfig:
         vbp_strategy=_coerce_vbp_config(raw.get("vbp_strategy", {})),
         portfolio_control=_coerce_dataclass(PortfolioControlConfig, raw.get("portfolio_control", {})),
         regime_score=_coerce_dataclass(RegimeScoreConfig, raw.get("regime_score", {})),
+        reversal_alpha=_coerce_dataclass(ReversalAlphaConfig, raw.get("reversal_alpha", {})),
     )
 
 
@@ -611,6 +635,7 @@ def write_live_config(path: str | Path, config: LiveAppConfig) -> None:
         "vbp_strategy": asdict(config.vbp_strategy),
         "portfolio_control": asdict(config.portfolio_control),
         "regime_score": asdict(config.regime_score),
+        "reversal_alpha": asdict(config.reversal_alpha),
     }
     Path(path).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 

@@ -8,7 +8,8 @@ from typing import Any
 
 from .indicators import atr, ema, kdj, macd, rsi
 from .models import Candle, Direction, Signal
-from .regime_score import snapshot_payload
+from .regime_score import snapshot_payload as regime_snapshot_payload
+from .reversal_alpha import snapshot_payload as reversal_snapshot_payload
 
 
 _EVENT_TOKEN = re.compile(r"alpha_event_id=([^ ]+)")
@@ -20,6 +21,7 @@ class AlphaCandidateDiagnostics:
     full_round_trip_cost_pct: float = 0.0
     stop_round_trip_cost_pct: float = 0.0
     regime_score_engine: Any = None
+    reversal_alpha_engine: Any = None
     rows: dict[str, dict[str, Any]] = field(default_factory=dict)
     reversal_keys: dict[tuple[str, str, str], str] = field(default_factory=dict)
 
@@ -55,6 +57,11 @@ class AlphaCandidateDiagnostics:
             if self.regime_score_engine is not None
             else None
         )
+        reversal_snapshot = (
+            self.reversal_alpha_engine.evaluate(symbol, decision_time or candle.timestamp, signal.direction)
+            if self.reversal_alpha_engine is not None
+            else None
+        )
         self.rows[event_id] = {
             "event_id": event_id,
             "strategy": "indicator_reversal",
@@ -82,7 +89,8 @@ class AlphaCandidateDiagnostics:
             "reclaim_ema21": candle.close > ema21[-1],
             "no_new_low_3": recent_lows[-1] > min(recent_lows[:-1]),
             "no_new_high_3": recent_highs[-1] < max(recent_highs[:-1]),
-            **snapshot_payload(regime_snapshot),
+            **regime_snapshot_payload(regime_snapshot),
+            **reversal_snapshot_payload(reversal_snapshot),
         }
         self.reversal_keys[key] = event_id
         return event_id
@@ -171,7 +179,7 @@ class AlphaCandidateDiagnostics:
             "pullback_broke_vbp_bottom": False,
             "full_round_trip_cost_pct": self.full_round_trip_cost_pct,
             "stop_round_trip_cost_pct": self.stop_round_trip_cost_pct,
-            **snapshot_payload(regime_snapshot),
+            **regime_snapshot_payload(regime_snapshot),
             **(compression_metrics or {}),
             **(breakout_metrics or {}),
         }
