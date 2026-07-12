@@ -139,6 +139,7 @@ class VbpLiveBreakoutState:
     breakout_close: float
     tp2_price: float
     touched_pullback: bool = False
+    pullback_touch_time: datetime | None = None
 
 
 def _portfolio_bucket_from_reason(reason: str) -> str:
@@ -1258,10 +1259,14 @@ class BinanceAutoTrader:
                 f"breakout_vol={pending.breakout_volume:.4g}"
             )
             return None
-        if touched_target:
+        if touched_target and pending.pullback_touch_time is None:
             pending.touched_pullback = True
+            pending.pullback_touch_time = candle.timestamp
             self._record_vbp_stat("pullback_touched")
+            return None
         if not pending.touched_pullback:
+            return None
+        if pending.pullback_touch_time is None or candle.timestamp <= pending.pullback_touch_time:
             return None
         if not (candle.close > candle.open and candle.close >= pending.pullback_target):
             self._record_vbp_stat("pending_wait_bull_reclaim")

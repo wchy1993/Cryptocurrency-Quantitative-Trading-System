@@ -87,6 +87,17 @@ class VbpBreakoutState:
     breakout_close: float
     tp2_price: float
     touched_pullback: bool = False
+    pullback_touch_index: int | None = None
+    confirmation_index: int | None = None
+    confirmation_price: float | None = None
+    confirmation_time: Any = None
+    breakout_atr: float = 0.0
+    confirmation_body_atr: float = 0.0
+    confirmation_close_position: float = 0.0
+    confirmation_wick_ratio: float = 0.0
+    confirmation_volume_ratio: float = 0.0
+    pullback_low: float = 0.0
+    pullback_broke_breakout_level: bool = False
     alpha_event_id: str | None = None
 
 
@@ -169,6 +180,21 @@ class VbpBreakoutMetrics:
             "upper_wick_ratio": self.upper_wick_ratio,
             "breakout_volume_ratio": self.volume_ratio,
         }
+
+
+@dataclass(frozen=True)
+class VbpPullbackMetrics:
+    depth_atr: float
+    depth_to_breakout: float
+    bars: int
+    broke_breakout_level: bool
+
+
+@dataclass(frozen=True)
+class VbpConfirmationMetrics:
+    body_atr: float
+    close_position: float
+    upper_wick_ratio: float
 
 
 @dataclass
@@ -2385,6 +2411,8 @@ def _vbp_process_symbol(
         breakout_volume=candle.volume,
         breakout_close=candle.close,
         tp2_price=tp2_price,
+        breakout_atr=compression.atr_value,
+        pullback_low=candle.close,
         alpha_event_id=alpha_event_id,
     )
     _vbp_count(stats, "breakout_detected")
@@ -2479,6 +2507,68 @@ def _vbp_breakout_quality_allows(config: Any, metrics: VbpBreakoutMetrics) -> tu
     return True, "ok"
 
 
+def _vbp_pending_timing_phase(pending: VbpBreakoutState, execution_index: int) -> str:
+    if pending.confirmation_index is not None:
+        if execution_index == pending.confirmation_index + 1:
+            return "execute"
+        if execution_index > pending.confirmation_index + 1:
+            return "execution_missed"
+        return "wait_confirmation_close"
+    if pending.pullback_touch_index is None:
+        return "wait_pullback"
+    if execution_index <= pending.pullback_touch_index:
+        return "wait_after_pullback"
+    return "confirm"
+
+
+def _vbp_pullback_metrics(pending: VbpBreakoutState, execution_index: int) -> VbpPullbackMetrics:
+    depth = max(0.0, pending.breakout_close - pending.pullback_low)
+    breakout_distance = max(pending.breakout_close - pending.breakout_level, 1e-12)
+    return VbpPullbackMetrics(
+        depth_atr=depth / max(pending.breakout_atr, 1e-12),
+        depth_to_breakout=depth / breakout_distance,
+        bars=max(0, execution_index - pending.breakout_index),
+        broke_breakout_level=pending.pullback_broke_breakout_level,
+    )
+
+
+def _vbp_pullback_quality_action(config: Any, metrics: VbpPullbackMetrics) -> tuple[str, str]:
+    if not bool(getattr(config, "pullback_quality_enabled", False)):
+        return "allow", "ok"
+    if metrics.depth_atr < float(getattr(config, "pullback_depth_atr_min", 0.0)):
+        return "wait", "wait_pullback_depth_too_shallow"
+    if metrics.depth_atr > float(getattr(config, "pullback_depth_atr_max", 999.0)):
+        return "reject", "reject_pullback_depth_atr"
+    if metrics.depth_to_breakout > float(getattr(config, "pullback_depth_to_breakout_max", 999.0)):
+        return "reject", "reject_pullback_depth_ratio"
+    if metrics.bars > int(getattr(config, "pullback_bars_max", 999)):
+        return "reject", "reject_pullback_duration"
+    if bool(getattr(config, "pullback_require_hold_breakout_level", False)) and metrics.broke_breakout_level:
+        return "reject", "reject_pullback_broke_breakout_level"
+    return "allow", "ok"
+
+
+def _vbp_confirmation_metrics(pending: VbpBreakoutState, candle: Candle) -> VbpConfirmationMetrics:
+    candle_range = max(candle.high - candle.low, 1e-12)
+    return VbpConfirmationMetrics(
+        body_atr=abs(candle.close - candle.open) / max(pending.breakout_atr, 1e-12),
+        close_position=_vbp_candle_close_position(candle),
+        upper_wick_ratio=(candle.high - max(candle.open, candle.close)) / candle_range,
+    )
+
+
+def _vbp_confirmation_quality_allows(config: Any, metrics: VbpConfirmationMetrics) -> tuple[bool, str]:
+    if not bool(getattr(config, "confirmation_quality_enabled", False)):
+        return True, "ok"
+    if metrics.body_atr < float(getattr(config, "confirmation_body_atr_min", 0.0)):
+        return False, "wait_confirmation_body_atr"
+    if metrics.close_position < float(getattr(config, "confirmation_close_position_min", 0.0)):
+        return False, "wait_confirmation_close_position"
+    if metrics.upper_wick_ratio > float(getattr(config, "confirmation_upper_wick_ratio_max", 1.0)):
+        return False, "wait_confirmation_upper_wick"
+    return True, "ok"
+
+
 def _vbp_process_pending(
     trader: BinanceAutoTrader,
     config: Any,
@@ -2505,77 +2595,144 @@ def _vbp_process_pending(
     candles = execution_candles_by_symbol[pending.symbol]
     candle = candles[execution_index]
     age = execution_index - pending.breakout_index
-    alpha_diagnostics.update_vbp_pullback(
-        pending.alpha_event_id,
-        candle,
-        age,
-        pending.breakout_close,
-        pending.breakout_volume,
-    )
     if age <= 0:
         return cash, False
-    if age > int(vbp.entry.timeout_bars):
+    timing_phase = _vbp_pending_timing_phase(pending, execution_index)
+    if timing_phase == "execution_missed":
+        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "confirmation_execution_missed")
+        breakouts.pop(pending.symbol, None)
+        _vbp_count(stats, "confirmation_execution_missed")
+        return cash, False
+    execute_ready = timing_phase == "execute"
+    if not execute_ready:
+        alpha_diagnostics.update_vbp_pullback(
+            pending.alpha_event_id,
+            candle,
+            age,
+            pending.breakout_close,
+            pending.breakout_volume,
+        )
+    if age > int(vbp.entry.timeout_bars) and not execute_ready:
         alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "pending_timeout")
         breakouts.pop(pending.symbol, None)
         _vbp_count(stats, "pending_timeout")
         return cash, False
-    if candle.close < pending.consolidation_bottom:
-        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "pending_failed_back_inside")
-        breakouts.pop(pending.symbol, None)
-        _vbp_count(stats, "pending_failed_back_inside")
-        return cash, False
 
     quality_mode = _vbp_quality_mode_active(config, control, timestamp)
-    pullback_volume_ratio = float(vbp.entry.pullback_volume_ratio)
-    if quality_mode:
-        pullback_volume_ratio = min(
-            pullback_volume_ratio,
-            float(getattr(vbp.risk_control, "consecutive_loss_quality_pullback_volume_ratio", 0.30)),
+    if not execute_ready:
+        pending.pullback_low = min(pending.pullback_low or candle.low, candle.low)
+        pending.pullback_broke_breakout_level = bool(
+            pending.pullback_broke_breakout_level or candle.close < pending.breakout_level
         )
-    pullback_volume_ok = candle.volume <= pending.breakout_volume * pullback_volume_ratio
-    touched_target = candle.low <= pending.pullback_target <= candle.high or candle.low <= pending.pullback_target
-    if touched_target and not pullback_volume_ok:
-        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "pending_reject_high_volume_pullback")
-        breakouts.pop(pending.symbol, None)
-        _vbp_count(stats, "pending_reject_high_volume_pullback")
-        return cash, False
-    if touched_target:
-        pending.touched_pullback = True
-    if not pending.touched_pullback:
-        return cash, False
+        if candle.close < pending.consolidation_bottom:
+            alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "pending_failed_back_inside")
+            breakouts.pop(pending.symbol, None)
+            _vbp_count(stats, "pending_failed_back_inside")
+            return cash, False
 
-    # A pullback is only known after the current 1m candle has closed.  Do not
-    # fill at that same close: arm the entry and execute from the next candle.
-    confirmed_index = getattr(pending, "entry_confirmed_index", None)
-    if confirmed_index is None:
-        setattr(pending, "entry_confirmed_index", execution_index)
-        setattr(pending, "entry_confirmed_price", candle.close)
+        pullback_volume_ratio = float(vbp.entry.pullback_volume_ratio)
+        if quality_mode:
+            pullback_volume_ratio = min(
+                pullback_volume_ratio,
+                float(getattr(vbp.risk_control, "consecutive_loss_quality_pullback_volume_ratio", 0.30)),
+            )
+        pullback_volume_ok = candle.volume <= pending.breakout_volume * pullback_volume_ratio
+        touched_target = candle.low <= pending.pullback_target
+        if touched_target and not pullback_volume_ok:
+            alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "pending_reject_high_volume_pullback")
+            breakouts.pop(pending.symbol, None)
+            _vbp_count(stats, "pending_reject_high_volume_pullback")
+            return cash, False
+        if touched_target and pending.pullback_touch_index is None:
+            pending.touched_pullback = True
+            pending.pullback_touch_index = execution_index
+            _vbp_count(stats, "pullback_touched")
+            return cash, False
+        if _vbp_pending_timing_phase(pending, execution_index) != "confirm":
+            return cash, False
+        pullback_metrics = _vbp_pullback_metrics(pending, execution_index)
+        pullback_action, pullback_reason = _vbp_pullback_quality_action(vbp.entry, pullback_metrics)
+        if pullback_action == "wait":
+            _vbp_count(stats, pullback_reason)
+            return cash, False
+        if pullback_action == "reject":
+            alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", pullback_reason)
+            breakouts.pop(pending.symbol, None)
+            _vbp_count(stats, pullback_reason)
+            return cash, False
+        if not (candle.close > candle.open and candle.close >= pending.pullback_target):
+            _vbp_count(stats, "pending_wait_bull_reclaim")
+            return cash, False
+        confirmation_metrics = _vbp_confirmation_metrics(pending, candle)
+        confirmation_allowed, confirmation_reason = _vbp_confirmation_quality_allows(
+            vbp.entry,
+            confirmation_metrics,
+        )
+        if not confirmation_allowed:
+            _vbp_count(stats, confirmation_reason)
+            return cash, False
+        if quality_mode:
+            min_close_position = float(getattr(vbp.risk_control, "consecutive_loss_quality_min_close_position", 0.65))
+            if _vbp_candle_close_position(candle) < min_close_position:
+                alpha_diagnostics.mark_vbp(
+                    pending.alpha_event_id,
+                    "waiting_confirmation",
+                    "pending_reject_vbp_quality_close_position",
+                )
+                _vbp_count(stats, "pending_reject_vbp_quality_close_position")
+                return cash, False
+        rs_allowed, rs_reason = _vbp_relative_strength_allows(
+            config,
+            execution_candles_by_symbol,
+            pending.symbol,
+            execution_index,
+        )
+        if not rs_allowed:
+            alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", rs_reason)
+            breakouts.pop(pending.symbol, None)
+            _vbp_count(stats, rs_reason)
+            return cash, False
+        pending.confirmation_index = execution_index
+        pending.confirmation_price = candle.close
+        pending.confirmation_time = candle.timestamp + timedelta(minutes=1)
+        pending.confirmation_body_atr = confirmation_metrics.body_atr
+        pending.confirmation_close_position = confirmation_metrics.close_position
+        pending.confirmation_wick_ratio = confirmation_metrics.upper_wick_ratio
+        pending.confirmation_volume_ratio = candle.volume / max(pending.breakout_volume, 1e-12)
         alpha_diagnostics.mark_vbp(
             pending.alpha_event_id,
             "pullback_confirmed",
-            confirmation_time=candle.timestamp.isoformat(),
+            confirmation_time=pending.confirmation_time.isoformat(),
+            confirmation_body_atr=pending.confirmation_body_atr,
+            confirmation_close_position=pending.confirmation_close_position,
+            confirmation_wick_ratio=pending.confirmation_wick_ratio,
+            confirmation_volume_ratio=pending.confirmation_volume_ratio,
         )
+        _vbp_count(stats, "confirmation_closed")
         _vbp_count(stats, "entry_deferred_to_next_open")
         return cash, False
-    if execution_index <= int(confirmed_index):
-        return cash, False
-    if not (candle.close > candle.open and candle.close >= pending.pullback_target):
-        return cash, False
-    if quality_mode:
-        min_close_position = float(getattr(vbp.risk_control, "consecutive_loss_quality_min_close_position", 0.65))
-        if _vbp_candle_close_position(candle) < min_close_position:
-            alpha_diagnostics.mark_vbp(
-                pending.alpha_event_id,
-                "waiting_confirmation",
-                "pending_reject_vbp_quality_close_position",
-            )
-            _vbp_count(stats, "pending_reject_vbp_quality_close_position")
-            return cash, False
-    rs_allowed, rs_reason = _vbp_relative_strength_allows(config, execution_candles_by_symbol, pending.symbol, execution_index)
-    if not rs_allowed:
-        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", rs_reason)
+
+    if candle.open < pending.consolidation_bottom:
+        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "pending_gap_below_structure")
         breakouts.pop(pending.symbol, None)
-        _vbp_count(stats, rs_reason)
+        _vbp_count(stats, "pending_gap_below_structure")
+        return cash, False
+
+    if pending.confirmation_index is None or pending.confirmation_price is None or pending.confirmation_time is None:
+        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "reject_missing_confirmation_price")
+        breakouts.pop(pending.symbol, None)
+        _vbp_count(stats, "reject_missing_confirmation_price")
+        return cash, False
+
+    # The confirmation candle is closed. Execution is now allowed at the next
+    # 1m open; the current candle's high/low/close are not signal inputs.
+    confirmed_price = pending.confirmation_price
+    entry_price = max(candle.open, confirmed_price)
+    entry_chase_atr = (entry_price - pending.breakout_level) / max(pending.breakout_atr, 1e-12)
+    if entry_chase_atr > float(getattr(vbp.entry, "max_entry_chase_atr", 999.0)):
+        alpha_diagnostics.mark_vbp(pending.alpha_event_id, "rejected", "reject_entry_chase_atr")
+        breakouts.pop(pending.symbol, None)
+        _vbp_count(stats, "reject_entry_chase_atr")
         return cash, False
 
     portfolio_allowed, portfolio_reason, portfolio_multiplier = _portfolio_entry_decision(
@@ -2604,8 +2761,6 @@ def _vbp_process_pending(
     # For a long entry, waiting must not award a better price than the close
     # that confirmed the signal.  Adverse gaps are retained; favorable gaps
     # are ignored before the normal pessimistic slippage model is applied.
-    confirmed_price = float(getattr(pending, "entry_confirmed_price", candle.open))
-    entry_price = max(candle.open, confirmed_price)
     stop_price = max(pending.consolidation_bottom, entry_price * (1.0 - float(vbp.exit.stop_loss_pct)))
     stop_loss_pct = (entry_price - stop_price) / max(entry_price, 1e-12)
     if stop_loss_pct <= 0:
@@ -2667,7 +2822,6 @@ def _vbp_process_pending(
     )
     breakouts.pop(pending.symbol, None)
     if not before and pending.symbol in positions:
-        candle_range = max(candle.high - candle.low, 1e-12)
         alpha_diagnostics.mark_vbp(
             pending.alpha_event_id,
             "traded",
@@ -2678,11 +2832,11 @@ def _vbp_process_pending(
             take_profit_pct=take_profit_pct,
             target_to_full_cost_ratio=take_profit_pct / max(alpha_diagnostics.full_round_trip_cost_pct, 1e-12),
             stop_to_full_cost_ratio=stop_loss_pct / max(alpha_diagnostics.stop_round_trip_cost_pct, 1e-12),
-            confirmation_body_atr=abs(candle.close - candle.open) / max(float(alpha_diagnostics.rows.get(pending.alpha_event_id or "", {}).get("breakout_atr", 0.0)), 1e-12),
-            confirmation_close_position=(candle.close - candle.low) / candle_range,
-            confirmation_wick_ratio=(candle.high - max(candle.open, candle.close)) / candle_range,
-            confirmation_volume_ratio=candle.volume / max(pending.breakout_volume, 1e-12),
-            entry_chase_distance_atr=(entry_price - pending.breakout_level) / max(float(alpha_diagnostics.rows.get(pending.alpha_event_id or "", {}).get("breakout_atr", 0.0)), 1e-12),
+            confirmation_body_atr=pending.confirmation_body_atr,
+            confirmation_close_position=pending.confirmation_close_position,
+            confirmation_wick_ratio=pending.confirmation_wick_ratio,
+            confirmation_volume_ratio=pending.confirmation_volume_ratio,
+            entry_chase_distance_atr=entry_chase_atr,
         )
         _record_monthly_open(monthly_stats, timestamp, Direction.LONG)
         _vbp_count(stats, "entry_count")

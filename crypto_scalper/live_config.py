@@ -315,6 +315,17 @@ class VbpEntryConfig:
     breakout_close_position_min: float = 0.0
     breakout_upper_wick_ratio_max: float = 1.0
     breakout_volume_ratio_min: float = 0.0
+    pullback_quality_enabled: bool = False
+    pullback_depth_atr_min: float = 0.0
+    pullback_depth_atr_max: float = 999.0
+    pullback_depth_to_breakout_max: float = 999.0
+    pullback_bars_max: int = 999
+    pullback_require_hold_breakout_level: bool = False
+    confirmation_quality_enabled: bool = False
+    confirmation_body_atr_min: float = 0.0
+    confirmation_close_position_min: float = 0.0
+    confirmation_upper_wick_ratio_max: float = 1.0
+    max_entry_chase_atr: float = 999.0
     relative_strength_enabled: bool = False
     relative_strength_lookback_minutes: int = 60
     relative_strength_min_vs_btc_pct: float = 0.0015
