@@ -57,7 +57,7 @@ from .mtf_4h_rsi_regime import (
     oi_change_at,
 )
 from .risk import BacktestExecutionConfig, BacktestExecutionStats, execution_config_from_live_config, market_exit_fill
-from .indicators import ema, macd
+from .indicators import atr, ema, macd
 from .realistic_data import load_funding_rate_directory
 from .regime_score import RegimeScoreEngine
 
@@ -134,6 +134,22 @@ class VbpRuntimeControl:
             self.weekly_peak_equity = {}
         if self.symbol_recent_pnl is None:
             self.symbol_recent_pnl = {}
+
+
+@dataclass(frozen=True)
+class VbpCompressionMetrics:
+    atr_percentile: float
+    range_atr: float
+    volume_contraction: float
+    prior_move_atr: float
+
+    def diagnostic_fields(self) -> dict[str, float]:
+        return {
+            "pre_breakout_atr_percentile": self.atr_percentile,
+            "pre_breakout_range_compression_atr": self.range_atr,
+            "pre_breakout_volume_contraction": self.volume_contraction,
+            "pre_breakout_prior_move_atr": self.prior_move_atr,
+        }
 
 
 @dataclass
@@ -2312,10 +2328,7 @@ def _vbp_process_symbol(
         _vbp_count(stats, "reject_no_zone_breakout")
         return cash, False
 
-    pullback_target = zone_top
-    if bool(vbp.entry.use_vwap_as_pullback_target):
-        pullback_target = max(zone_top, _vbp_vwap(candles[max(0, execution_index - int(structure.consolidation_bars)):execution_index + 1]))
-    tp2_price = _vbp_tp2_price(candles, execution_index, candle.close, zone_bottom, float(vbp.exit.tp1_rr_ratio))
+    compression = _vbp_compression_metrics(candles, execution_index, zone_top, zone_bottom, structure)
     alpha_event_id = alpha_diagnostics.record_vbp_breakout(
         symbol,
         candles,
@@ -2324,7 +2337,18 @@ def _vbp_process_symbol(
         zone_bottom,
         candle_rvol,
         decision_time=timestamp,
+        compression_metrics=compression.diagnostic_fields(),
     )
+    compression_allowed, compression_reason = _vbp_compression_allows(structure, compression)
+    if not compression_allowed:
+        alpha_diagnostics.mark_vbp(alpha_event_id, "rejected", compression_reason)
+        _vbp_count(stats, compression_reason)
+        return cash, False
+
+    pullback_target = zone_top
+    if bool(vbp.entry.use_vwap_as_pullback_target):
+        pullback_target = max(zone_top, _vbp_vwap(candles[max(0, execution_index - int(structure.consolidation_bars)):execution_index + 1]))
+    tp2_price = _vbp_tp2_price(candles, execution_index, candle.close, zone_bottom, float(vbp.exit.tp1_rr_ratio))
     breakouts[symbol] = VbpBreakoutState(
         symbol=symbol,
         breakout_index=execution_index,
@@ -2339,6 +2363,58 @@ def _vbp_process_symbol(
     )
     _vbp_count(stats, "breakout_detected")
     return cash, False
+
+
+def _vbp_compression_metrics(
+    candles: list[Candle],
+    index: int,
+    zone_top: float,
+    zone_bottom: float,
+    config: Any,
+) -> VbpCompressionMetrics:
+    atr_lookback = max(20, int(getattr(config, "compression_atr_lookback_bars", 80)))
+    recent_volume_bars = max(1, int(getattr(config, "compression_volume_recent_bars", 12)))
+    baseline_volume_bars = max(1, int(getattr(config, "compression_volume_baseline_bars", 48)))
+    prior_move_bars = max(1, int(getattr(config, "compression_prior_move_lookback_bars", 30)))
+    history_bars = max(atr_lookback + 30, recent_volume_bars + baseline_volume_bars, prior_move_bars + 2)
+    previous = candles[max(0, index - history_bars):index]
+    atr_values = atr(previous, 14)
+    atr_value = max(atr_values[-1] if atr_values else 0.0, 1e-12)
+    atr_history = atr_values[max(0, len(atr_values) - atr_lookback - 1):-1]
+    atr_percentile = sum(value <= atr_value for value in atr_history) / max(1, len(atr_history))
+
+    recent_volume = previous[-recent_volume_bars:]
+    baseline_end = max(0, len(previous) - len(recent_volume))
+    baseline_start = max(0, baseline_end - baseline_volume_bars)
+    baseline_volume = previous[baseline_start:baseline_end]
+    recent_average = sum(candle.volume for candle in recent_volume) / max(1, len(recent_volume))
+    baseline_average = sum(candle.volume for candle in baseline_volume) / max(1, len(baseline_volume))
+    volume_contraction = recent_average / max(baseline_average, 1e-12)
+
+    if len(previous) > prior_move_bars:
+        prior_move = max(0.0, previous[-1].close - previous[-1 - prior_move_bars].close) / atr_value
+    else:
+        prior_move = 0.0
+    return VbpCompressionMetrics(
+        atr_percentile=atr_percentile,
+        range_atr=max(0.0, zone_top - zone_bottom) / atr_value,
+        volume_contraction=volume_contraction,
+        prior_move_atr=prior_move,
+    )
+
+
+def _vbp_compression_allows(config: Any, metrics: VbpCompressionMetrics) -> tuple[bool, str]:
+    if not bool(getattr(config, "compression_quality_enabled", False)):
+        return True, "ok"
+    if metrics.atr_percentile > float(getattr(config, "compression_atr_percentile_max", 1.0)):
+        return False, "reject_compression_atr_percentile"
+    if metrics.range_atr > float(getattr(config, "compression_range_atr_max", 999.0)):
+        return False, "reject_compression_range_atr"
+    if metrics.volume_contraction > float(getattr(config, "compression_volume_contraction_max", 999.0)):
+        return False, "reject_compression_volume_contraction"
+    if metrics.prior_move_atr > float(getattr(config, "compression_prior_move_max_atr", 999.0)):
+        return False, "reject_compression_prior_extension"
+    return True, "ok"
 
 
 def _vbp_process_pending(

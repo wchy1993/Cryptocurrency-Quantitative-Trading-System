@@ -292,6 +292,15 @@ class VbpStructureFilterConfig:
     funding_rate_max: float = 0.0001
     daily_high_lookback_days: int = 90
     daily_high_zone_pct: float = 0.9
+    compression_quality_enabled: bool = False
+    compression_atr_lookback_bars: int = 80
+    compression_atr_percentile_max: float = 1.0
+    compression_range_atr_max: float = 999.0
+    compression_volume_recent_bars: int = 12
+    compression_volume_baseline_bars: int = 48
+    compression_volume_contraction_max: float = 999.0
+    compression_prior_move_lookback_bars: int = 30
+    compression_prior_move_max_atr: float = 999.0
 
 
 @dataclass(frozen=True)
