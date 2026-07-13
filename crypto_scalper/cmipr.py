@@ -89,6 +89,7 @@ class CmiprIgnitionSnapshot:
     ranking_score: float
     ranking_percentile: float
     quality_score: float
+    setup_atr_value: float
     stop_price: float
     stop_loss_pct: float
     take_profit_pct: float
@@ -376,7 +377,7 @@ class CmiprEngine:
         )
 
     def rankings(self, decision_time: datetime) -> dict[str, tuple[float, float, float]]:
-        cache_key = ("rankings", decision_time)
+        cache_key = ("rankings", self.cmipr.ranking, decision_time)
         cached = self.shared_feature_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -462,7 +463,7 @@ class CmiprEngine:
         }
 
     def _raw_regime_snapshot(self, decision_time: datetime) -> CmiprRegimeSnapshot:
-        cache_key = ("raw_regime", decision_time)
+        cache_key = ("raw_regime", self.cmipr.regime, decision_time)
         cached = self.shared_feature_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -543,13 +544,15 @@ class CmiprEngine:
             return None, "ranking_not_bottom"
         if extension > cfg.ranking.max_extension_atr:
             return None, "ranking_overextended"
-        compression, reason = self._compression(symbol, decision_time)
-        if compression is None:
-            return None, reason
         candles = self._closed("15m", symbol, decision_time, max(50, cfg.ignition.breakout_lookback_15m + 5))
         if len(candles) < cfg.ignition.breakout_lookback_15m + 2:
             return None, "ignition_warmup"
         latest = candles[-1]
+        # Compression must be known before the ignition candle starts. Using
+        # decision_time here would include the 30m bar containing the breakout.
+        compression, reason = self._compression(symbol, latest.timestamp)
+        if compression is None:
+            return None, reason
         previous = candles[-cfg.ignition.breakout_lookback_15m - 1:-1]
         breakout_level = max(item.high for item in previous) if direction == Direction.LONG else min(item.low for item in previous)
         distance = direction.value * (latest.close - breakout_level) / max(compression.atr_value, 1e-12)
@@ -606,13 +609,14 @@ class CmiprEngine:
             ranking_score=score,
             ranking_percentile=percentile,
             quality_score=quality,
+            setup_atr_value=compression.atr_value,
             stop_price=stop,
             stop_loss_pct=stop_pct,
             take_profit_pct=max(stop_pct * 20.0, 0.25),
         ), ""
 
     def _compression(self, symbol: str, decision_time: datetime) -> tuple[CmiprCompressionSnapshot | None, str]:
-        cache_key = ("compression", symbol, decision_time)
+        cache_key = ("compression", self.cmipr.compression, symbol, decision_time)
         cached = self.shared_feature_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -694,10 +698,7 @@ class CmiprEngine:
         if runtime.last_processed_5m == latest.timestamp:
             return None
         runtime.last_processed_5m = latest.timestamp
-        atr_value = self._compression(symbol, decision_time)[0]
-        if atr_value is None:
-            return None
-        atr_price = atr_value.atr_value
+        atr_price = ignition.setup_atr_value
         if ignition.direction == Direction.LONG:
             extreme = min(item.low for item in after)
             depth = (ignition.candle.close - extreme) / max(atr_price, 1e-12)
@@ -739,6 +740,7 @@ class CmiprEngine:
             ranking_score=ignition.ranking_score,
             ranking_percentile=ignition.ranking_percentile,
             quality_score=ignition.quality_score,
+            setup_atr_value=ignition.setup_atr_value,
             stop_price=stop,
             stop_loss_pct=abs(latest.close - stop) / max(latest.close, 1e-12),
             take_profit_pct=ignition.take_profit_pct,

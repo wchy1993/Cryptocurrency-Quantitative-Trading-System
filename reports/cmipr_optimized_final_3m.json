@@ -1,0 +1,282 @@
+{
+  "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+  "experiment_budget": 24,
+  "variants_requested": [
+    "baseline"
+  ],
+  "time_alignment": {
+    "mode": "utc_intersection",
+    "symbols": 100,
+    "aligned_minutes": 131040,
+    "first_timestamp": "2026-03-10T00:00:00",
+    "last_timestamp": "2026-06-08T23:59:00",
+    "original_min_minutes": 131040,
+    "original_max_minutes": 132481,
+    "dropped_minutes_from_shortest_series": 0
+  },
+  "results": {
+    "baseline": {
+      "final_equity": 161.34066854299996,
+      "net_pnl": 1.3406685429999874,
+      "net_return_pct": 0.8379178393749687,
+      "trade_count": 30,
+      "win_rate_pct": 26.666666666666668,
+      "profit_factor": 1.6410921582840459,
+      "max_drawdown_pct": 0.654517618749999,
+      "fee": 0.840517457,
+      "slippage_cost": 0.7491056277336142,
+      "funding": 0.0,
+      "monthly": [
+        {
+          "month": "2026-03",
+          "start_equity": 160.0,
+          "end_equity": 160.0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-04",
+          "start_equity": 160.0,
+          "end_equity": 159.02895405499999,
+          "pnl": -0.9710459450000144,
+          "return_pct": -0.606903715625009,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 3,
+            "losses": 11,
+            "pnl": -0.9710459449999984,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.12186782825305212
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-05",
+          "start_equity": 159.02895405499999,
+          "end_equity": 161.36557146299995,
+          "pnl": 2.3366174079999666,
+          "return_pct": 1.4693031353220434,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 4,
+            "losses": 10,
+            "pnl": 2.3366174079999844,
+            "win_rate_pct": 28.57142857142857,
+            "profit_factor": 3.5098982965764978
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-06",
+          "start_equity": 161.36557146299995,
+          "end_equity": 161.34066854299996,
+          "pnl": -0.02490291999998817,
+          "return_pct": -0.015432610422538767,
+          "opened": 2,
+          "closed": 2,
+          "long": {
+            "opened": 2,
+            "closed": 2,
+            "wins": 1,
+            "losses": 1,
+            "pnl": -0.02490291999999872,
+            "win_rate_pct": 50.0,
+            "profit_factor": 0.5427008556551354
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        }
+      ],
+      "cmipr_report": {
+        "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+        "model_variant": "core",
+        "stats": {
+          "entry_ready_count": 68,
+          "ignition_count": 159,
+          "pending_expired": 20,
+          "pending_regime_invalidated": 8,
+          "pullback_confirmed": 68
+        },
+        "reject_reasons": {
+          "compression_atr_percentile": 43427,
+          "compression_atr_ratio": 3241,
+          "compression_channel": 318,
+          "compression_failed_breakouts": 459,
+          "compression_prior_move": 909,
+          "compression_volume": 18739,
+          "entry_chase": 63,
+          "ignition_body": 147,
+          "ignition_breakout_distance": 8513,
+          "ignition_close_position": 153,
+          "ignition_volume": 230,
+          "ranking_not_top": 249731,
+          "ranking_overextended": 4468,
+          "regime_not_expansion": 1052399,
+          "short_disabled": 425244,
+          "stop_too_tight": 12,
+          "stop_too_wide": 3,
+          "target_to_cost": 74
+        },
+        "regime_observations": {
+          "BEAR_EXPANSION": 5844,
+          "BULL_EXPANSION": 4404,
+          "CHAOS_NO_TRADE": 1416,
+          "NEUTRAL": 13554
+        },
+        "states": {
+          "COOLDOWN": 15,
+          "IDLE": 47,
+          "INITIAL_ENTRY_READY": 9,
+          "ORDER_PENDING": 29
+        },
+        "derivatives_coverage": {
+          "model_variant": "core",
+          "requested_start": null,
+          "requested_end": null,
+          "oi_symbols": 100,
+          "taker_symbols": 100,
+          "funding_symbols": 93,
+          "basis_symbols": 0,
+          "oi_time_range": [
+            "2026-05-20T00:00:00",
+            "2026-06-08T23:55:00"
+          ],
+          "taker_time_range": [
+            "2026-05-19T23:55:00",
+            "2026-06-08T23:50:00"
+          ],
+          "funding_time_range": [
+            "2026-05-20T00:00:00.001000",
+            "2026-06-08T23:00:00"
+          ],
+          "basis_time_range": [
+            null,
+            null
+          ],
+          "eligible": true,
+          "reason": "core_model_does_not_require_derivatives_history"
+        },
+        "execution_stats": {
+          "addon_1_confirmed": 2,
+          "addon_1_fill_count": 2,
+          "cmipr_fail_fast_lost_breakout": 9,
+          "cmipr_fail_fast_no_extension": 17,
+          "cmipr_fixed_r_take_profit": 2,
+          "consecutive_loss_pause_count": 5,
+          "initial_fill_count": 30,
+          "initial_reject_execution_capacity_or_exchange_rules": 8,
+          "initial_reject_point_in_time_universe": 21,
+          "stop_loss_count": 2
+        },
+        "historical_test_policy": {
+          "historical_test_start": "2026-04-01T00:00:00",
+          "historical_test_end": "2026-06-30T23:59:59",
+          "is_untouched_final_holdout": false,
+          "final_acceptance_source": "post_freeze_shadow_or_dry_run"
+        },
+        "by_addon_count": {
+          "no_addon": {
+            "trades": 28,
+            "net_pnl": -1.813775087,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.13267377590236037,
+            "average_net_pnl": -0.06477768167857142
+          },
+          "one_addon": {
+            "trades": 2,
+            "net_pnl": 3.1544436299999874,
+            "win_rate_pct": 100.0,
+            "profit_factor": Infinity,
+            "average_net_pnl": 1.5772218149999937
+          },
+          "two_addons": {
+            "trades": 0,
+            "net_pnl": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "average_net_pnl": 0.0
+          }
+        }
+      },
+      "top5_profit_contribution_pct": 98.3322838012557,
+      "top_symbol_profit_contribution_pct": 51.36347665725277
+    }
+  },
+  "top_winner_exclusion": {
+    "excluded_count": 5,
+    "remaining": {
+      "trade_count": 25,
+      "net_pnl": -2.0339916670000044,
+      "profit_factor": 0.027368759760025563
+    },
+    "note": "Analytical concentration stress; portfolio path is not replayed after deleting trades."
+  },
+  "top_symbol_exclusion": {
+    "excluded_symbol": "ZECUSDT",
+    "remaining": {
+      "trade_count": 29,
+      "net_pnl": -0.4220717720000069,
+      "profit_factor": 0.7981701706398143
+    },
+    "note": "Analytical concentration stress; portfolio path is not replayed after deleting a symbol."
+  },
+  "bounded_selection": {
+    "selected": "baseline",
+    "best_pf": 1.6410921582840459,
+    "pf_tolerance": 0.03,
+    "near_optimal_candidates": [
+      "baseline"
+    ],
+    "rule": "prefer simpler variant first, then lower drawdown, within PF tolerance"
+  },
+  "acceptance_note": "2026-04 through 2026-06 is historical test, never untouched final holdout; final acceptance requires post-freeze shadow/dry-run."
+}

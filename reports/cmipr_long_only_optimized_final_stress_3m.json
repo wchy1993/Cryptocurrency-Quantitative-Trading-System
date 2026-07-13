@@ -1,0 +1,2171 @@
+{
+  "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+  "experiment_budget": 24,
+  "variants_requested": [
+    "baseline",
+    "fixed_risk",
+    "no_compounding",
+    "extra_entry_addon_delay",
+    "higher_cost",
+    "no_addon",
+    "one_addon",
+    "two_addons",
+    "no_runner"
+  ],
+  "time_alignment": {
+    "mode": "utc_intersection",
+    "symbols": 100,
+    "aligned_minutes": 131040,
+    "first_timestamp": "2026-03-10T00:00:00",
+    "last_timestamp": "2026-06-08T23:59:00",
+    "original_min_minutes": 131040,
+    "original_max_minutes": 132481,
+    "dropped_minutes_from_shortest_series": 0
+  },
+  "results": {
+    "baseline": {
+      "final_equity": 160.86720698299996,
+      "net_pnl": 0.8672069829999969,
+      "net_return_pct": 0.5420043643749706,
+      "trade_count": 30,
+      "win_rate_pct": 26.666666666666668,
+      "profit_factor": 1.4152626579423595,
+      "max_drawdown_pct": 0.9499387921386784,
+      "fee": 0.839599017,
+      "slippage_cost": 0.7485516277336072,
+      "funding": 0.0,
+      "monthly": [
+        {
+          "month": "2026-03",
+          "start_equity": 160.0,
+          "end_equity": 160.0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-04",
+          "start_equity": 160.0,
+          "end_equity": 159.02895405499999,
+          "pnl": -0.9710459450000144,
+          "return_pct": -0.606903715625009,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 3,
+            "losses": 11,
+            "pnl": -0.9710459449999984,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.12186782825305212
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-05",
+          "start_equity": 159.02895405499999,
+          "end_equity": 160.89216630299998,
+          "pnl": 1.8632122479999964,
+          "return_pct": 1.171618249690309,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 4,
+            "losses": 10,
+            "pnl": 1.8632122479999937,
+            "win_rate_pct": 28.57142857142857,
+            "profit_factor": 3.0076231574994243
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-06",
+          "start_equity": 160.89216630299998,
+          "end_equity": 160.86720698299996,
+          "pnl": -0.02495932000002199,
+          "return_pct": -0.015513073491109182,
+          "opened": 2,
+          "closed": 2,
+          "long": {
+            "opened": 2,
+            "closed": 2,
+            "wins": 1,
+            "losses": 1,
+            "pnl": -0.024959319999998723,
+            "win_rate_pct": 50.0,
+            "profit_factor": 0.5416651669993049
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        }
+      ],
+      "cmipr_report": {
+        "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+        "model_variant": "core",
+        "stats": {
+          "entry_ready_count": 68,
+          "ignition_count": 159,
+          "pending_expired": 20,
+          "pending_regime_invalidated": 8,
+          "pullback_confirmed": 68
+        },
+        "reject_reasons": {
+          "compression_atr_percentile": 43420,
+          "compression_atr_ratio": 3241,
+          "compression_channel": 318,
+          "compression_failed_breakouts": 459,
+          "compression_prior_move": 909,
+          "compression_volume": 18739,
+          "entry_chase": 63,
+          "ignition_body": 147,
+          "ignition_breakout_distance": 8513,
+          "ignition_close_position": 153,
+          "ignition_volume": 230,
+          "ranking_not_top": 249728,
+          "ranking_overextended": 4468,
+          "regime_not_expansion": 1052399,
+          "short_disabled": 425244,
+          "stop_too_tight": 12,
+          "stop_too_wide": 3,
+          "target_to_cost": 74
+        },
+        "regime_observations": {
+          "BEAR_EXPANSION": 5844,
+          "BULL_EXPANSION": 4404,
+          "CHAOS_NO_TRADE": 1416,
+          "NEUTRAL": 13554
+        },
+        "states": {
+          "COOLDOWN": 15,
+          "IDLE": 47,
+          "INITIAL_ENTRY_READY": 9,
+          "ORDER_PENDING": 29
+        },
+        "derivatives_coverage": {
+          "model_variant": "core",
+          "requested_start": null,
+          "requested_end": null,
+          "oi_symbols": 100,
+          "taker_symbols": 100,
+          "funding_symbols": 93,
+          "basis_symbols": 0,
+          "oi_time_range": [
+            "2026-05-20T00:00:00",
+            "2026-06-08T23:55:00"
+          ],
+          "taker_time_range": [
+            "2026-05-19T23:55:00",
+            "2026-06-08T23:50:00"
+          ],
+          "funding_time_range": [
+            "2026-05-20T00:00:00.001000",
+            "2026-06-08T23:00:00"
+          ],
+          "basis_time_range": [
+            null,
+            null
+          ],
+          "eligible": true,
+          "reason": "core_model_does_not_require_derivatives_history"
+        },
+        "execution_stats": {
+          "addon_1_confirmed": 2,
+          "addon_1_fill_count": 2,
+          "cmipr_fail_fast_lost_breakout": 9,
+          "cmipr_fail_fast_no_extension": 17,
+          "cmipr_max_profit_giveback": 2,
+          "consecutive_loss_pause_count": 5,
+          "initial_fill_count": 30,
+          "initial_reject_execution_capacity_or_exchange_rules": 8,
+          "initial_reject_point_in_time_universe": 21,
+          "stop_loss_count": 2
+        },
+        "historical_test_policy": {
+          "historical_test_start": "2026-04-01T00:00:00",
+          "historical_test_end": "2026-06-30T23:59:59",
+          "is_untouched_final_holdout": false,
+          "final_acceptance_source": "post_freeze_shadow_or_dry_run"
+        },
+        "by_addon_count": {
+          "no_addon": {
+            "trades": 28,
+            "net_pnl": -1.8109392119999999,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.13283051763991008,
+            "average_net_pnl": -0.06467640042857142
+          },
+          "one_addon": {
+            "trades": 2,
+            "net_pnl": 2.678146194999997,
+            "win_rate_pct": 100.0,
+            "profit_factor": Infinity,
+            "average_net_pnl": 1.3390730974999985
+          },
+          "two_addons": {
+            "trades": 0,
+            "net_pnl": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "average_net_pnl": 0.0
+          }
+        }
+      },
+      "top5_profit_contribution_pct": 98.0654009854275,
+      "top_symbol_profit_contribution_pct": 56.07923827445529
+    },
+    "fixed_risk": {
+      "final_equity": 160.87158056299992,
+      "net_pnl": 0.8715805629999953,
+      "net_return_pct": 0.5447378518749435,
+      "trade_count": 30,
+      "win_rate_pct": 26.666666666666668,
+      "profit_factor": 1.417068722991096,
+      "max_drawdown_pct": 0.9530272333669398,
+      "fee": 0.840005437,
+      "slippage_cost": 0.7488767911700512,
+      "funding": 0.0,
+      "monthly": [
+        {
+          "month": "2026-03",
+          "start_equity": 160.0,
+          "end_equity": 160.0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-04",
+          "start_equity": 160.0,
+          "end_equity": 159.02712436999997,
+          "pnl": -0.9728756300000327,
+          "return_pct": -0.6080472687500205,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 3,
+            "losses": 11,
+            "pnl": -0.9728756299999985,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.12166651724963216
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-05",
+          "start_equity": 159.02712436999997,
+          "end_equity": 160.89670908299993,
+          "pnl": 1.8695847129999663,
+          "return_pct": 1.1756388857602071,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 4,
+            "losses": 10,
+            "pnl": 1.869584712999992,
+            "win_rate_pct": 28.57142857142857,
+            "profit_factor": 3.0153287931033455
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-06",
+          "start_equity": 160.89670908299993,
+          "end_equity": 160.87158056299992,
+          "pnl": -0.025128520000009757,
+          "return_pct": -0.015617796127232781,
+          "opened": 2,
+          "closed": 2,
+          "long": {
+            "opened": 2,
+            "closed": 2,
+            "wins": 1,
+            "losses": 1,
+            "pnl": -0.025128519999998725,
+            "win_rate_pct": 50.0,
+            "profit_factor": 0.5385581010318137
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        }
+      ],
+      "cmipr_report": {
+        "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+        "model_variant": "core",
+        "stats": {
+          "entry_ready_count": 68,
+          "ignition_count": 159,
+          "pending_expired": 20,
+          "pending_regime_invalidated": 8,
+          "pullback_confirmed": 68
+        },
+        "reject_reasons": {
+          "compression_atr_percentile": 43420,
+          "compression_atr_ratio": 3241,
+          "compression_channel": 318,
+          "compression_failed_breakouts": 459,
+          "compression_prior_move": 909,
+          "compression_volume": 18739,
+          "entry_chase": 63,
+          "ignition_body": 147,
+          "ignition_breakout_distance": 8513,
+          "ignition_close_position": 153,
+          "ignition_volume": 230,
+          "ranking_not_top": 249728,
+          "ranking_overextended": 4468,
+          "regime_not_expansion": 1052399,
+          "short_disabled": 425244,
+          "stop_too_tight": 12,
+          "stop_too_wide": 3,
+          "target_to_cost": 74
+        },
+        "regime_observations": {
+          "BEAR_EXPANSION": 5844,
+          "BULL_EXPANSION": 4404,
+          "CHAOS_NO_TRADE": 1416,
+          "NEUTRAL": 13554
+        },
+        "states": {
+          "COOLDOWN": 15,
+          "IDLE": 47,
+          "INITIAL_ENTRY_READY": 9,
+          "ORDER_PENDING": 29
+        },
+        "derivatives_coverage": {
+          "model_variant": "core",
+          "requested_start": null,
+          "requested_end": null,
+          "oi_symbols": 100,
+          "taker_symbols": 100,
+          "funding_symbols": 93,
+          "basis_symbols": 0,
+          "oi_time_range": [
+            "2026-05-20T00:00:00",
+            "2026-06-08T23:55:00"
+          ],
+          "taker_time_range": [
+            "2026-05-19T23:55:00",
+            "2026-06-08T23:50:00"
+          ],
+          "funding_time_range": [
+            "2026-05-20T00:00:00.001000",
+            "2026-06-08T23:00:00"
+          ],
+          "basis_time_range": [
+            null,
+            null
+          ],
+          "eligible": true,
+          "reason": "core_model_does_not_require_derivatives_history"
+        },
+        "execution_stats": {
+          "addon_1_confirmed": 2,
+          "addon_1_fill_count": 2,
+          "cmipr_fail_fast_lost_breakout": 9,
+          "cmipr_fail_fast_no_extension": 17,
+          "cmipr_max_profit_giveback": 2,
+          "consecutive_loss_pause_count": 5,
+          "initial_fill_count": 30,
+          "initial_reject_execution_capacity_or_exchange_rules": 8,
+          "initial_reject_point_in_time_universe": 21,
+          "stop_loss_count": 2
+        },
+        "historical_test_policy": {
+          "historical_test_start": "2026-04-01T00:00:00",
+          "historical_test_end": "2026-06-30T23:59:59",
+          "is_untouched_final_holdout": false,
+          "final_acceptance_source": "post_freeze_shadow_or_dry_run"
+        },
+        "by_addon_count": {
+          "no_addon": {
+            "trades": 28,
+            "net_pnl": -1.812551612,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.1326578192952459,
+            "average_net_pnl": -0.06473398614285715
+          },
+          "one_addon": {
+            "trades": 2,
+            "net_pnl": 2.684132174999995,
+            "win_rate_pct": 100.0,
+            "profit_factor": Infinity,
+            "average_net_pnl": 1.3420660874999975
+          },
+          "two_addons": {
+            "trades": 0,
+            "net_pnl": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "average_net_pnl": 0.0
+          }
+        }
+      },
+      "top5_profit_contribution_pct": 98.07491457426796,
+      "top_symbol_profit_contribution_pct": 56.13694471931889
+    },
+    "no_compounding": {
+      "final_equity": 160.87158056299992,
+      "net_pnl": 0.8715805629999953,
+      "net_return_pct": 0.5447378518749435,
+      "trade_count": 30,
+      "win_rate_pct": 26.666666666666668,
+      "profit_factor": 1.417068722991096,
+      "max_drawdown_pct": 0.9530272333669398,
+      "fee": 0.840005437,
+      "slippage_cost": 0.7488767911700512,
+      "funding": 0.0,
+      "monthly": [
+        {
+          "month": "2026-03",
+          "start_equity": 160.0,
+          "end_equity": 160.0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-04",
+          "start_equity": 160.0,
+          "end_equity": 159.02712436999997,
+          "pnl": -0.9728756300000327,
+          "return_pct": -0.6080472687500205,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 3,
+            "losses": 11,
+            "pnl": -0.9728756299999985,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.12166651724963216
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-05",
+          "start_equity": 159.02712436999997,
+          "end_equity": 160.89670908299993,
+          "pnl": 1.8695847129999663,
+          "return_pct": 1.1756388857602071,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 4,
+            "losses": 10,
+            "pnl": 1.869584712999992,
+            "win_rate_pct": 28.57142857142857,
+            "profit_factor": 3.0153287931033455
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-06",
+          "start_equity": 160.89670908299993,
+          "end_equity": 160.87158056299992,
+          "pnl": -0.025128520000009757,
+          "return_pct": -0.015617796127232781,
+          "opened": 2,
+          "closed": 2,
+          "long": {
+            "opened": 2,
+            "closed": 2,
+            "wins": 1,
+            "losses": 1,
+            "pnl": -0.025128519999998725,
+            "win_rate_pct": 50.0,
+            "profit_factor": 0.5385581010318137
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        }
+      ],
+      "cmipr_report": {
+        "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+        "model_variant": "core",
+        "stats": {
+          "entry_ready_count": 68,
+          "ignition_count": 159,
+          "pending_expired": 20,
+          "pending_regime_invalidated": 8,
+          "pullback_confirmed": 68
+        },
+        "reject_reasons": {
+          "compression_atr_percentile": 43420,
+          "compression_atr_ratio": 3241,
+          "compression_channel": 318,
+          "compression_failed_breakouts": 459,
+          "compression_prior_move": 909,
+          "compression_volume": 18739,
+          "entry_chase": 63,
+          "ignition_body": 147,
+          "ignition_breakout_distance": 8513,
+          "ignition_close_position": 153,
+          "ignition_volume": 230,
+          "ranking_not_top": 249728,
+          "ranking_overextended": 4468,
+          "regime_not_expansion": 1052399,
+          "short_disabled": 425244,
+          "stop_too_tight": 12,
+          "stop_too_wide": 3,
+          "target_to_cost": 74
+        },
+        "regime_observations": {
+          "BEAR_EXPANSION": 5844,
+          "BULL_EXPANSION": 4404,
+          "CHAOS_NO_TRADE": 1416,
+          "NEUTRAL": 13554
+        },
+        "states": {
+          "COOLDOWN": 15,
+          "IDLE": 47,
+          "INITIAL_ENTRY_READY": 9,
+          "ORDER_PENDING": 29
+        },
+        "derivatives_coverage": {
+          "model_variant": "core",
+          "requested_start": null,
+          "requested_end": null,
+          "oi_symbols": 100,
+          "taker_symbols": 100,
+          "funding_symbols": 93,
+          "basis_symbols": 0,
+          "oi_time_range": [
+            "2026-05-20T00:00:00",
+            "2026-06-08T23:55:00"
+          ],
+          "taker_time_range": [
+            "2026-05-19T23:55:00",
+            "2026-06-08T23:50:00"
+          ],
+          "funding_time_range": [
+            "2026-05-20T00:00:00.001000",
+            "2026-06-08T23:00:00"
+          ],
+          "basis_time_range": [
+            null,
+            null
+          ],
+          "eligible": true,
+          "reason": "core_model_does_not_require_derivatives_history"
+        },
+        "execution_stats": {
+          "addon_1_confirmed": 2,
+          "addon_1_fill_count": 2,
+          "cmipr_fail_fast_lost_breakout": 9,
+          "cmipr_fail_fast_no_extension": 17,
+          "cmipr_max_profit_giveback": 2,
+          "consecutive_loss_pause_count": 5,
+          "initial_fill_count": 30,
+          "initial_reject_execution_capacity_or_exchange_rules": 8,
+          "initial_reject_point_in_time_universe": 21,
+          "stop_loss_count": 2
+        },
+        "historical_test_policy": {
+          "historical_test_start": "2026-04-01T00:00:00",
+          "historical_test_end": "2026-06-30T23:59:59",
+          "is_untouched_final_holdout": false,
+          "final_acceptance_source": "post_freeze_shadow_or_dry_run"
+        },
+        "by_addon_count": {
+          "no_addon": {
+            "trades": 28,
+            "net_pnl": -1.812551612,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.1326578192952459,
+            "average_net_pnl": -0.06473398614285715
+          },
+          "one_addon": {
+            "trades": 2,
+            "net_pnl": 2.684132174999995,
+            "win_rate_pct": 100.0,
+            "profit_factor": Infinity,
+            "average_net_pnl": 1.3420660874999975
+          },
+          "two_addons": {
+            "trades": 0,
+            "net_pnl": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "average_net_pnl": 0.0
+          }
+        }
+      },
+      "top5_profit_contribution_pct": 98.07491457426796,
+      "top_symbol_profit_contribution_pct": 56.13694471931889
+    },
+    "extra_entry_addon_delay": {
+      "final_equity": 158.69152408000008,
+      "net_pnl": -1.3084759200000105,
+      "net_return_pct": -0.8177974499999463,
+      "trade_count": 26,
+      "win_rate_pct": 23.076923076923077,
+      "profit_factor": 0.5058815098066203,
+      "max_drawdown_pct": 1.308295950452264,
+      "fee": 0.7214467999999998,
+      "slippage_cost": 0.6839618021897671,
+      "funding": -0.0022691200000000003,
+      "monthly": [
+        {
+          "month": "2026-03",
+          "start_equity": 160.0,
+          "end_equity": 160.0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-04",
+          "start_equity": 160.0,
+          "end_equity": 158.9361484,
+          "pnl": -1.0638515999999925,
+          "return_pct": -0.6649072499999953,
+          "opened": 11,
+          "closed": 11,
+          "long": {
+            "opened": 11,
+            "closed": 11,
+            "wins": 3,
+            "losses": 8,
+            "pnl": -1.0638516000000044,
+            "win_rate_pct": 27.27272727272727,
+            "profit_factor": 0.043171177331822005
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-05",
+          "start_equity": 158.9361484,
+          "end_equity": 158.69152408000008,
+          "pnl": -0.24462431999992873,
+          "return_pct": -0.15391358256919274,
+          "opened": 15,
+          "closed": 15,
+          "long": {
+            "opened": 15,
+            "closed": 15,
+            "wins": 3,
+            "losses": 12,
+            "pnl": -0.2446243200000064,
+            "win_rate_pct": 20.0,
+            "profit_factor": 0.8407652889978535
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-06",
+          "start_equity": 158.69152408000008,
+          "end_equity": 158.69152408000008,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        }
+      ],
+      "cmipr_report": {
+        "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+        "model_variant": "core",
+        "stats": {
+          "entry_ready_count": 69,
+          "ignition_count": 159,
+          "pending_expired": 19,
+          "pending_regime_invalidated": 7,
+          "pullback_confirmed": 69
+        },
+        "reject_reasons": {
+          "compression_atr_percentile": 42227,
+          "compression_atr_ratio": 3165,
+          "compression_channel": 339,
+          "compression_failed_breakouts": 451,
+          "compression_prior_move": 854,
+          "compression_volume": 18106,
+          "entry_chase": 64,
+          "ignition_body": 146,
+          "ignition_breakout_distance": 8317,
+          "ignition_close_position": 150,
+          "ignition_volume": 228,
+          "ranking_not_top": 241081,
+          "ranking_overextended": 4420,
+          "regime_not_expansion": 1021643,
+          "short_disabled": 412620,
+          "stop_too_tight": 12,
+          "stop_too_wide": 3,
+          "target_to_cost": 68
+        },
+        "regime_observations": {
+          "BEAR_EXPANSION": 5844,
+          "BULL_EXPANSION": 4333,
+          "CHAOS_NO_TRADE": 1428,
+          "NEUTRAL": 13613
+        },
+        "states": {
+          "COOLDOWN": 14,
+          "IDLE": 43,
+          "INITIAL_ENTRY_READY": 8,
+          "ORDER_PENDING": 35
+        },
+        "derivatives_coverage": {
+          "model_variant": "core",
+          "requested_start": null,
+          "requested_end": null,
+          "oi_symbols": 100,
+          "taker_symbols": 100,
+          "funding_symbols": 93,
+          "basis_symbols": 0,
+          "oi_time_range": [
+            "2026-05-20T00:00:00",
+            "2026-06-08T23:55:00"
+          ],
+          "taker_time_range": [
+            "2026-05-19T23:55:00",
+            "2026-06-08T23:50:00"
+          ],
+          "funding_time_range": [
+            "2026-05-20T00:00:00.001000",
+            "2026-06-08T23:00:00"
+          ],
+          "basis_time_range": [
+            null,
+            null
+          ],
+          "eligible": true,
+          "reason": "core_model_does_not_require_derivatives_history"
+        },
+        "execution_stats": {
+          "addon_1_confirmed": 1,
+          "addon_1_fill_count": 1,
+          "cmipr_fail_fast_lost_breakout": 9,
+          "cmipr_fail_fast_no_extension": 13,
+          "cmipr_max_profit_giveback": 1,
+          "consecutive_loss_pause_count": 5,
+          "initial_fill_count": 26,
+          "initial_reject_execution_capacity_or_exchange_rules": 14,
+          "initial_reject_point_in_time_universe": 21,
+          "stop_loss_count": 3
+        },
+        "historical_test_policy": {
+          "historical_test_start": "2026-04-01T00:00:00",
+          "historical_test_end": "2026-06-30T23:59:59",
+          "is_untouched_final_holdout": false,
+          "final_acceptance_source": "post_freeze_shadow_or_dry_run"
+        },
+        "by_addon_count": {
+          "no_addon": {
+            "trades": 25,
+            "net_pnl": -2.455930520000007,
+            "win_rate_pct": 20.0,
+            "profit_factor": 0.07256934421671636,
+            "average_net_pnl": -0.09823722080000027
+          },
+          "one_addon": {
+            "trades": 1,
+            "net_pnl": 1.1474545999999963,
+            "win_rate_pct": 100.0,
+            "profit_factor": Infinity,
+            "average_net_pnl": 1.1474545999999963
+          },
+          "two_addons": {
+            "trades": 0,
+            "net_pnl": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "average_net_pnl": 0.0
+          }
+        }
+      },
+      "top5_profit_contribution_pct": 99.77568732469497,
+      "top_symbol_profit_contribution_pct": 85.65487316497159
+    },
+    "higher_cost": {
+      "final_equity": 158.99686247699995,
+      "net_pnl": -1.0031375230000175,
+      "net_return_pct": -0.626960951875033,
+      "trade_count": 24,
+      "win_rate_pct": 25.0,
+      "profit_factor": 0.5275338631130814,
+      "max_drawdown_pct": 1.3282086855808126,
+      "fee": 0.8103354037499999,
+      "slippage_cost": 0.6719791479394761,
+      "funding": 0.0008328807499999999,
+      "monthly": [
+        {
+          "month": "2026-03",
+          "start_equity": 160.0,
+          "end_equity": 160.0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-04",
+          "start_equity": 160.0,
+          "end_equity": 159.27740663499995,
+          "pnl": -0.7225933650000513,
+          "return_pct": -0.45162085312503203,
+          "opened": 8,
+          "closed": 8,
+          "long": {
+            "opened": 8,
+            "closed": 8,
+            "wins": 3,
+            "losses": 5,
+            "pnl": -0.722593365000005,
+            "win_rate_pct": 37.5,
+            "profit_factor": 0.18007312371553758
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-05",
+          "start_equity": 159.27740663499995,
+          "end_equity": 159.14773456199993,
+          "pnl": -0.12967207300002315,
+          "return_pct": -0.08141272245672584,
+          "opened": 11,
+          "closed": 11,
+          "long": {
+            "opened": 11,
+            "closed": 11,
+            "wins": 2,
+            "losses": 9,
+            "pnl": -0.12967207300001055,
+            "win_rate_pct": 18.181818181818183,
+            "profit_factor": 0.8804813755793539
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-06",
+          "start_equity": 159.14773456199993,
+          "end_equity": 158.99686247699995,
+          "pnl": -0.15087208499997473,
+          "return_pct": -0.09480002050622893,
+          "opened": 5,
+          "closed": 5,
+          "long": {
+            "opened": 5,
+            "closed": 5,
+            "wins": 1,
+            "losses": 4,
+            "pnl": -0.15087208500000174,
+            "win_rate_pct": 20.0,
+            "profit_factor": 0.03873542604753763
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        }
+      ],
+      "cmipr_report": {
+        "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+        "model_variant": "core",
+        "stats": {
+          "entry_ready_count": 47,
+          "ignition_count": 113,
+          "pending_expired": 14,
+          "pending_regime_invalidated": 7,
+          "pullback_confirmed": 47
+        },
+        "reject_reasons": {
+          "compression_atr_percentile": 48672,
+          "compression_atr_ratio": 3824,
+          "compression_channel": 366,
+          "compression_failed_breakouts": 543,
+          "compression_prior_move": 1035,
+          "compression_volume": 21458,
+          "entry_chase": 45,
+          "ignition_body": 169,
+          "ignition_breakout_distance": 9380,
+          "ignition_close_position": 174,
+          "ignition_volume": 259,
+          "ranking_not_top": 285999,
+          "ranking_overextended": 5279,
+          "regime_not_expansion": 1235929,
+          "short_disabled": 489804,
+          "stop_too_tight": 22,
+          "stop_too_wide": 3,
+          "target_to_cost": 266
+        },
+        "regime_observations": {
+          "BEAR_EXPANSION": 5844,
+          "BULL_EXPANSION": 4440,
+          "CHAOS_NO_TRADE": 1416,
+          "NEUTRAL": 13590
+        },
+        "states": {
+          "COOLDOWN": 16,
+          "IDLE": 61,
+          "INITIAL_ENTRY_READY": 2,
+          "ORDER_PENDING": 21
+        },
+        "derivatives_coverage": {
+          "model_variant": "core",
+          "requested_start": null,
+          "requested_end": null,
+          "oi_symbols": 100,
+          "taker_symbols": 100,
+          "funding_symbols": 93,
+          "basis_symbols": 0,
+          "oi_time_range": [
+            "2026-05-20T00:00:00",
+            "2026-06-08T23:55:00"
+          ],
+          "taker_time_range": [
+            "2026-05-19T23:55:00",
+            "2026-06-08T23:50:00"
+          ],
+          "funding_time_range": [
+            "2026-05-20T00:00:00.001000",
+            "2026-06-08T23:00:00"
+          ],
+          "basis_time_range": [
+            null,
+            null
+          ],
+          "eligible": true,
+          "reason": "core_model_does_not_require_derivatives_history"
+        },
+        "execution_stats": {
+          "addon_1_confirmed": 1,
+          "addon_1_fill_count": 1,
+          "cmipr_fail_fast_lost_breakout": 10,
+          "cmipr_fail_fast_no_extension": 11,
+          "cmipr_max_profit_giveback": 1,
+          "consecutive_loss_pause_count": 4,
+          "initial_fill_count": 24,
+          "initial_reject_execution_capacity_or_exchange_rules": 7,
+          "initial_reject_point_in_time_universe": 14,
+          "stop_loss_count": 2
+        },
+        "historical_test_policy": {
+          "historical_test_start": "2026-04-01T00:00:00",
+          "historical_test_end": "2026-06-30T23:59:59",
+          "is_untouched_final_holdout": false,
+          "final_acceptance_source": "post_freeze_shadow_or_dry_run"
+        },
+        "by_addon_count": {
+          "no_addon": {
+            "trades": 23,
+            "net_pnl": -1.9439830755000092,
+            "win_rate_pct": 21.73913043478261,
+            "profit_factor": 0.0844065217416606,
+            "average_net_pnl": -0.0845210032826091
+          },
+          "one_addon": {
+            "trades": 1,
+            "net_pnl": 0.9408455524999922,
+            "win_rate_pct": 100.0,
+            "profit_factor": Infinity,
+            "average_net_pnl": 0.9408455524999922
+          },
+          "two_addons": {
+            "trades": 0,
+            "net_pnl": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "average_net_pnl": 0.0
+          }
+        }
+      },
+      "top5_profit_contribution_pct": 99.4572070976543,
+      "top_symbol_profit_contribution_pct": 83.99979079190082
+    },
+    "no_addon": {
+      "final_equity": 160.31154236799995,
+      "net_pnl": 0.31154236799999036,
+      "net_return_pct": 0.19471397999997198,
+      "trade_count": 29,
+      "win_rate_pct": 24.137931034482758,
+      "profit_factor": 1.1492198947709096,
+      "max_drawdown_pct": 0.9630239395879261,
+      "fee": 0.738673632,
+      "slippage_cost": 0.6352816277336132,
+      "funding": 0.0,
+      "monthly": [
+        {
+          "month": "2026-03",
+          "start_equity": 160.0,
+          "end_equity": 160.0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-04",
+          "start_equity": 160.0,
+          "end_equity": 159.02895405499999,
+          "pnl": -0.9710459450000144,
+          "return_pct": -0.606903715625009,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 3,
+            "losses": 11,
+            "pnl": -0.9710459449999984,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.12186782825305212
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-05",
+          "start_equity": 159.02895405499999,
+          "end_equity": 160.33661448799995,
+          "pnl": 1.3076604329999668,
+          "return_pct": 0.8222782076197985,
+          "opened": 13,
+          "closed": 13,
+          "long": {
+            "opened": 13,
+            "closed": 13,
+            "wins": 3,
+            "losses": 10,
+            "pnl": 1.3076604329999877,
+            "win_rate_pct": 23.076923076923077,
+            "profit_factor": 2.4098122616294986
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-06",
+          "start_equity": 160.33661448799995,
+          "end_equity": 160.31154236799995,
+          "pnl": -0.02507212000000436,
+          "return_pct": -0.01563717687320935,
+          "opened": 2,
+          "closed": 2,
+          "long": {
+            "opened": 2,
+            "closed": 2,
+            "wins": 1,
+            "losses": 1,
+            "pnl": -0.025072119999998727,
+            "win_rate_pct": 50.0,
+            "profit_factor": 0.539593789687644
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        }
+      ],
+      "cmipr_report": {
+        "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+        "model_variant": "core",
+        "stats": {
+          "entry_ready_count": 68,
+          "ignition_count": 159,
+          "pending_expired": 20,
+          "pending_regime_invalidated": 8,
+          "pullback_confirmed": 68
+        },
+        "reject_reasons": {
+          "compression_atr_percentile": 43217,
+          "compression_atr_ratio": 3229,
+          "compression_channel": 318,
+          "compression_failed_breakouts": 459,
+          "compression_prior_move": 909,
+          "compression_volume": 18663,
+          "entry_chase": 63,
+          "ignition_body": 147,
+          "ignition_breakout_distance": 8498,
+          "ignition_close_position": 153,
+          "ignition_volume": 230,
+          "ranking_not_top": 248852,
+          "ranking_overextended": 4450,
+          "regime_not_expansion": 1045691,
+          "short_disabled": 422724,
+          "stop_too_tight": 12,
+          "stop_too_wide": 3,
+          "target_to_cost": 74
+        },
+        "regime_observations": {
+          "BEAR_EXPANSION": 5844,
+          "BULL_EXPANSION": 4404,
+          "CHAOS_NO_TRADE": 1416,
+          "NEUTRAL": 13554
+        },
+        "states": {
+          "COOLDOWN": 14,
+          "IDLE": 47,
+          "INITIAL_ENTRY_READY": 11,
+          "ORDER_PENDING": 28
+        },
+        "derivatives_coverage": {
+          "model_variant": "core",
+          "requested_start": null,
+          "requested_end": null,
+          "oi_symbols": 100,
+          "taker_symbols": 100,
+          "funding_symbols": 93,
+          "basis_symbols": 0,
+          "oi_time_range": [
+            "2026-05-20T00:00:00",
+            "2026-06-08T23:55:00"
+          ],
+          "taker_time_range": [
+            "2026-05-19T23:55:00",
+            "2026-06-08T23:50:00"
+          ],
+          "funding_time_range": [
+            "2026-05-20T00:00:00.001000",
+            "2026-06-08T23:00:00"
+          ],
+          "basis_time_range": [
+            null,
+            null
+          ],
+          "eligible": true,
+          "reason": "core_model_does_not_require_derivatives_history"
+        },
+        "execution_stats": {
+          "cmipr_fail_fast_lost_breakout": 9,
+          "cmipr_fail_fast_no_extension": 16,
+          "cmipr_max_profit_giveback": 2,
+          "consecutive_loss_pause_count": 5,
+          "initial_fill_count": 29,
+          "initial_reject_execution_capacity_or_exchange_rules": 7,
+          "initial_reject_point_in_time_universe": 21,
+          "stop_loss_count": 2
+        },
+        "historical_test_policy": {
+          "historical_test_start": "2026-04-01T00:00:00",
+          "historical_test_end": "2026-06-30T23:59:59",
+          "is_untouched_final_holdout": false,
+          "final_acceptance_source": "post_freeze_shadow_or_dry_run"
+        },
+        "by_addon_count": {
+          "no_addon": {
+            "trades": 29,
+            "net_pnl": 0.31154236799999036,
+            "win_rate_pct": 24.137931034482758,
+            "profit_factor": 1.1492198947709096,
+            "average_net_pnl": 0.010742840275861736
+          },
+          "one_addon": {
+            "trades": 0,
+            "net_pnl": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "average_net_pnl": 0.0
+          },
+          "two_addons": {
+            "trades": 0,
+            "net_pnl": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "average_net_pnl": 0.0
+          }
+        }
+      },
+      "top5_profit_contribution_pct": 98.84632649711254,
+      "top_symbol_profit_contribution_pct": 48.5077941227864
+    },
+    "one_addon": {
+      "final_equity": 160.86720698299996,
+      "net_pnl": 0.8672069829999969,
+      "net_return_pct": 0.5420043643749706,
+      "trade_count": 30,
+      "win_rate_pct": 26.666666666666668,
+      "profit_factor": 1.4152626579423595,
+      "max_drawdown_pct": 0.9499387921386784,
+      "fee": 0.839599017,
+      "slippage_cost": 0.7485516277336072,
+      "funding": 0.0,
+      "monthly": [
+        {
+          "month": "2026-03",
+          "start_equity": 160.0,
+          "end_equity": 160.0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-04",
+          "start_equity": 160.0,
+          "end_equity": 159.02895405499999,
+          "pnl": -0.9710459450000144,
+          "return_pct": -0.606903715625009,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 3,
+            "losses": 11,
+            "pnl": -0.9710459449999984,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.12186782825305212
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-05",
+          "start_equity": 159.02895405499999,
+          "end_equity": 160.89216630299998,
+          "pnl": 1.8632122479999964,
+          "return_pct": 1.171618249690309,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 4,
+            "losses": 10,
+            "pnl": 1.8632122479999937,
+            "win_rate_pct": 28.57142857142857,
+            "profit_factor": 3.0076231574994243
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-06",
+          "start_equity": 160.89216630299998,
+          "end_equity": 160.86720698299996,
+          "pnl": -0.02495932000002199,
+          "return_pct": -0.015513073491109182,
+          "opened": 2,
+          "closed": 2,
+          "long": {
+            "opened": 2,
+            "closed": 2,
+            "wins": 1,
+            "losses": 1,
+            "pnl": -0.024959319999998723,
+            "win_rate_pct": 50.0,
+            "profit_factor": 0.5416651669993049
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        }
+      ],
+      "cmipr_report": {
+        "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+        "model_variant": "core",
+        "stats": {
+          "entry_ready_count": 68,
+          "ignition_count": 159,
+          "pending_expired": 20,
+          "pending_regime_invalidated": 8,
+          "pullback_confirmed": 68
+        },
+        "reject_reasons": {
+          "compression_atr_percentile": 43420,
+          "compression_atr_ratio": 3241,
+          "compression_channel": 318,
+          "compression_failed_breakouts": 459,
+          "compression_prior_move": 909,
+          "compression_volume": 18739,
+          "entry_chase": 63,
+          "ignition_body": 147,
+          "ignition_breakout_distance": 8513,
+          "ignition_close_position": 153,
+          "ignition_volume": 230,
+          "ranking_not_top": 249728,
+          "ranking_overextended": 4468,
+          "regime_not_expansion": 1052399,
+          "short_disabled": 425244,
+          "stop_too_tight": 12,
+          "stop_too_wide": 3,
+          "target_to_cost": 74
+        },
+        "regime_observations": {
+          "BEAR_EXPANSION": 5844,
+          "BULL_EXPANSION": 4404,
+          "CHAOS_NO_TRADE": 1416,
+          "NEUTRAL": 13554
+        },
+        "states": {
+          "COOLDOWN": 15,
+          "IDLE": 47,
+          "INITIAL_ENTRY_READY": 9,
+          "ORDER_PENDING": 29
+        },
+        "derivatives_coverage": {
+          "model_variant": "core",
+          "requested_start": null,
+          "requested_end": null,
+          "oi_symbols": 100,
+          "taker_symbols": 100,
+          "funding_symbols": 93,
+          "basis_symbols": 0,
+          "oi_time_range": [
+            "2026-05-20T00:00:00",
+            "2026-06-08T23:55:00"
+          ],
+          "taker_time_range": [
+            "2026-05-19T23:55:00",
+            "2026-06-08T23:50:00"
+          ],
+          "funding_time_range": [
+            "2026-05-20T00:00:00.001000",
+            "2026-06-08T23:00:00"
+          ],
+          "basis_time_range": [
+            null,
+            null
+          ],
+          "eligible": true,
+          "reason": "core_model_does_not_require_derivatives_history"
+        },
+        "execution_stats": {
+          "addon_1_confirmed": 2,
+          "addon_1_fill_count": 2,
+          "cmipr_fail_fast_lost_breakout": 9,
+          "cmipr_fail_fast_no_extension": 17,
+          "cmipr_max_profit_giveback": 2,
+          "consecutive_loss_pause_count": 5,
+          "initial_fill_count": 30,
+          "initial_reject_execution_capacity_or_exchange_rules": 8,
+          "initial_reject_point_in_time_universe": 21,
+          "stop_loss_count": 2
+        },
+        "historical_test_policy": {
+          "historical_test_start": "2026-04-01T00:00:00",
+          "historical_test_end": "2026-06-30T23:59:59",
+          "is_untouched_final_holdout": false,
+          "final_acceptance_source": "post_freeze_shadow_or_dry_run"
+        },
+        "by_addon_count": {
+          "no_addon": {
+            "trades": 28,
+            "net_pnl": -1.8109392119999999,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.13283051763991008,
+            "average_net_pnl": -0.06467640042857142
+          },
+          "one_addon": {
+            "trades": 2,
+            "net_pnl": 2.678146194999997,
+            "win_rate_pct": 100.0,
+            "profit_factor": Infinity,
+            "average_net_pnl": 1.3390730974999985
+          },
+          "two_addons": {
+            "trades": 0,
+            "net_pnl": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "average_net_pnl": 0.0
+          }
+        }
+      },
+      "top5_profit_contribution_pct": 98.0654009854275,
+      "top_symbol_profit_contribution_pct": 56.07923827445529
+    },
+    "two_addons": {
+      "final_equity": 160.31984483299993,
+      "net_pnl": 0.31984483299999733,
+      "net_return_pct": 0.19990302062495857,
+      "trade_count": 30,
+      "win_rate_pct": 26.666666666666668,
+      "profit_factor": 1.1533009148432707,
+      "max_drawdown_pct": 0.8494723588186824,
+      "fee": 0.8514811670000001,
+      "slippage_cost": 0.7543476277336072,
+      "funding": 0.0,
+      "monthly": [
+        {
+          "month": "2026-03",
+          "start_equity": 160.0,
+          "end_equity": 160.0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-04",
+          "start_equity": 160.0,
+          "end_equity": 159.02895405499999,
+          "pnl": -0.9710459450000144,
+          "return_pct": -0.606903715625009,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 3,
+            "losses": 11,
+            "pnl": -0.9710459449999984,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.12186782825305212
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-05",
+          "start_equity": 159.02895405499999,
+          "end_equity": 160.34491695299994,
+          "pnl": 1.3159628979999525,
+          "return_pct": 0.8274989330212335,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 4,
+            "losses": 10,
+            "pnl": 1.3159628979999947,
+            "win_rate_pct": 28.57142857142857,
+            "profit_factor": 2.4209409619291136
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-06",
+          "start_equity": 160.34491695299994,
+          "end_equity": 160.31984483299993,
+          "pnl": -0.02507212000000436,
+          "return_pct": -0.01563636719918815,
+          "opened": 2,
+          "closed": 2,
+          "long": {
+            "opened": 2,
+            "closed": 2,
+            "wins": 1,
+            "losses": 1,
+            "pnl": -0.025072119999998727,
+            "win_rate_pct": 50.0,
+            "profit_factor": 0.539593789687644
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        }
+      ],
+      "cmipr_report": {
+        "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+        "model_variant": "core",
+        "stats": {
+          "entry_ready_count": 68,
+          "ignition_count": 159,
+          "pending_expired": 20,
+          "pending_regime_invalidated": 8,
+          "pullback_confirmed": 68
+        },
+        "reject_reasons": {
+          "compression_atr_percentile": 43423,
+          "compression_atr_ratio": 3241,
+          "compression_channel": 318,
+          "compression_failed_breakouts": 459,
+          "compression_prior_move": 909,
+          "compression_volume": 18739,
+          "entry_chase": 63,
+          "ignition_body": 147,
+          "ignition_breakout_distance": 8513,
+          "ignition_close_position": 153,
+          "ignition_volume": 230,
+          "ranking_not_top": 249733,
+          "ranking_overextended": 4468,
+          "regime_not_expansion": 1052399,
+          "short_disabled": 425244,
+          "stop_too_tight": 12,
+          "stop_too_wide": 3,
+          "target_to_cost": 74
+        },
+        "regime_observations": {
+          "BEAR_EXPANSION": 5844,
+          "BULL_EXPANSION": 4404,
+          "CHAOS_NO_TRADE": 1416,
+          "NEUTRAL": 13554
+        },
+        "states": {
+          "COOLDOWN": 15,
+          "IDLE": 47,
+          "INITIAL_ENTRY_READY": 9,
+          "ORDER_PENDING": 29
+        },
+        "derivatives_coverage": {
+          "model_variant": "core",
+          "requested_start": null,
+          "requested_end": null,
+          "oi_symbols": 100,
+          "taker_symbols": 100,
+          "funding_symbols": 93,
+          "basis_symbols": 0,
+          "oi_time_range": [
+            "2026-05-20T00:00:00",
+            "2026-06-08T23:55:00"
+          ],
+          "taker_time_range": [
+            "2026-05-19T23:55:00",
+            "2026-06-08T23:50:00"
+          ],
+          "funding_time_range": [
+            "2026-05-20T00:00:00.001000",
+            "2026-06-08T23:00:00"
+          ],
+          "basis_time_range": [
+            null,
+            null
+          ],
+          "eligible": true,
+          "reason": "core_model_does_not_require_derivatives_history"
+        },
+        "execution_stats": {
+          "addon_1_confirmed": 2,
+          "addon_1_fill_count": 2,
+          "addon_2_confirmed": 5,
+          "addon_2_fill_count": 1,
+          "addon_reject_size_below_min_notional": 4,
+          "cmipr_fail_fast_lost_breakout": 9,
+          "cmipr_fail_fast_no_extension": 17,
+          "cmipr_max_profit_giveback": 2,
+          "consecutive_loss_pause_count": 5,
+          "initial_fill_count": 30,
+          "initial_reject_execution_capacity_or_exchange_rules": 8,
+          "initial_reject_point_in_time_universe": 21,
+          "stop_loss_count": 2
+        },
+        "historical_test_policy": {
+          "historical_test_start": "2026-04-01T00:00:00",
+          "historical_test_end": "2026-06-30T23:59:59",
+          "is_untouched_final_holdout": false,
+          "final_acceptance_source": "post_freeze_shadow_or_dry_run"
+        },
+        "by_addon_count": {
+          "no_addon": {
+            "trades": 28,
+            "net_pnl": -1.8091040370000002,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.13290047140215477,
+            "average_net_pnl": -0.06461085846428573
+          },
+          "one_addon": {
+            "trades": 1,
+            "net_pnl": 1.651058859999998,
+            "win_rate_pct": 100.0,
+            "profit_factor": Infinity,
+            "average_net_pnl": 1.651058859999998
+          },
+          "two_addons": {
+            "trades": 1,
+            "net_pnl": 0.47789000999999937,
+            "win_rate_pct": 100.0,
+            "profit_factor": Infinity,
+            "average_net_pnl": 0.47789000999999937
+          }
+        }
+      },
+      "top5_profit_contribution_pct": 97.62844582998827,
+      "top_symbol_profit_contribution_pct": 68.61598891454489
+    },
+    "no_runner": {
+      "final_equity": 161.34066854299996,
+      "net_pnl": 1.3406685429999874,
+      "net_return_pct": 0.8379178393749687,
+      "trade_count": 30,
+      "win_rate_pct": 26.666666666666668,
+      "profit_factor": 1.6410921582840459,
+      "max_drawdown_pct": 0.654517618749999,
+      "fee": 0.840517457,
+      "slippage_cost": 0.7491056277336142,
+      "funding": 0.0,
+      "monthly": [
+        {
+          "month": "2026-03",
+          "start_equity": 160.0,
+          "end_equity": 160.0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "opened": 0,
+          "closed": 0,
+          "long": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-04",
+          "start_equity": 160.0,
+          "end_equity": 159.02895405499999,
+          "pnl": -0.9710459450000144,
+          "return_pct": -0.606903715625009,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 3,
+            "losses": 11,
+            "pnl": -0.9710459449999984,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.12186782825305212
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-05",
+          "start_equity": 159.02895405499999,
+          "end_equity": 161.36557146299995,
+          "pnl": 2.3366174079999666,
+          "return_pct": 1.4693031353220434,
+          "opened": 14,
+          "closed": 14,
+          "long": {
+            "opened": 14,
+            "closed": 14,
+            "wins": 4,
+            "losses": 10,
+            "pnl": 2.3366174079999844,
+            "win_rate_pct": 28.57142857142857,
+            "profit_factor": 3.5098982965764978
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        },
+        {
+          "month": "2026-06",
+          "start_equity": 161.36557146299995,
+          "end_equity": 161.34066854299996,
+          "pnl": -0.02490291999998817,
+          "return_pct": -0.015432610422538767,
+          "opened": 2,
+          "closed": 2,
+          "long": {
+            "opened": 2,
+            "closed": 2,
+            "wins": 1,
+            "losses": 1,
+            "pnl": -0.02490291999999872,
+            "win_rate_pct": 50.0,
+            "profit_factor": 0.5427008556551354
+          },
+          "short": {
+            "opened": 0,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": null
+          }
+        }
+      ],
+      "cmipr_report": {
+        "strategy_name": "cross_sectional_momentum_ignition_pyramid",
+        "model_variant": "core",
+        "stats": {
+          "entry_ready_count": 68,
+          "ignition_count": 159,
+          "pending_expired": 20,
+          "pending_regime_invalidated": 8,
+          "pullback_confirmed": 68
+        },
+        "reject_reasons": {
+          "compression_atr_percentile": 43427,
+          "compression_atr_ratio": 3241,
+          "compression_channel": 318,
+          "compression_failed_breakouts": 459,
+          "compression_prior_move": 909,
+          "compression_volume": 18739,
+          "entry_chase": 63,
+          "ignition_body": 147,
+          "ignition_breakout_distance": 8513,
+          "ignition_close_position": 153,
+          "ignition_volume": 230,
+          "ranking_not_top": 249731,
+          "ranking_overextended": 4468,
+          "regime_not_expansion": 1052399,
+          "short_disabled": 425244,
+          "stop_too_tight": 12,
+          "stop_too_wide": 3,
+          "target_to_cost": 74
+        },
+        "regime_observations": {
+          "BEAR_EXPANSION": 5844,
+          "BULL_EXPANSION": 4404,
+          "CHAOS_NO_TRADE": 1416,
+          "NEUTRAL": 13554
+        },
+        "states": {
+          "COOLDOWN": 15,
+          "IDLE": 47,
+          "INITIAL_ENTRY_READY": 9,
+          "ORDER_PENDING": 29
+        },
+        "derivatives_coverage": {
+          "model_variant": "core",
+          "requested_start": null,
+          "requested_end": null,
+          "oi_symbols": 100,
+          "taker_symbols": 100,
+          "funding_symbols": 93,
+          "basis_symbols": 0,
+          "oi_time_range": [
+            "2026-05-20T00:00:00",
+            "2026-06-08T23:55:00"
+          ],
+          "taker_time_range": [
+            "2026-05-19T23:55:00",
+            "2026-06-08T23:50:00"
+          ],
+          "funding_time_range": [
+            "2026-05-20T00:00:00.001000",
+            "2026-06-08T23:00:00"
+          ],
+          "basis_time_range": [
+            null,
+            null
+          ],
+          "eligible": true,
+          "reason": "core_model_does_not_require_derivatives_history"
+        },
+        "execution_stats": {
+          "addon_1_confirmed": 2,
+          "addon_1_fill_count": 2,
+          "cmipr_fail_fast_lost_breakout": 9,
+          "cmipr_fail_fast_no_extension": 17,
+          "cmipr_fixed_r_take_profit": 2,
+          "consecutive_loss_pause_count": 5,
+          "initial_fill_count": 30,
+          "initial_reject_execution_capacity_or_exchange_rules": 8,
+          "initial_reject_point_in_time_universe": 21,
+          "stop_loss_count": 2
+        },
+        "historical_test_policy": {
+          "historical_test_start": "2026-04-01T00:00:00",
+          "historical_test_end": "2026-06-30T23:59:59",
+          "is_untouched_final_holdout": false,
+          "final_acceptance_source": "post_freeze_shadow_or_dry_run"
+        },
+        "by_addon_count": {
+          "no_addon": {
+            "trades": 28,
+            "net_pnl": -1.813775087,
+            "win_rate_pct": 21.428571428571427,
+            "profit_factor": 0.13267377590236037,
+            "average_net_pnl": -0.06477768167857142
+          },
+          "one_addon": {
+            "trades": 2,
+            "net_pnl": 3.1544436299999874,
+            "win_rate_pct": 100.0,
+            "profit_factor": Infinity,
+            "average_net_pnl": 1.5772218149999937
+          },
+          "two_addons": {
+            "trades": 0,
+            "net_pnl": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "average_net_pnl": 0.0
+          }
+        }
+      },
+      "top5_profit_contribution_pct": 98.3322838012557,
+      "top_symbol_profit_contribution_pct": 51.36347665725277
+    }
+  },
+  "top_winner_exclusion": {
+    "excluded_count": 5,
+    "remaining": {
+      "trade_count": 25,
+      "net_pnl": -2.0311557920000043,
+      "profit_factor": 0.027379657434165473
+    },
+    "note": "Analytical concentration stress; portfolio path is not replayed after deleting trades."
+  },
+  "top_symbol_exclusion": {
+    "excluded_symbol": "INJUSDT",
+    "remaining": {
+      "trade_count": 29,
+      "net_pnl": -0.7902376920000026,
+      "profit_factor": 0.6215941397854746
+    },
+    "note": "Analytical concentration stress; portfolio path is not replayed after deleting a symbol."
+  },
+  "bounded_selection": {
+    "selected": "no_runner",
+    "best_pf": 1.6410921582840459,
+    "pf_tolerance": 0.03,
+    "near_optimal_candidates": [
+      "no_runner"
+    ],
+    "rule": "prefer simpler variant first, then lower drawdown, within PF tolerance"
+  },
+  "acceptance_note": "2026-04 through 2026-06 is historical test, never untouched final holdout; final acceptance requires post-freeze shadow/dry-run."
+}

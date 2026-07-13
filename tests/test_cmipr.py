@@ -11,6 +11,7 @@ from crypto_scalper.live_portfolio_backtest import PortfolioPosition
 from crypto_scalper.models import Candle, Direction, Signal
 from crypto_scalper.risk import BacktestExecutionConfig
 from crypto_scalper.cmipr_research import _variant_config
+from crypto_scalper.cmipr_optimize import staged_configs
 
 
 def _candles(start: datetime, count: int, minutes: int, slope: float = 0.002) -> list[Candle]:
@@ -179,3 +180,59 @@ def test_higher_cost_stress_really_increases_cost_parameters() -> None:
     assert stressed.risk.market_slippage_bps > config.risk.market_slippage_bps
     assert stressed.risk.stop_slippage_bps > config.risk.stop_slippage_bps
     assert stressed.risk.impact_coefficient_bps > config.risk.impact_coefficient_bps
+
+
+def test_staged_optimization_changes_one_module_at_a_time() -> None:
+    rows = staged_configs(_engine_config())
+    expected = {
+        "stage1_regime": ["regime"],
+        "stage2_ranking": ["ranking"],
+        "stage3a_compression": ["compression"],
+        "stage3b_ignition": ["ignition"],
+        "stage4_pullback": ["entry"],
+    }
+    previous = rows[0][2]
+    for name, _, config in rows[1:6]:
+        changed = [
+            module
+            for module in ("regime", "ranking", "compression", "ignition", "entry", "pyramid", "exit", "risk_control")
+            if getattr(previous.cmipr, module) != getattr(config.cmipr, module)
+        ]
+        assert changed == expected[name]
+        previous = config
+
+
+def test_feature_cache_keys_include_module_config() -> None:
+    config = _engine_config()
+    changed = replace(
+        config,
+        cmipr=replace(
+            config.cmipr,
+            ranking=replace(config.cmipr.ranking, long_top_fraction=0.25),
+            regime=replace(config.cmipr.regime, enter_ema_slope_pct=0.0005),
+            compression=replace(config.cmipr.compression, max_atr_percentile=0.60),
+        ),
+    )
+    start = datetime(2026, 1, 1)
+    candles = {
+        "5m": {symbol: _candles(start, 1200, 5) for symbol in config.trading.symbols},
+        "15m": {symbol: _candles(start, 500, 15) for symbol in config.trading.symbols},
+        "30m": {symbol: _candles(start, 300, 30) for symbol in config.trading.symbols},
+        "1h": {symbol: _candles(start, 150, 60) for symbol in config.trading.symbols},
+        "4h": {symbol: _candles(start, 50, 240) for symbol in config.trading.symbols},
+    }
+    cache = {}
+    decision_time = start + timedelta(hours=140)
+    base_engine = CmiprEngine(config, candles, shared_feature_cache=cache)
+    changed_engine = CmiprEngine(changed, candles, shared_feature_cache=cache)
+
+    base_engine.rankings(decision_time)
+    changed_engine.rankings(decision_time)
+    base_engine._raw_regime_snapshot(decision_time)
+    changed_engine._raw_regime_snapshot(decision_time)
+    base_engine._compression("ALTUSDT", decision_time)
+    changed_engine._compression("ALTUSDT", decision_time)
+
+    assert sum(key[0] == "rankings" for key in cache) == 2
+    assert sum(key[0] == "raw_regime" for key in cache) == 2
+    assert sum(key[0] == "compression" for key in cache) == 2
