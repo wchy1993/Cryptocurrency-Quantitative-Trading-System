@@ -17,6 +17,7 @@ from .live_portfolio_backtest import (
     HistoricalClient,
     PortfolioPosition,
     _account_snapshot,
+    _add_to_position,
     _build_btc_market_state_cache,
     _build_indicator_reversal_cache,
     _build_market_regime_cache,
@@ -25,6 +26,7 @@ from .live_portfolio_backtest import (
     _cached_entry_candidate,
     _cached_fast_breakout_candidate,
     _close_position,
+    _funding_for_position,
     _hold_minutes,
     _load_symbol_data,
     _mark_equity,
@@ -57,10 +59,12 @@ from .mtf_4h_rsi_regime import (
     oi_change_at,
 )
 from .risk import BacktestExecutionConfig, BacktestExecutionStats, execution_config_from_live_config, market_exit_fill
+from .risk import market_entry_fill
 from .indicators import atr, ema, macd
 from .realistic_data import load_funding_rate_directory
 from .regime_score import RegimeScoreEngine
 from .reversal_alpha import ReversalAlphaEngine
+from .cmipr import CMIPR_REASON_TOKEN, CmiprEngine, CmiprState, audit_derivative_coverage
 
 
 _POINT_IN_TIME_UNIVERSE: dict[Any, frozenset[str]] = {}
@@ -74,6 +78,17 @@ class PendingEntry:
     signal_available_time: Any
     decision_time: Any
     earliest_execution_index: int
+
+
+@dataclass
+class PendingCmiprAddon:
+    symbol: str
+    signal: Signal
+    fraction: float
+    proposed_stop: float
+    signal_time: Any
+    earliest_execution_index: int
+    addon_number: int
 
 
 @dataclass
@@ -210,6 +225,17 @@ class PortfolioRuntimeControl:
             self.weekly_peak_equity = {}
 
 
+@dataclass
+class CmiprAccountRuntime:
+    loss_streak: int = 0
+    pause_until: Any = None
+    daily_pnl: dict[Any, float] | None = None
+
+    def __post_init__(self) -> None:
+        if self.daily_pnl is None:
+            self.daily_pnl = {}
+
+
 def run_execution_backtest(
     config_path: str,
     execution_data_dir: str,
@@ -279,7 +305,8 @@ def run_execution_backtest(
             if symbol in symbols
         }
     mtf_candles = None
-    if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False):
+    cmipr_enabled = bool(getattr(getattr(config, "cmipr", None), "enabled", False))
+    if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False) or cmipr_enabled:
         mtf_candles = {
             timeframe: {
                 symbol: _resample_to_timeframe(candles, execution_timeframe, timeframe)
@@ -365,6 +392,7 @@ def run_execution_backtest_config(
     cost_experiment: str | None = None,
     backtest_mode: str | None = None,
     mtf_candidate_cache: dict[tuple[str, Any], EntryCandidate | None] | None = None,
+    cmipr_feature_cache: dict[tuple[Any, ...], Any] | None = None,
 ) -> dict[str, Any]:
     symbols = tuple(
         symbol
@@ -405,7 +433,8 @@ def run_execution_backtest_config(
         symbol: [candle.timestamp for candle in candles]
         for symbol, candles in fast_breakout_candles_by_symbol.items()
     }
-    if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False):
+    cmipr_enabled = bool(getattr(getattr(config, "cmipr", None), "enabled", False))
+    if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False) or cmipr_enabled:
         if mtf_candles_by_timeframe is None:
             mtf_candles_by_timeframe = {
                 timeframe: {
@@ -439,7 +468,7 @@ def run_execution_backtest_config(
             str(getattr(config.strategy, "mtf_oi_data_dir", "data/binance_oi_taker_5m")),
             str(getattr(config.strategy, "mtf_funding_data_dir", "data/binance_oi_flush_funding")),
         )
-        if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False)
+        if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False) or cmipr_enabled
         else {}
     )
 
@@ -464,7 +493,10 @@ def run_execution_backtest_config(
     execution_stats = BacktestExecutionStats()
     common_signal_length = min(len(candles) for candles in signal_candles_by_symbol.values())
     common_execution_length = min(len(candles) for candles in execution_candles_by_symbol.values())
-    legacy_disabled = bool(getattr(config.strategy, "mtf_disable_legacy_strategies", False)) and bool(getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False))
+    legacy_disabled = (
+        bool(getattr(config.strategy, "mtf_disable_legacy_strategies", False))
+        and bool(getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False))
+    ) or (cmipr_enabled and bool(getattr(config.cmipr, "disable_legacy_strategies", True)))
     if legacy_disabled:
         flat = Signal(Direction.FLAT, 0.0, "legacy_disabled_for_mtf", 0.0, 0.0)
         signal_cache = {symbol: [flat] * common_signal_length for symbol in signal_candles_by_symbol}
@@ -494,6 +526,7 @@ def run_execution_backtest_config(
     equity_timeline: list[tuple[Any, float]] = []
     reentry_block_until: dict[str, Any] = {}
     pending_entries: list[PendingEntry] = []
+    pending_cmipr_addons: list[PendingCmiprAddon] = []
     indicator_reversal_loss_streak: dict[Direction, int] = {Direction.LONG: 0, Direction.SHORT: 0}
     indicator_reversal_pause_until_time: dict[Direction, Any] = {Direction.LONG: None, Direction.SHORT: None}
     next_entry_scan_time = first_trade_time
@@ -506,6 +539,17 @@ def run_execution_backtest_config(
     vbp_watch_until: dict[str, Any] = {}
     vbp_breakouts: dict[str, VbpBreakoutState] = {}
     vbp_stats: dict[str, int] = {}
+    cmipr_engine = CmiprEngine(
+        config,
+        mtf_candles_by_timeframe,
+        mtf_aux_features,
+        shared_feature_cache=cmipr_feature_cache,
+    ) if cmipr_enabled else None
+    cmipr_coverage = audit_derivative_coverage(config, symbols, trade_start, trade_end) if cmipr_enabled else None
+    if cmipr_coverage is not None and not cmipr_coverage.eligible:
+        raise RuntimeError(cmipr_coverage.reason)
+    cmipr_stats: dict[str, int] = {}
+    cmipr_account_runtime = CmiprAccountRuntime()
     alpha_diagnostics_enabled = bool(getattr(config.risk, "alpha_diagnostics_enabled", False))
     regime_score_config = getattr(config, "regime_score", None)
     regime_score_engine = None
@@ -604,8 +648,18 @@ def run_execution_backtest_config(
             mtf_candles_by_timeframe,
             mtf_timestamps_by_timeframe,
             vbp_stats,
+            cmipr_engine,
+            cmipr_stats,
         )
         _record_monthly_closed_trades(monthly_stats, timestamp, trades[closed_before:])
+        if cmipr_enabled:
+            _update_cmipr_account_runtime(
+                config,
+                cmipr_account_runtime,
+                trades[closed_before:],
+                timestamp,
+                cmipr_stats,
+            )
         if vbp_enabled:
             _update_vbp_control_after_trades(config, vbp_control, trades[closed_before:], timestamp, starting_equity, vbp_stats)
         _update_portfolio_control_after_trades(
@@ -614,6 +668,19 @@ def run_execution_backtest_config(
             trades[closed_before:],
             timestamp,
             portfolio_control_stats,
+        )
+        cash = _fill_cmipr_pending_addons_1m(
+            trader,
+            config,
+            cash,
+            positions,
+            pending_cmipr_addons,
+            execution_candles_by_symbol,
+            execution_index,
+            timestamp,
+            execution_config,
+            cmipr_engine,
+            cmipr_stats,
         )
         cash = _fill_pending_entries_1m(
             trader,
@@ -631,6 +698,8 @@ def run_execution_backtest_config(
             portfolio_symbol_cooldown_until,
             portfolio_control_stats,
             portfolio_runtime,
+            cmipr_engine,
+            cmipr_stats,
         )
         equity = _mark_equity(cash, positions, execution_candles_by_symbol, execution_index)
         trader._peak_equity = max(getattr(trader, "_peak_equity", starting_equity), equity)
@@ -647,6 +716,21 @@ def run_execution_backtest_config(
             next_entry_scan_time += timedelta(seconds=scan_seconds)
 
         closed_before = len(trades)
+        if cmipr_enabled:
+            _queue_cmipr_addons_1m(
+                config,
+                positions,
+                pending_cmipr_addons,
+                execution_candles_by_symbol,
+                execution_index,
+                timestamp,
+                execution_config,
+                client,
+                mtf_candles_by_timeframe,
+                mtf_timestamps_by_timeframe,
+                cmipr_engine,
+                cmipr_stats,
+            )
         cash = _run_scale_ins_1m(
             trader,
             config,
@@ -676,6 +760,13 @@ def run_execution_backtest_config(
         if len(positions) + len(pending_entries) >= _entry_position_limit(config):
             continue
         if _drawdown_stopped(config, starting_equity, equity_curve):
+            continue
+        if cmipr_enabled and _cmipr_new_entries_paused(
+            config,
+            cmipr_account_runtime,
+            timestamp,
+            starting_equity,
+        ):
             continue
         if low_base_ignition_enabled:
             daily_limit = max(1, int(getattr(config.strategy, "low_base_daily_entry_limit", 2)))
@@ -714,38 +805,50 @@ def run_execution_backtest_config(
             if len(positions) + len(pending_entries) >= _entry_position_limit(config):
                 continue
 
-        candidates = _entry_candidates_for_scan(
-            trader,
-            config,
-            client,
-            signal_candles_by_symbol,
-            signal_cache,
-            reversal_cache,
-            mtf_cache,
-            market_regime_cache,
-            btc_market_state_cache,
-            entry_timing_candles_by_symbol,
-            entry_timing_timestamps_by_symbol,
-            execution_timing_candles_by_symbol,
-            execution_timing_timestamps_by_symbol,
-            fast_breakout_candles_by_symbol,
-            fast_breakout_timestamps_by_symbol,
-            mtf_candles_by_timeframe,
-            mtf_timestamps_by_timeframe,
-            mtf_aux_features,
-            mtf_reject_stats,
-            mtf_daily_entry_counts,
-            mtf_symbol_cooldown_until,
-            mtf_candidate_cache,
-            positions,
-            reentry_block_until,
-            signal_index,
-            timestamp,
-            indicator_reversal_pause_until_time,
-            alpha_diagnostics,
-        )
+        if cmipr_enabled and cmipr_engine is not None:
+            occupied = set(positions) | {entry.candidate.symbol for entry in pending_entries}
+            allowed = set(_POINT_IN_TIME_UNIVERSE.get(timestamp.date(), frozenset())) if bool(config.risk.point_in_time_universe_enabled) else set(cmipr_engine.symbols)
+            candidates = cmipr_engine.scan(timestamp, occupied, allowed)
+        else:
+            candidates = _entry_candidates_for_scan(
+                trader,
+                config,
+                client,
+                signal_candles_by_symbol,
+                signal_cache,
+                reversal_cache,
+                mtf_cache,
+                market_regime_cache,
+                btc_market_state_cache,
+                entry_timing_candles_by_symbol,
+                entry_timing_timestamps_by_symbol,
+                execution_timing_candles_by_symbol,
+                execution_timing_timestamps_by_symbol,
+                fast_breakout_candles_by_symbol,
+                fast_breakout_timestamps_by_symbol,
+                mtf_candles_by_timeframe,
+                mtf_timestamps_by_timeframe,
+                mtf_aux_features,
+                mtf_reject_stats,
+                mtf_daily_entry_counts,
+                mtf_symbol_cooldown_until,
+                mtf_candidate_cache,
+                positions,
+                reentry_block_until,
+                signal_index,
+                timestamp,
+                indicator_reversal_pause_until_time,
+                alpha_diagnostics,
+            )
         pending_symbols = {entry.candidate.symbol for entry in pending_entries}
         candidates = [candidate for candidate in candidates if candidate.symbol not in pending_symbols]
+        if cmipr_enabled:
+            max_same_direction = max(1, int(config.cmipr.risk_control.max_same_direction_positions))
+            candidates = [
+                candidate
+                for candidate in candidates
+                if sum(1 for position in positions.values() if position.direction == candidate.signal.direction) < max_same_direction
+            ]
         candidates = _portfolio_filter_candidates_for_scan(
             config,
             candidates,
@@ -779,9 +882,19 @@ def run_execution_backtest_config(
                     signal_time=signal_time,
                     signal_available_time=signal_available_time,
                     decision_time=timestamp,
-                    earliest_execution_index=execution_index + 1,
+                    earliest_execution_index=(
+                        execution_index
+                        + 1
+                        + (
+                            max(0, int(config.cmipr.entry.extra_execution_delay_minutes))
+                            if CMIPR_REASON_TOKEN in str(candidate.signal.reason)
+                            else 0
+                        )
+                    ),
                 )
             )
+            if cmipr_engine is not None and CMIPR_REASON_TOKEN in str(candidate.signal.reason):
+                cmipr_engine.mark_order_pending(candidate.symbol)
             if _is_mtf_candidate(candidate):
                 mtf_daily_entry_counts[timestamp.date()] = mtf_daily_entry_counts.get(timestamp.date(), 0) + 1
                 cooldown_hours = max(0, int(getattr(config.strategy, "mtf_symbol_cooldown_hours", 12)))
@@ -842,11 +955,96 @@ def run_execution_backtest_config(
         payload["alpha_candidate_diagnostics"] = alpha_diagnostics.finalize(execution_candles_by_symbol, trades)
     if portfolio_control_stats:
         payload["portfolio_control_stats"] = dict(sorted(portfolio_control_stats.items()))
+    if cmipr_engine is not None and cmipr_coverage is not None:
+        payload["cmipr_report"] = _cmipr_report(
+            config,
+            trades,
+            cmipr_engine.report(),
+            cmipr_coverage.as_dict(),
+            cmipr_stats,
+        )
     if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False):
         mtf_payload = dict(payload)
         mtf_payload["trades"] = trades
         payload["mtf_report"] = mtf_report_from_summary(mtf_payload, mtf_reject_stats)
     return payload
+
+
+def _cmipr_report(
+    config: Any,
+    trades: list[dict[str, Any]],
+    engine_report: dict[str, Any],
+    coverage: dict[str, Any],
+    stats: dict[str, int],
+) -> dict[str, Any]:
+    cmipr_trades = [trade for trade in trades if trade.get("strategy") == CMIPR_REASON_TOKEN]
+    by_addons: dict[str, list[dict[str, Any]]] = {"no_addon": [], "one_addon": [], "two_addons": []}
+    for trade in cmipr_trades:
+        scale_ins = int(trade.get("scale_ins", 0) or 0)
+        key = "no_addon" if scale_ins <= 0 else "one_addon" if scale_ins == 1 else "two_addons"
+        by_addons[key].append(trade)
+    return {
+        **engine_report,
+        "derivatives_coverage": coverage,
+        "execution_stats": dict(sorted(stats.items())),
+        "historical_test_policy": {
+            "historical_test_start": config.cmipr.research.historical_test_start,
+            "historical_test_end": config.cmipr.research.historical_test_end,
+            "is_untouched_final_holdout": False,
+            "final_acceptance_source": config.cmipr.research.final_acceptance_source,
+        },
+        "by_addon_count": {
+            key: _cmipr_trade_metrics(rows)
+            for key, rows in by_addons.items()
+        },
+    }
+
+
+def _cmipr_trade_metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    wins = [trade for trade in trades if float(trade.get("net_pnl", 0.0)) > 0]
+    losses = [trade for trade in trades if float(trade.get("net_pnl", 0.0)) <= 0]
+    gross_profit = sum(float(trade.get("net_pnl", 0.0)) for trade in wins)
+    gross_loss = abs(sum(float(trade.get("net_pnl", 0.0)) for trade in losses))
+    return {
+        "trades": len(trades),
+        "net_pnl": sum(float(trade.get("net_pnl", 0.0)) for trade in trades),
+        "win_rate_pct": len(wins) / len(trades) * 100.0 if trades else 0.0,
+        "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0),
+        "average_net_pnl": sum(float(trade.get("net_pnl", 0.0)) for trade in trades) / len(trades) if trades else 0.0,
+    }
+
+
+def _cmipr_trade_risk_budget(config: Any, current_equity: float) -> float:
+    mode = str(config.cmipr.research.sizing_mode).strip().lower()
+    if mode == "fixed_risk_usdt":
+        return max(0.0, float(config.cmipr.research.fixed_trade_risk_usdt))
+    if mode == "fixed_equity":
+        equity = max(0.0, float(config.cmipr.research.fixed_equity_usdt))
+    else:
+        equity = max(0.0, current_equity)
+    return equity * max(0.0, float(config.risk.risk_per_trade_pct))
+
+
+def _cmipr_sizing_account(config: Any, account: Any, signal: Signal) -> Any:
+    if CMIPR_REASON_TOKEN not in str(signal.reason):
+        return account
+    mode = str(config.cmipr.research.sizing_mode).strip().lower()
+    if mode == "compounding":
+        return account
+    if mode == "fixed_risk_usdt":
+        risk_pct = max(float(config.risk.risk_per_trade_pct), 1e-12)
+        sizing_equity = float(config.cmipr.research.fixed_trade_risk_usdt) / risk_pct
+    elif mode == "fixed_equity":
+        sizing_equity = float(config.cmipr.research.fixed_equity_usdt)
+    else:
+        raise ValueError(f"unknown CMIPR sizing_mode: {mode}")
+    sizing_equity = max(0.0, sizing_equity)
+    return replace(
+        account,
+        equity=sizing_equity,
+        wallet_balance=sizing_equity,
+        available_balance=max(0.0, min(account.available_balance, sizing_equity - account.initial_margin)),
+    )
 
 
 def _fill_pending_entries_1m(
@@ -862,18 +1060,25 @@ def _fill_pending_entries_1m(
     timestamp: Any,
     client: HistoricalClient,
     execution_config: BacktestExecutionConfig,
-    portfolio_symbol_cooldown_until: dict[str, Any],
-    portfolio_control_stats: dict[str, int],
-    portfolio_runtime: PortfolioRuntimeControl,
+    portfolio_symbol_cooldown_until: dict[str, Any] | None = None,
+    portfolio_control_stats: dict[str, int] | None = None,
+    portfolio_runtime: PortfolioRuntimeControl | None = None,
+    cmipr_engine: CmiprEngine | None = None,
+    cmipr_stats: dict[str, int] | None = None,
 ) -> float:
     if not pending_entries:
         return cash
+    portfolio_symbol_cooldown_until = portfolio_symbol_cooldown_until or {}
+    portfolio_control_stats = portfolio_control_stats if portfolio_control_stats is not None else {}
+    portfolio_runtime = portfolio_runtime or PortfolioRuntimeControl()
     remaining: list[PendingEntry] = []
     filled = 0
     max_fills = max(1, int(config.trading.max_new_entries_per_cycle))
     for pending in pending_entries:
         candidate = pending.candidate
         if not _point_in_time_symbol_allowed(config, candidate.symbol, timestamp):
+            if CMIPR_REASON_TOKEN in str(candidate.signal.reason):
+                _count_stat(cmipr_stats if cmipr_stats is not None else {}, "initial_reject_point_in_time_universe")
             continue
         if pending.earliest_execution_index > execution_index:
             remaining.append(pending)
@@ -903,6 +1108,8 @@ def _fill_pending_entries_1m(
         )
         if not portfolio_allowed:
             _portfolio_count(portfolio_control_stats, portfolio_reason)
+            if CMIPR_REASON_TOKEN in str(candidate.signal.reason):
+                _count_stat(cmipr_stats if cmipr_stats is not None else {}, f"initial_reject_{portfolio_reason}")
             continue
         if portfolio_multiplier <= 0:
             _portfolio_count(portfolio_control_stats, "portfolio_zero_risk")
@@ -927,9 +1134,13 @@ def _fill_pending_entries_1m(
             execution_candles_by_symbol,
             execution_index,
         )
-        quantity_text, reason = trader._size_order(candidate.symbol, execution_candle.close, candidate.signal, account)
+        pre_entry_equity = account.equity
+        sizing_account = _cmipr_sizing_account(config, account, candidate.signal)
+        quantity_text, reason = trader._size_order(candidate.symbol, execution_candle.close, candidate.signal, sizing_account)
         quantity = float(quantity_text)
         if reason != "ok" or quantity <= 0:
+            if CMIPR_REASON_TOKEN in str(candidate.signal.reason):
+                _count_stat(cmipr_stats if cmipr_stats is not None else {}, f"initial_reject_size_{reason}")
             continue
         rules = client.symbol_rules(candidate.symbol)
         before = candidate.symbol in positions
@@ -950,19 +1161,43 @@ def _fill_pending_entries_1m(
             rules=rules,
         )
         if not before and candidate.symbol in positions:
+            position = positions[candidate.symbol]
+            if _is_cmipr_position(position):
+                side_multiplier = candidate.signal.risk_multiplier / max(float(config.cmipr.entry.initial_risk_fraction), 1e-12)
+                position.risk_budget_usdt = _cmipr_trade_risk_budget(config, pre_entry_equity) * min(1.0, max(0.0, side_multiplier))
+                position.initial_stop_price = position.stop_price
+                if cmipr_engine is not None:
+                    if position.capacity_fill_ratio < 0.999:
+                        cmipr_engine.mark_partial_fill(candidate.symbol)
+                    cmipr_engine.mark_protection_pending(candidate.symbol)
+                    cmipr_engine.mark_protected(candidate.symbol)
+                _count_stat(cmipr_stats if cmipr_stats is not None else {}, "initial_fill_count")
             _record_monthly_open(monthly_stats, timestamp, candidate.signal.direction)
             filled += 1
+        elif CMIPR_REASON_TOKEN in str(candidate.signal.reason):
+            _count_stat(cmipr_stats if cmipr_stats is not None else {}, "initial_reject_execution_capacity_or_exchange_rules")
     pending_entries[:] = remaining
     return cash
 
 
 def _candidate_signal_times(config: Any, candidate: Any, fallback_signal_time: Any) -> tuple[Any, Any]:
+    if CMIPR_REASON_TOKEN in str(candidate.signal.reason):
+        trigger_timeframe = _reason_tag(candidate.signal.reason, "trigger_tf", "15m")
+        signal_time = candidate.candle.timestamp
+        return signal_time, signal_time + timedelta(milliseconds=interval_to_milliseconds(trigger_timeframe))
     if _is_mtf_candidate(candidate):
         signal_time = candidate.candle.timestamp
         trigger_timeframe = _mtf_trigger_timeframe(config)
         return signal_time, signal_time + timedelta(milliseconds=interval_to_milliseconds(trigger_timeframe))
     signal_ms = interval_to_milliseconds(config.trading.timeframe)
     return fallback_signal_time, fallback_signal_time + timedelta(milliseconds=signal_ms)
+
+
+def _reason_tag(reason: str, key: str, default: str) -> str:
+    marker = f"{key}="
+    if marker not in str(reason):
+        return default
+    return str(reason).split(marker, 1)[1].split()[0].strip().rstrip(",") or default
 
 
 def _is_mtf_candidate(candidate: Any) -> bool:
@@ -979,6 +1214,8 @@ def _mtf_required_timeframes(config: Any) -> tuple[str, ...]:
     }
     if getattr(config.strategy, "mtf_secondary_2h_enabled", False):
         timeframes.add("2h")
+    if bool(getattr(getattr(config, "cmipr", None), "enabled", False)):
+        timeframes.update(("5m", "15m", "30m", "1h", "4h"))
     return tuple(sorted(timeframes, key=interval_to_milliseconds))
 
 
@@ -1284,12 +1521,35 @@ def _manage_positions_1m(
     mtf_candles_by_timeframe: dict[str, dict[str, list[Candle]]] | None = None,
     mtf_timestamps_by_timeframe: dict[str, dict[str, list[Any]]] | None = None,
     vbp_stats: dict[str, int] | None = None,
+    cmipr_engine: CmiprEngine | None = None,
+    cmipr_stats: dict[str, int] | None = None,
 ) -> float:
     for symbol in list(positions):
         position = positions[symbol]
         candle = execution_candles_by_symbol[symbol][execution_index]
         position.bars_held = max(0, signal_index - position.entry_index)
         _update_position_excursion(position, candle)
+        if _is_cmipr_position(position):
+            cash, closed = _manage_cmipr_position_1m(
+                trader,
+                config,
+                cash,
+                positions,
+                trades,
+                position,
+                candle,
+                execution_index,
+                signal_index,
+                execution_config,
+                mtf_candles_by_timeframe or {},
+                mtf_timestamps_by_timeframe or {},
+                cmipr_stats if cmipr_stats is not None else {},
+            )
+            if closed:
+                _mark_reentry_cooldown_time(config, reentry_block_until, symbol, candle.timestamp)
+                if cmipr_engine is not None:
+                    cmipr_engine.mark_closed(symbol, candle.timestamp)
+            continue
         if _is_vbp_position(position) and position.direction == Direction.LONG:
             position.best_price = max(position.best_price, candle.close)
             cash = _update_vbp_partial_exit(
@@ -1462,6 +1722,167 @@ def _manage_positions_1m(
             else:
                 _mark_reentry_cooldown_time(config, reentry_block_until, symbol, candle.timestamp)
     return cash
+
+
+def _is_cmipr_position(position: PortfolioPosition) -> bool:
+    return CMIPR_REASON_TOKEN in str(position.entry_reason)
+
+
+def _manage_cmipr_position_1m(
+    trader: BinanceAutoTrader,
+    config: Any,
+    cash: float,
+    positions: dict[str, PortfolioPosition],
+    trades: list[dict[str, Any]],
+    position: PortfolioPosition,
+    candle: Candle,
+    execution_index: int,
+    signal_index: int,
+    execution_config: BacktestExecutionConfig,
+    mtf_candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    mtf_timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+    stats: dict[str, int],
+) -> tuple[float, bool]:
+    symbol = position.symbol
+    stop_hit = candle.low <= position.stop_price if position.direction == Direction.LONG else candle.high >= position.stop_price
+    if stop_hit:
+        cash = _close_position(
+            config,
+            cash,
+            positions,
+            trades,
+            symbol,
+            position.stop_price,
+            "cmipr_stop_loss_1m",
+            signal_index,
+            candle.timestamp,
+            execution_config=execution_config,
+            rules=trader.client.symbol_rules(symbol),
+        )
+        _count_stat(stats, "stop_loss_count")
+        return cash, True
+
+    current_r = _cmipr_executable_current_r(
+        config,
+        position,
+        candle.close,
+        candle.timestamp,
+        execution_config,
+        trader.client.symbol_rules(symbol),
+    )
+    position.cmipr_max_executable_r = max(position.cmipr_max_executable_r, current_r)
+    hold_minutes = _hold_minutes(position.entry_time, candle.timestamp)
+    exit_cfg = config.cmipr.exit
+    breakout_level = _reason_float(position.entry_reason, "breakout_level", position.entry_price)
+    lost_level = candle.close < breakout_level if position.direction == Direction.LONG else candle.close > breakout_level
+    fail_fast_minutes = max(1, int(exit_cfg.fail_fast_bars_5m)) * 5
+    reason = ""
+    if hold_minutes >= fail_fast_minutes and position.cmipr_max_executable_r < float(exit_cfg.fail_fast_min_mfe_r):
+        reason = "cmipr_fail_fast_no_extension"
+    elif lost_level and hold_minutes >= 5:
+        reason = "cmipr_fail_fast_lost_breakout"
+    elif hold_minutes >= max(1, int(exit_cfg.max_holding_minutes)):
+        reason = "cmipr_time_stop"
+    elif not bool(exit_cfg.runner_enabled) and current_r >= float(exit_cfg.fixed_take_profit_r):
+        reason = "cmipr_fixed_r_take_profit"
+    else:
+        giveback = _cmipr_allowed_giveback_r(exit_cfg, position.cmipr_max_executable_r)
+        if position.cmipr_max_executable_r >= float(exit_cfg.runner_activation_r) and current_r < position.cmipr_max_executable_r - giveback:
+            reason = "cmipr_max_profit_giveback"
+
+    if not reason and bool(exit_cfg.runner_enabled) and position.cmipr_max_executable_r >= float(exit_cfg.runner_activation_r):
+        candles_15m = _mtf_closed(
+            mtf_candles_by_timeframe,
+            mtf_timestamps_by_timeframe,
+            "15m",
+            symbol,
+            candle.timestamp,
+            80,
+        )
+        if len(candles_15m) >= 24:
+            closes = [item.close for item in candles_15m]
+            ema_period = 9 if str(exit_cfg.trailing_type).lower() == "ema9_15m" else 21
+            trailing_ema = ema(closes, ema_period)[-1]
+            if position.direction == Direction.LONG and candles_15m[-1].close < trailing_ema:
+                reason = "cmipr_runner_ema_exit"
+            elif position.direction == Direction.SHORT and candles_15m[-1].close > trailing_ema:
+                reason = "cmipr_runner_ema_exit"
+
+    if reason:
+        cash = _close_position(
+            config,
+            cash,
+            positions,
+            trades,
+            symbol,
+            candle.close,
+            reason,
+            signal_index,
+            candle.timestamp,
+            execution_config=execution_config,
+            rules=trader.client.symbol_rules(symbol),
+        )
+        _count_stat(stats, reason)
+        return cash, True
+
+    # Stop changes become effective only for the next 1m bar. The old stop was
+    # checked first, preserving adverse same-bar ordering.
+    if position.cmipr_max_executable_r >= float(exit_cfg.breakeven_trigger_r):
+        buffer_pct = max(0.0, float(exit_cfg.breakeven_cost_buffer_pct))
+        if position.direction == Direction.LONG:
+            position.stop_price = max(position.stop_price, position.entry_price * (1.0 + buffer_pct))
+        else:
+            position.stop_price = min(position.stop_price, position.entry_price * (1.0 - buffer_pct))
+    return cash, False
+
+
+def _cmipr_executable_current_r(
+    config: Any,
+    position: PortfolioPosition,
+    raw_exit_price: float,
+    exit_time: Any,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> float:
+    fill = market_exit_fill(
+        execution_config,
+        rules,
+        position.direction,
+        position.quantity,
+        raw_exit_price,
+        "market",
+        position.liquidity_reference_quote_volume or None,
+    )
+    raw_entry = position.raw_entry_price or position.entry_price
+    gross = position.direction.value * position.quantity * (raw_exit_price - raw_entry)
+    funding = _funding_for_position(execution_config, position, exit_time)
+    net = gross - position.entry_fee - position.entry_slippage_cost - fill.fee - fill.slippage_cost + funding
+    risk_budget = position.risk_budget_usdt
+    if risk_budget <= 0:
+        risk_budget = max(abs(position.entry_price - position.initial_stop_price) * position.quantity, 1e-12)
+    return net / max(risk_budget, 1e-12)
+
+
+def _cmipr_allowed_giveback_r(exit_config: Any, max_r: float) -> float:
+    if max_r >= float(exit_config.giveback_high_mfe_r):
+        return max(0.05, float(exit_config.giveback_r_high))
+    if max_r >= float(exit_config.giveback_mid_mfe_r):
+        return max(0.05, float(exit_config.giveback_r_mid))
+    return max(0.05, float(exit_config.giveback_r_low))
+
+
+def _reason_float(reason: str, key: str, default: float = 0.0) -> float:
+    marker = f"{key}="
+    if marker not in str(reason):
+        return default
+    try:
+        return float(str(reason).split(marker, 1)[1].split()[0].strip().rstrip(","))
+    except (TypeError, ValueError):
+        return default
+
+
+def _count_stat(stats: dict[str, int], key: str) -> None:
+    stats[key] = stats.get(key, 0) + 1
 
 
 def _is_low_base_position(position: PortfolioPosition) -> bool:
@@ -3421,6 +3842,283 @@ def _mtf_exit_reason_for_position(
     return None
 
 
+def _queue_cmipr_addons_1m(
+    config: Any,
+    positions: dict[str, PortfolioPosition],
+    pending: list[PendingCmiprAddon],
+    execution_candles_by_symbol: dict[str, list[Candle]],
+    execution_index: int,
+    timestamp: Any,
+    execution_config: BacktestExecutionConfig,
+    client: HistoricalClient,
+    mtf_candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    mtf_timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+    engine: CmiprEngine | None,
+    stats: dict[str, int],
+) -> None:
+    pyramid = config.cmipr.pyramid
+    if not bool(pyramid.enabled) or int(pyramid.max_addons) <= 0:
+        return
+    pending_symbols = {item.symbol for item in pending}
+    for symbol, position in positions.items():
+        if not _is_cmipr_position(position) or symbol in pending_symbols:
+            continue
+        if position.scale_ins >= min(2, int(pyramid.max_addons)):
+            continue
+        bars_between = max(1, int(pyramid.min_bars_between_addons)) * 5
+        reference_index = position.cmipr_last_addon_index if position.cmipr_last_addon_index >= 0 else position.entry_index
+        if execution_index - reference_index < bars_between:
+            continue
+        candle = execution_candles_by_symbol[symbol][execution_index]
+        current_r = _cmipr_executable_current_r(
+            config,
+            position,
+            candle.close,
+            timestamp,
+            execution_config,
+            client.symbol_rules(symbol),
+        )
+        trigger = float(pyramid.addon_1_trigger_r if position.scale_ins == 0 else pyramid.addon_2_trigger_r)
+        if current_r < trigger or current_r <= 0:
+            continue
+        timeframe = str(pyramid.confirmation_timeframe)
+        candles = _mtf_closed(mtf_candles_by_timeframe, mtf_timestamps_by_timeframe, timeframe, symbol, timestamp, 40)
+        if len(candles) < 20:
+            _count_stat(stats, "addon_reject_warmup")
+            continue
+        latest = candles[-1]
+        previous = candles[-2]
+        if position.direction == Direction.LONG:
+            confirmation = latest.close > previous.high and latest.close > latest.open
+        else:
+            confirmation = latest.close < previous.low and latest.close < latest.open
+        if not confirmation or _volume_ratio_live(candles, 12) < float(pyramid.min_confirmation_volume_ratio):
+            continue
+        atr_value = atr(candles, 14)[-1]
+        structure = min(item.low for item in candles[-3:]) if position.direction == Direction.LONG else max(item.high for item in candles[-3:])
+        proposed_stop = structure - config.cmipr.entry.stop_atr_buffer * atr_value if position.direction == Direction.LONG else structure + config.cmipr.entry.stop_atr_buffer * atr_value
+        noise_distance = position.direction.value * (candle.close - proposed_stop) / max(atr_value, 1e-12)
+        if noise_distance < float(pyramid.min_new_stop_noise_atr):
+            _count_stat(stats, "addon_reject_stop_inside_noise")
+            continue
+        # A genuinely newer structure must improve the stop. A breakeven stop
+        # moved only to free risk does not qualify as an add-on structure.
+        improves_structure = proposed_stop > position.stop_price if position.direction == Direction.LONG else proposed_stop < position.stop_price
+        if not improves_structure:
+            _count_stat(stats, "addon_reject_no_new_structure")
+            continue
+        stop_pct = abs(candle.close - proposed_stop) / max(candle.close, 1e-12)
+        addon_number = position.scale_ins + 1
+        fraction = float(pyramid.addon_1_risk_fraction if addon_number == 1 else pyramid.addon_2_risk_fraction)
+        signal = Signal(
+            position.direction,
+            0.55,
+            f"{CMIPR_REASON_TOKEN} addon={addon_number} full_cost_current_r={current_r:.6f}",
+            stop_pct,
+            max(stop_pct * 20.0, 0.25),
+            risk_multiplier=1.0,
+            max_holding_bars=position.max_holding_bars,
+        )
+        delay = 1 + max(0, int(pyramid.extra_execution_delay_minutes))
+        pending.append(PendingCmiprAddon(symbol, signal, fraction, proposed_stop, latest.timestamp, execution_index + delay, addon_number))
+        if engine is not None:
+            engine.runtime[symbol].state = CmiprState.ADDON_1_ARMED if addon_number == 1 else CmiprState.ADDON_2_ARMED
+        _count_stat(stats, f"addon_{addon_number}_confirmed")
+
+
+def _fill_cmipr_pending_addons_1m(
+    trader: BinanceAutoTrader,
+    config: Any,
+    cash: float,
+    positions: dict[str, PortfolioPosition],
+    pending: list[PendingCmiprAddon],
+    execution_candles_by_symbol: dict[str, list[Candle]],
+    execution_index: int,
+    timestamp: Any,
+    execution_config: BacktestExecutionConfig,
+    engine: CmiprEngine | None,
+    stats: dict[str, int],
+) -> float:
+    remaining: list[PendingCmiprAddon] = []
+    for addon in pending:
+        if addon.earliest_execution_index > execution_index:
+            remaining.append(addon)
+            continue
+        position = positions.get(addon.symbol)
+        if position is None or not _is_cmipr_position(position) or position.direction != addon.signal.direction:
+            _count_stat(stats, "addon_cancel_position_missing")
+            continue
+        candle = execution_candles_by_symbol[addon.symbol][execution_index]
+        execution_candle = replace(candle, high=candle.open, low=candle.open, close=candle.open)
+        current_r = _cmipr_executable_current_r(
+            config,
+            position,
+            candle.open,
+            timestamp,
+            execution_config,
+            trader.client.symbol_rules(addon.symbol),
+        )
+        trigger = float(config.cmipr.pyramid.addon_1_trigger_r if addon.addon_number == 1 else config.cmipr.pyramid.addon_2_trigger_r)
+        if current_r < trigger or current_r <= 0:
+            _count_stat(stats, "addon_cancel_current_r_lost")
+            continue
+        atr_candles = execution_candles_by_symbol[addon.symbol][max(0, execution_index - 120):execution_index + 1]
+        atr_value = atr(atr_candles, 14)[-1]
+        noise_distance = position.direction.value * (candle.open - addon.proposed_stop) / max(atr_value, 1e-12)
+        if noise_distance < float(config.cmipr.pyramid.min_new_stop_noise_atr):
+            _count_stat(stats, "addon_cancel_stop_inside_noise")
+            continue
+        account = _account_snapshot(
+            config,
+            _mark_equity(cash, positions, execution_candles_by_symbol, execution_index),
+            positions,
+            execution_candles_by_symbol,
+            execution_index,
+        )
+        existing = account.positions.get(addon.symbol)
+        signal = replace(addon.signal, stop_loss_pct=abs(candle.open - addon.proposed_stop) / max(candle.open, 1e-12))
+        sizing_account = _cmipr_sizing_account(config, account, signal)
+        existing = sizing_account.positions.get(addon.symbol)
+        quantity_text, size_reason = trader._size_order(
+            addon.symbol,
+            candle.open,
+            signal,
+            sizing_account,
+            existing_position=existing,
+            entry_fraction=addon.fraction,
+        )
+        quantity = float(quantity_text)
+        if size_reason != "ok" or quantity <= 0:
+            _count_stat(stats, f"addon_reject_size_{size_reason}")
+            continue
+        rules = trader.client.symbol_rules(addon.symbol)
+        quantity = _cmipr_quantity_within_original_risk_budget(
+            config,
+            position,
+            signal,
+            execution_candle,
+            quantity,
+            addon.proposed_stop,
+            timestamp,
+            execution_config,
+            rules,
+        )
+        if quantity <= 0:
+            _count_stat(stats, "addon_reject_full_cost_risk_budget")
+            continue
+        old_quantity = position.quantity
+        cash = _add_to_position(
+            config,
+            cash,
+            position,
+            signal,
+            execution_candle,
+            quantity,
+            execution_config=execution_config,
+            rules=rules,
+        )
+        added_quantity = max(0.0, position.quantity - old_quantity)
+        if added_quantity <= 0:
+            _count_stat(stats, "addon_unfilled")
+            continue
+        position.stop_price = addon.proposed_stop
+        position.cmipr_last_addon_index = execution_index
+        if addon.addon_number == 1:
+            position.cmipr_addon_1_quantity += added_quantity
+        else:
+            position.cmipr_addon_2_quantity += added_quantity
+        if engine is not None:
+            engine.mark_protection_pending(addon.symbol)
+            engine.mark_protected(addon.symbol)
+            engine.runtime[addon.symbol].state = CmiprState.ADDON_1_POSITION if addon.addon_number == 1 else CmiprState.FULL_POSITION
+        _count_stat(stats, f"addon_{addon.addon_number}_fill_count")
+    pending[:] = remaining
+    return cash
+
+
+def _cmipr_quantity_within_original_risk_budget(
+    config: Any,
+    position: PortfolioPosition,
+    signal: Signal,
+    candle: Candle,
+    requested_quantity: float,
+    proposed_stop: float,
+    timestamp: Any,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> float:
+    budget = max(0.0, position.risk_budget_usdt)
+    if budget <= 0:
+        return 0.0
+    quantity = requested_quantity
+    for _ in range(10):
+        risk = _cmipr_worst_full_cost_risk(
+            position,
+            signal,
+            candle,
+            quantity,
+            proposed_stop,
+            timestamp,
+            execution_config,
+            rules,
+        )
+        if risk <= budget + 1e-9:
+            return quantity
+        ratio = budget / max(risk, 1e-12)
+        quantity = float(rules.round_quantity(quantity * max(0.0, min(0.98, ratio * 0.98))))
+        if quantity <= 0:
+            return 0.0
+    return 0.0
+
+
+def _cmipr_worst_full_cost_risk(
+    position: PortfolioPosition,
+    signal: Signal,
+    candle: Candle,
+    new_quantity: float,
+    proposed_stop: float,
+    timestamp: Any,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> float:
+    bar_quote_volume = abs(candle.volume * candle.close)
+    entry_fill = market_entry_fill(execution_config, rules, signal.direction, new_quantity, candle.close, bar_quote_volume)
+    total_quantity = position.quantity + new_quantity
+    stop_fill = market_exit_fill(
+        execution_config,
+        rules,
+        position.direction,
+        total_quantity,
+        proposed_stop,
+        "stop_market",
+        max(position.liquidity_reference_quote_volume, bar_quote_volume) or None,
+    )
+    existing_raw_entry = position.raw_entry_price or position.entry_price
+    gross_at_stop = position.direction.value * (
+        position.quantity * (proposed_stop - existing_raw_entry)
+        + new_quantity * (proposed_stop - entry_fill.raw_price)
+    )
+    accrued_funding = min(0.0, _funding_for_position(execution_config, position, timestamp))
+    net_at_stop = (
+        gross_at_stop
+        - position.entry_fee
+        - position.entry_slippage_cost
+        - entry_fill.fee
+        - entry_fill.slippage_cost
+        - stop_fill.fee
+        - stop_fill.slippage_cost
+        + accrued_funding
+    )
+    return max(0.0, -net_at_stop)
+
+
+def _volume_ratio_live(candles: list[Candle], period: int) -> float:
+    if len(candles) < period + 1:
+        return 0.0
+    average = sum(item.volume for item in candles[-period - 1:-1]) / period
+    return candles[-1].volume / max(average, 1e-12)
+
+
 def _run_scale_ins_1m(
     trader: BinanceAutoTrader,
     config: Any,
@@ -3438,6 +4136,8 @@ def _run_scale_ins_1m(
     btc_market_state_cache: list[Any],
 ) -> float:
     for symbol in list(positions):
+        if _is_cmipr_position(positions[symbol]):
+            continue
         # Keep scale-in decisions on the 30m signal layer, matching the portfolio
         # backtest; mark-to-market remains on the 1m execution layer.
         cash = _maybe_scale_in_position(
@@ -3527,6 +4227,41 @@ def _mark_reentry_cooldown_time(config: Any, reentry_block_until: dict[str, Any]
         reentry_block_until.get(symbol, timestamp),
         timestamp + timedelta(seconds=cooldown_seconds),
     )
+
+
+def _update_cmipr_account_runtime(
+    config: Any,
+    runtime: CmiprAccountRuntime,
+    closed_trades: list[dict[str, Any]],
+    timestamp: Any,
+    stats: dict[str, int],
+) -> None:
+    risk = config.cmipr.risk_control
+    for trade in closed_trades:
+        if trade.get("strategy") != CMIPR_REASON_TOKEN:
+            continue
+        pnl = float(trade.get("net_pnl", 0.0) or 0.0)
+        runtime.daily_pnl[timestamp.date()] = runtime.daily_pnl.get(timestamp.date(), 0.0) + pnl
+        if pnl < 0:
+            runtime.loss_streak += 1
+            if runtime.loss_streak >= max(1, int(risk.consecutive_loss_limit)):
+                runtime.pause_until = timestamp + timedelta(minutes=max(1, int(risk.consecutive_loss_pause_minutes)))
+                runtime.loss_streak = 0
+                _count_stat(stats, "consecutive_loss_pause_count")
+        else:
+            runtime.loss_streak = 0
+
+
+def _cmipr_new_entries_paused(
+    config: Any,
+    runtime: CmiprAccountRuntime,
+    timestamp: Any,
+    starting_equity: float,
+) -> bool:
+    if runtime.pause_until is not None and timestamp < runtime.pause_until:
+        return True
+    limit = abs(float(config.cmipr.risk_control.daily_loss_stop_pct)) * starting_equity
+    return limit > 0 and runtime.daily_pnl.get(timestamp.date(), 0.0) <= -limit
 
 
 def _drawdown_stopped(config: Any, starting_equity: float, equity_curve: list[float]) -> bool:

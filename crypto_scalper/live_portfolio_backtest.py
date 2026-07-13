@@ -83,6 +83,13 @@ class PortfolioPosition:
     entry_participation_rate: float = 0.0
     capacity_fill_ratio: float = 1.0
     liquidity_reference_quote_volume: float = 0.0
+    initial_stop_price: float = 0.0
+    risk_budget_usdt: float = 0.0
+    cmipr_max_executable_r: float = 0.0
+    cmipr_last_addon_index: int = -1
+    cmipr_initial_quantity: float = 0.0
+    cmipr_addon_1_quantity: float = 0.0
+    cmipr_addon_2_quantity: float = 0.0
 
     def unrealized_pnl(self, mark_price: float) -> float:
         return self.direction.value * self.quantity * (mark_price - self.entry_price)
@@ -2448,6 +2455,8 @@ def _open_position(
         entry_participation_rate=fill.participation_rate,
         capacity_fill_ratio=quantity / requested_quantity if requested_quantity > 0 else capacity_fill_ratio,
         liquidity_reference_quote_volume=bar_quote_volume,
+        initial_stop_price=stop_price,
+        cmipr_initial_quantity=quantity if "cross_sectional_momentum_ignition_pyramid" in str(signal.reason) else 0.0,
     )
     return cash
 
@@ -2591,6 +2600,12 @@ def _close_position(
             "entry_participation_rate": position.entry_participation_rate,
             "exit_participation_rate": fill.participation_rate,
             "capacity_fill_ratio": position.capacity_fill_ratio,
+            "risk_budget_usdt": position.risk_budget_usdt,
+            "initial_stop_price": position.initial_stop_price,
+            "max_executable_r": position.cmipr_max_executable_r,
+            "initial_quantity": position.cmipr_initial_quantity,
+            "addon_1_quantity": position.cmipr_addon_1_quantity,
+            "addon_2_quantity": position.cmipr_addon_2_quantity,
         }
     )
     return cash
@@ -2994,6 +3009,8 @@ def _parse_trade_time(value: Any) -> Any:
 
 def _strategy_bucket(entry_reason: str) -> str:
     reason = entry_reason.lower()
+    if "cross_sectional_momentum_ignition_pyramid" in reason:
+        return "cross_sectional_momentum_ignition_pyramid"
     if "vbp_" in reason or "volume_breakout_pullback" in reason:
         return "volume_breakout_pullback"
     if "mtf_4h_rsi_regime_pullback" in reason:

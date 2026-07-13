@@ -467,6 +467,201 @@ class VbpStrategyConfig:
 
 
 @dataclass(frozen=True)
+class CmiprRegimeConfig:
+    btc_symbol: str = "BTCUSDT"
+    eth_symbol: str = "ETHUSDT"
+    ema_period: int = 21
+    ema_slope_lookback: int = 3
+    min_ema_slope_pct: float = 0.001
+    min_breadth_above_ema21: float = 0.55
+    min_breadth_positive_1h: float = 0.52
+    max_breadth_above_ema21_overheated: float = 0.88
+    btc_shock_1h_pct: float = 0.035
+    max_direction_conflict: float = 0.35
+    allow_neutral_high_quality: bool = False
+    enter_confirmation_bars_1h: int = 2
+    exit_confirmation_bars_1h: int = 2
+    enter_breadth_above_ema21: float = 0.58
+    exit_breadth_above_ema21: float = 0.48
+    enter_ema_slope_pct: float = 0.0012
+    exit_ema_slope_pct: float = -0.0002
+    min_state_hold_bars_1h: int = 3
+
+
+@dataclass(frozen=True)
+class CmiprRankingConfig:
+    long_top_fraction: float = 0.15
+    short_bottom_fraction: float = 0.10
+    max_candidates_per_scan: int = 8
+    weight_return_30m: float = 0.15
+    weight_return_1h: float = 0.25
+    weight_return_4h: float = 0.25
+    weight_relative_btc_1h: float = 0.15
+    weight_relative_btc_4h: float = 0.10
+    weight_volume_trend: float = 0.05
+    weight_trend_alignment: float = 0.05
+    max_extension_atr: float = 3.0
+
+
+@dataclass(frozen=True)
+class CmiprCompressionConfig:
+    lookback_bars_30m: int = 12
+    atr_period: int = 14
+    atr_percentile_lookback: int = 96
+    max_atr_percentile: float = 0.45
+    max_atr_to_average: float = 0.90
+    max_channel_width_atr: float = 5.0
+    max_volume_contraction: float = 0.85
+    min_range_bars: int = 6
+    max_failed_breakouts: int = 2
+    max_prior_move_atr: float = 2.5
+
+
+@dataclass(frozen=True)
+class CmiprIgnitionConfig:
+    breakout_lookback_15m: int = 20
+    min_breakout_distance_atr: float = 0.10
+    max_breakout_distance_atr: float = 1.50
+    min_body_atr: float = 0.45
+    min_close_position: float = 0.70
+    max_wick_ratio: float = 0.30
+    min_volume_ratio: float = 1.50
+    macd_hist_expanding_bars: int = 2
+    max_ema21_distance_atr: float = 2.5
+    require_oi: bool = False
+    min_oi_change_30m: float = -0.01
+    max_oi_change_30m: float = 0.04
+    require_funding: bool = False
+    max_long_funding_rate: float = 0.0005
+    min_short_funding_rate: float = -0.0003
+    short_risk_multiplier: float = 0.60
+    min_derivatives_coverage_pct: float = 0.95
+    require_taker_flow: bool = False
+    min_long_taker_buy_ratio: float = 0.52
+    max_short_taker_buy_ratio: float = 0.48
+    require_basis: bool = False
+    max_long_basis_pct: float = 0.003
+    min_short_basis_pct: float = -0.003
+
+
+@dataclass(frozen=True)
+class CmiprEntryConfig:
+    mode: str = "first_pullback"
+    pending_expiry_minutes: int = 90
+    pullback_timeframe: str = "5m"
+    pullback_min_depth_atr: float = 0.10
+    pullback_max_depth_atr: float = 1.20
+    pullback_max_volume_ratio: float = 0.90
+    confirmation_min_close_position: float = 0.60
+    max_chase_distance_atr: float = 0.50
+    stop_atr_buffer: float = 0.25
+    min_stop_atr: float = 0.50
+    max_stop_atr: float = 2.50
+    initial_risk_fraction: float = 0.40
+    min_target_to_cost_ratio: float = 4.0
+    extra_execution_delay_minutes: int = 0
+
+
+@dataclass(frozen=True)
+class CmiprPyramidConfig:
+    enabled: bool = True
+    max_addons: int = 2
+    addon_1_risk_fraction: float = 0.30
+    addon_2_risk_fraction: float = 0.30
+    addon_1_trigger_r: float = 0.60
+    addon_2_trigger_r: float = 1.20
+    confirmation_timeframe: str = "5m"
+    min_confirmation_volume_ratio: float = 1.05
+    min_bars_between_addons: int = 2
+    extra_execution_delay_minutes: int = 0
+    require_full_cost_current_r: bool = True
+    include_stop_slippage_in_risk: bool = True
+    min_new_stop_noise_atr: float = 0.50
+
+
+@dataclass(frozen=True)
+class CmiprExitConfig:
+    fail_fast_bars_5m: int = 3
+    fail_fast_min_mfe_r: float = 0.20
+    breakeven_trigger_r: float = 0.80
+    breakeven_cost_buffer_pct: float = 0.0015
+    runner_activation_r: float = 1.20
+    trailing_type: str = "ema21_15m"
+    chandelier_atr_mult: float = 3.0
+    giveback_mode: str = "segmented"
+    giveback_r_low: float = 0.70
+    giveback_r_mid: float = 0.90
+    giveback_r_high: float = 1.20
+    giveback_mid_mfe_r: float = 1.50
+    giveback_high_mfe_r: float = 3.00
+    max_holding_minutes: int = 2880
+    runner_enabled: bool = True
+    fixed_take_profit_r: float = 1.50
+
+
+@dataclass(frozen=True)
+class CmiprRiskControlConfig:
+    max_open_positions: int = 2
+    max_same_direction_positions: int = 1
+    global_min_entry_interval_seconds: int = 300
+    symbol_cooldown_minutes: int = 240
+    consecutive_loss_limit: int = 3
+    consecutive_loss_pause_minutes: int = 360
+    daily_loss_stop_pct: float = 0.015
+    soft_drawdown_pct: float = 0.05
+    soft_drawdown_risk_multiplier: float = 0.60
+    hard_drawdown_pct: float = 0.10
+
+
+@dataclass(frozen=True)
+class CmiprExecutionSafetyConfig:
+    protective_stop_required: bool = True
+    close_on_protection_failure: bool = True
+    max_protection_attempts: int = 2
+    order_pending_timeout_seconds: int = 30
+    cancel_pending_timeout_seconds: int = 15
+    recover_positions_after_restart: bool = True
+    adverse_same_bar_ordering: bool = True
+
+
+@dataclass(frozen=True)
+class CmiprResearchConfig:
+    model_variant: str = "core"
+    max_experiments_per_stage: int = 24
+    near_optimal_pf_tolerance: float = 0.03
+    prefer_lower_drawdown: bool = True
+    historical_test_start: str = "2026-04-01T00:00:00"
+    historical_test_end: str = "2026-06-30T23:59:59"
+    final_acceptance_source: str = "post_freeze_shadow_or_dry_run"
+    sizing_mode: str = "compounding"
+    fixed_equity_usdt: float = 160.0
+    fixed_trade_risk_usdt: float = 0.80
+    min_research_trades: int = 30
+
+
+@dataclass(frozen=True)
+class CmiprStrategyConfig:
+    enabled: bool = False
+    enabled_symbols: tuple[str, ...] = ()
+    allow_long: bool = True
+    allow_short: bool = True
+    disable_legacy_strategies: bool = True
+    auxiliary_oi_data_dir: str = "data/binance_oi_taker_5m"
+    auxiliary_funding_data_dir: str = "data/binance_oi_flush_funding"
+    auxiliary_basis_data_dir: str = ""
+    regime: CmiprRegimeConfig = field(default_factory=CmiprRegimeConfig)
+    ranking: CmiprRankingConfig = field(default_factory=CmiprRankingConfig)
+    compression: CmiprCompressionConfig = field(default_factory=CmiprCompressionConfig)
+    ignition: CmiprIgnitionConfig = field(default_factory=CmiprIgnitionConfig)
+    entry: CmiprEntryConfig = field(default_factory=CmiprEntryConfig)
+    pyramid: CmiprPyramidConfig = field(default_factory=CmiprPyramidConfig)
+    exit: CmiprExitConfig = field(default_factory=CmiprExitConfig)
+    risk_control: CmiprRiskControlConfig = field(default_factory=CmiprRiskControlConfig)
+    execution_safety: CmiprExecutionSafetyConfig = field(default_factory=CmiprExecutionSafetyConfig)
+    research: CmiprResearchConfig = field(default_factory=CmiprResearchConfig)
+
+
+@dataclass(frozen=True)
 class PortfolioControlConfig:
     enabled: bool = False
     max_open_positions: int = 5
@@ -503,6 +698,7 @@ class LiveAppConfig:
     portfolio_control: PortfolioControlConfig = field(default_factory=PortfolioControlConfig)
     regime_score: RegimeScoreConfig = field(default_factory=RegimeScoreConfig)
     reversal_alpha: ReversalAlphaConfig = field(default_factory=ReversalAlphaConfig)
+    cmipr: CmiprStrategyConfig = field(default_factory=CmiprStrategyConfig)
 
 
 T = TypeVar("T")
@@ -608,6 +804,27 @@ def _coerce_vbp_config(values: dict[str, Any]) -> VbpStrategyConfig:
     return _coerce_dataclass(VbpStrategyConfig, values)
 
 
+def _coerce_cmipr_config(values: dict[str, Any]) -> CmiprStrategyConfig:
+    values = dict(values or {})
+    if "enabled_symbols" in values:
+        values["enabled_symbols"] = tuple(_normalize_symbols(values["enabled_symbols"]))
+    nested = {
+        "regime": CmiprRegimeConfig,
+        "ranking": CmiprRankingConfig,
+        "compression": CmiprCompressionConfig,
+        "ignition": CmiprIgnitionConfig,
+        "entry": CmiprEntryConfig,
+        "pyramid": CmiprPyramidConfig,
+        "exit": CmiprExitConfig,
+        "risk_control": CmiprRiskControlConfig,
+        "execution_safety": CmiprExecutionSafetyConfig,
+        "research": CmiprResearchConfig,
+    }
+    for key, cls in nested.items():
+        values[key] = _coerce_dataclass(cls, values.get(key, {}))
+    return _coerce_dataclass(CmiprStrategyConfig, values)
+
+
 def load_live_config(path: str | Path) -> LiveAppConfig:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     return LiveAppConfig(
@@ -621,6 +838,7 @@ def load_live_config(path: str | Path) -> LiveAppConfig:
         portfolio_control=_coerce_dataclass(PortfolioControlConfig, raw.get("portfolio_control", {})),
         regime_score=_coerce_dataclass(RegimeScoreConfig, raw.get("regime_score", {})),
         reversal_alpha=_coerce_dataclass(ReversalAlphaConfig, raw.get("reversal_alpha", {})),
+        cmipr=_coerce_cmipr_config(raw.get("cmipr", {})),
     )
 
 
@@ -636,6 +854,7 @@ def write_live_config(path: str | Path, config: LiveAppConfig) -> None:
         "portfolio_control": asdict(config.portfolio_control),
         "regime_score": asdict(config.regime_score),
         "reversal_alpha": asdict(config.reversal_alpha),
+        "cmipr": asdict(config.cmipr),
     }
     Path(path).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
