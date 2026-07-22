@@ -1,0 +1,32 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-b.json",
+  "experiment_budget": 3,
+  "research_name": "mtf_core_v3_rank3p5_30m_exit_stage7",
+  "selection_data": [
+    "2025-06-12/2025-12-31 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "frozen_reference": "config.mtf-htf.long-rank3p5-frozen-20260717-manifest.json",
+  "experiments": [
+    {
+      "name": "frozen_exit_baseline"
+    },
+    {
+      "name": "30m_two_close_structure_exit",
+      "strategy": {
+        "mtf_exit_on_30m_confirm_lost": true,
+        "mtf_30m_exit_confirm_bars": 2,
+        "mtf_30m_exit_require_macd_adverse": false
+      }
+    },
+    {
+      "name": "30m_two_close_macd_adverse_exit",
+      "strategy": {
+        "mtf_exit_on_30m_confirm_lost": true,
+        "mtf_30m_exit_confirm_bars": 2,
+        "mtf_30m_exit_require_macd_adverse": true
+      }
+    }
+  ]
+}

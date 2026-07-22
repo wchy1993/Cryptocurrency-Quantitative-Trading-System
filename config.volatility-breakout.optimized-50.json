@@ -1,0 +1,1154 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout",
+  "strategy_version": "dual_thrust_closed_bar_v1",
+  "status": "frozen_historical_research_not_live",
+  "period": {
+    "start": "2026-03-06T00:00:00",
+    "end": "2026-06-06T00:00:00"
+  },
+  "universe_size": 50,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "ZECUSDT",
+    "HYPEUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "BNBUSDT",
+    "SIRENUSDT",
+    "1000PEPEUSDT",
+    "TAOUSDT",
+    "NEARUSDT",
+    "WLDUSDT",
+    "SUIUSDT",
+    "ADAUSDT",
+    "TONUSDT",
+    "AVAXUSDT",
+    "ENAUSDT",
+    "LINKUSDT",
+    "FILUSDT",
+    "XLMUSDT",
+    "BCHUSDT",
+    "ONDOUSDT",
+    "TRUMPUSDT",
+    "AAVEUSDT",
+    "DOTUSDT",
+    "PENGUUSDT",
+    "LTCUSDT",
+    "TRXUSDT",
+    "FETUSDT",
+    "UNIUSDT",
+    "INJUSDT",
+    "DASHUSDT",
+    "BUSDT",
+    "ARBUSDT",
+    "1000SHIBUSDT",
+    "APEUSDT",
+    "XMRUSDT",
+    "APTUSDT",
+    "WIFUSDT",
+    "ICPUSDT",
+    "ETCUSDT",
+    "VIRTUALUSDT",
+    "HBARUSDT",
+    "RENDERUSDT",
+    "CRVUSDT",
+    "JTOUSDT",
+    "OPUSDT",
+    "CHZUSDT",
+    "1000BONKUSDT"
+  ],
+  "signal": {
+    "timeframe_minutes": 60,
+    "lookback_days": 5,
+    "long_k": 0.7,
+    "short_k": 0.6,
+    "allow_long": true,
+    "allow_short": true,
+    "atr_period": 14,
+    "trend_ema_period": 48,
+    "min_trend_alignment_atr": -999.0,
+    "min_volume_ratio": 0.0,
+    "min_body_atr": 0.0,
+    "min_directional_close_position": 0.0,
+    "min_range_atr": 0.0,
+    "max_range_atr": 999.0,
+    "max_breakout_extension_atr": 999.0,
+    "max_signals_per_symbol_day": 2,
+    "stop_atr_multiple": 0.75,
+    "take_profit_r": 60.0,
+    "breakeven_trigger_r": 0.0,
+    "trailing_activation_r": 0.0,
+    "trailing_atr_multiple": 0.0,
+    "max_holding_minutes": 960
+  },
+  "portfolio": {
+    "risk_per_trade_pct": 0.04,
+    "max_open_positions": 1,
+    "max_daily_trades": 5,
+    "symbol_cooldown_minutes": 120,
+    "max_notional_multiple": 9.0,
+    "hard_drawdown_stop_pct": 0.6,
+    "compound": true
+  },
+  "cost_model": {
+    "source_config": "config.gui.mtf-momentum-reset-stage21.json",
+    "source_config_sha256": "cb7bdc9c4c8577a9555361f40a7d1490e92eacded588f3c9eb784c467d6654c5",
+    "mode": "conservative",
+    "market_slippage_bps": 2.0,
+    "stop_slippage_bps": 5.0,
+    "take_profit_slippage_bps": 2.0,
+    "taker_fee_rate": 0.0005,
+    "maker_fee_rate": 0.0002,
+    "funding_enabled": true,
+    "funding_data_dir": "data/binance_funding_365d_top100",
+    "funding_symbols": 53,
+    "funding_missing_symbols": []
+  },
+  "execution_rules": {
+    "signal_confirmation": "closed_15m_30m_or_60m_bar",
+    "entry": "next_1m_open",
+    "old_positions_exit_before_new_entries": true,
+    "same_bar_conflict": "stop_first",
+    "gap_stop": "worse_open_price",
+    "point_in_time_data": true
+  },
+  "stress_tests": {
+    "fixed_risk_no_compounding": {
+      "candidate_count": 916,
+      "trade_count": 170,
+      "initial_equity": 200.0,
+      "final_equity": 1599.7584087928885,
+      "net_profit": 1399.7584087928885,
+      "return_pct": 6.998792043964443,
+      "win_rate": 0.27647058823529413,
+      "profit_factor": 2.4555169518463216,
+      "expectancy_usdt": 8.233872992899345,
+      "expectancy_r": 1.027571614380456,
+      "average_win": 50.24361695319924,
+      "average_loss": -7.8186307968087405,
+      "average_win_loss_ratio": 6.426140108023354,
+      "max_drawdown_pct": 0.3703306221500407,
+      "max_drawdown_duration_minutes": 28638,
+      "fee": 119.39814473299998,
+      "slippage": 118.15328072077538,
+      "funding": -0.26903047411035963,
+      "full_cost": 237.82045592788575,
+      "cost_to_raw_gross_profit_ratio": 0.0982969409646844,
+      "top5_profit_contribution": 0.794301773474986,
+      "hard_drawdown_stopped": false,
+      "positive_months": 4,
+      "negative_months": 0,
+      "by_month": {
+        "2026-03": {
+          "trade_count": 39,
+          "net_pnl": 75.18227662871472,
+          "gross_profit": 291.8341993826738,
+          "gross_loss": 216.65192275395907,
+          "win_rate": 0.2564102564102564,
+          "profit_factor": 1.347018737120074
+        },
+        "2026-04": {
+          "trade_count": 59,
+          "net_pnl": 813.5629262599059,
+          "gross_profit": 1134.8123982078544,
+          "gross_loss": 321.24947194794817,
+          "win_rate": 0.3050847457627119,
+          "profit_factor": 3.5324957620217576
+        },
+        "2026-05": {
+          "trade_count": 60,
+          "net_pnl": 495.48386468199624,
+          "gross_profit": 855.0974258110506,
+          "gross_loss": 359.61356112905423,
+          "win_rate": 0.25,
+          "profit_factor": 2.3778230807713685
+        },
+        "2026-06": {
+          "trade_count": 12,
+          "net_pnl": 15.529341222271924,
+          "gross_profit": 79.70597339878569,
+          "gross_loss": 64.17663217651376,
+          "win_rate": 0.3333333333333333,
+          "profit_factor": 1.241978126548608
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 67,
+          "net_pnl": 155.95602338768936,
+          "gross_profit": 496.7412568475534,
+          "gross_loss": 340.785233459864,
+          "win_rate": 0.34328358208955223,
+          "profit_factor": 1.4576372685058172
+        },
+        "LONG": {
+          "trade_count": 103,
+          "net_pnl": 1243.8023854052005,
+          "gross_profit": 1864.708739952811,
+          "gross_loss": 620.9063545476114,
+          "win_rate": 0.23300970873786409,
+          "profit_factor": 3.003204470843959
+        }
+      },
+      "by_exit_reason": {
+        "time_stop": {
+          "trade_count": 48,
+          "net_pnl": 1862.7411957081283,
+          "gross_profit": 1865.5933255317948,
+          "gross_loss": 2.852129823666692,
+          "win_rate": 0.9375,
+          "profit_factor": 654.1053321105111
+        },
+        "stop_loss": {
+          "trade_count": 120,
+          "net_pnl": -958.8394581838087,
+          "gross_profit": 0.0,
+          "gross_loss": 958.8394581838087,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "take_profit": {
+          "trade_count": 1,
+          "net_pnl": 481.2054846525696,
+          "gross_profit": 481.2054846525696,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "end_of_backtest": {
+          "trade_count": 1,
+          "net_pnl": 14.651186615999961,
+          "gross_profit": 14.651186615999961,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      }
+    },
+    "entry_delay_1m": {
+      "candidate_count": 916,
+      "trade_count": 172,
+      "initial_equity": 200.0,
+      "final_equity": 1817.254331406919,
+      "net_profit": 1617.254331406919,
+      "return_pct": 8.086271657034594,
+      "win_rate": 0.27325581395348836,
+      "profit_factor": 1.3315681890321078,
+      "expectancy_usdt": 9.402641461668134,
+      "expectancy_r": 0.5374990099696147,
+      "average_win": 138.1882188629297,
+      "average_loss": -39.020735641206215,
+      "average_win_loss_ratio": 3.541404758064115,
+      "max_drawdown_pct": 0.5861034449317633,
+      "max_drawdown_duration_minutes": 22090,
+      "fee": 538.3360763390001,
+      "slippage": 516.6003269075371,
+      "funding": 23.89557774591818,
+      "full_cost": 1031.0408255006191,
+      "cost_to_raw_gross_profit_ratio": 0.15415747280601189,
+      "top5_profit_contribution": 1.4595584237416195,
+      "hard_drawdown_stopped": false,
+      "positive_months": 4,
+      "negative_months": 0,
+      "by_month": {
+        "2026-03": {
+          "trade_count": 34,
+          "net_pnl": 172.12143468100723,
+          "gross_profit": 392.0557105606734,
+          "gross_loss": 219.9342758796662,
+          "win_rate": 0.35294117647058826,
+          "profit_factor": 1.7826039574439998
+        },
+        "2026-04": {
+          "trade_count": 64,
+          "net_pnl": 98.06556935390432,
+          "gross_profit": 1210.7423071156559,
+          "gross_loss": 1112.6767377617518,
+          "win_rate": 0.25,
+          "profit_factor": 1.0881348248109974
+        },
+        "2026-05": {
+          "trade_count": 62,
+          "net_pnl": 1071.922629863711,
+          "gross_profit": 4205.257038832882,
+          "gross_loss": 3133.3344089691723,
+          "win_rate": 0.22580645161290322,
+          "profit_factor": 1.3421028495379652
+        },
+        "2026-06": {
+          "trade_count": 12,
+          "net_pnl": 275.1446975082964,
+          "gross_profit": 686.7912300484833,
+          "gross_loss": 411.64653254018685,
+          "win_rate": 0.4166666666666667,
+          "profit_factor": 1.668400376921517
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 63,
+          "net_pnl": 515.4074817276862,
+          "gross_profit": 2108.7215027104107,
+          "gross_loss": 1593.314020982725,
+          "win_rate": 0.36507936507936506,
+          "profit_factor": 1.3234814198206781
+        },
+        "LONG": {
+          "trade_count": 109,
+          "net_pnl": 1101.846849679233,
+          "gross_profit": 4386.124783847285,
+          "gross_loss": 3284.2779341680516,
+          "win_rate": 0.22018348623853212,
+          "profit_factor": 1.3354913535837352
+        }
+      },
+      "by_exit_reason": {
+        "time_stop": {
+          "trade_count": 48,
+          "net_pnl": 6365.180321048334,
+          "gross_profit": 6371.085529673695,
+          "gross_loss": 5.905208625361285,
+          "win_rate": 0.9583333333333334,
+          "profit_factor": 1078.8925394289363
+        },
+        "stop_loss": {
+          "trade_count": 123,
+          "net_pnl": -4871.686746525414,
+          "gross_profit": 0.0,
+          "gross_loss": 4871.686746525414,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "end_of_backtest": {
+          "trade_count": 1,
+          "net_pnl": 123.76075688400007,
+          "gross_profit": 123.76075688400007,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      }
+    },
+    "entry_delay_2m": {
+      "candidate_count": 916,
+      "trade_count": 179,
+      "initial_equity": 200.0,
+      "final_equity": 1148.165445464432,
+      "net_profit": 948.165445464432,
+      "return_pct": 4.74082722732216,
+      "win_rate": 0.25139664804469275,
+      "profit_factor": 1.2328684360069304,
+      "expectancy_usdt": 5.2970136618124695,
+      "expectancy_r": 0.44850160972433933,
+      "average_win": 111.55209161305712,
+      "average_loss": -30.38566176957566,
+      "average_win_loss_ratio": 3.671208231665081,
+      "max_drawdown_pct": 0.583366404150446,
+      "max_drawdown_duration_minutes": 22106,
+      "fee": 427.936712809,
+      "slippage": 420.3949604368997,
+      "funding": 6.084878273434932,
+      "full_cost": 842.2467949724648,
+      "cost_to_raw_gross_profit_ratio": 0.16257704626670916,
+      "top5_profit_contribution": 1.9287969654332686,
+      "hard_drawdown_stopped": false,
+      "positive_months": 3,
+      "negative_months": 1,
+      "by_month": {
+        "2026-03": {
+          "trade_count": 39,
+          "net_pnl": 59.72398554636398,
+          "gross_profit": 283.6127206272169,
+          "gross_loss": 223.88873508085294,
+          "win_rate": 0.28205128205128205,
+          "profit_factor": 1.2667574388001068
+        },
+        "2026-04": {
+          "trade_count": 63,
+          "net_pnl": 108.81195759905584,
+          "gross_profit": 1038.1827111489376,
+          "gross_loss": 929.3707535498818,
+          "win_rate": 0.25396825396825395,
+          "profit_factor": 1.1170813232323387
+        },
+        "2026-05": {
+          "trade_count": 62,
+          "net_pnl": 914.5002935167821,
+          "gross_profit": 3331.4833328180957,
+          "gross_loss": 2416.9830393013144,
+          "win_rate": 0.22580645161290322,
+          "profit_factor": 1.3783643818126001
+        },
+        "2026-06": {
+          "trade_count": 15,
+          "net_pnl": -134.87079119776973,
+          "gross_profit": 366.56535799331965,
+          "gross_loss": 501.43614919108944,
+          "win_rate": 0.26666666666666666,
+          "profit_factor": 0.7310309768943829
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 69,
+          "net_pnl": 274.9887515220192,
+          "gross_profit": 1701.9095300266554,
+          "gross_loss": 1426.920778504636,
+          "win_rate": 0.34782608695652173,
+          "profit_factor": 1.1927147993529101
+        },
+        "LONG": {
+          "trade_count": 110,
+          "net_pnl": 673.1766939424127,
+          "gross_profit": 3317.934592560914,
+          "gross_loss": 2644.7578986185017,
+          "win_rate": 0.19090909090909092,
+          "profit_factor": 1.2545324448389203
+        }
+      },
+      "by_exit_reason": {
+        "time_stop": {
+          "trade_count": 46,
+          "net_pnl": 4939.409962404153,
+          "gross_profit": 4942.2284317555695,
+          "gross_loss": 2.8184693514170625,
+          "win_rate": 0.9565217391304348,
+          "profit_factor": 1753.515052157913
+        },
+        "stop_loss": {
+          "trade_count": 132,
+          "net_pnl": -4068.8602077717205,
+          "gross_profit": 0.0,
+          "gross_loss": 4068.8602077717205,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "end_of_backtest": {
+          "trade_count": 1,
+          "net_pnl": 77.61569083199986,
+          "gross_profit": 77.61569083199986,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      }
+    },
+    "entry_delay_5m": {
+      "candidate_count": 916,
+      "trade_count": 171,
+      "initial_equity": 200.0,
+      "final_equity": 2618.2247412973406,
+      "net_profit": 2418.2247412973406,
+      "return_pct": 12.091123706486703,
+      "win_rate": 0.27485380116959063,
+      "profit_factor": 1.3361252699848396,
+      "expectancy_usdt": 14.141665153785619,
+      "expectancy_r": 0.5974570097033717,
+      "average_win": 204.52425342540582,
+      "average_loss": -58.019477174973666,
+      "average_win_loss_ratio": 3.525096456981278,
+      "max_drawdown_pct": 0.5123240787470571,
+      "max_drawdown_duration_minutes": 37690,
+      "fee": 725.061747318,
+      "slippage": 700.6640024283797,
+      "funding": 38.77003661534391,
+      "full_cost": 1386.9557131310357,
+      "cost_to_raw_gross_profit_ratio": 0.1403273292679385,
+      "top5_profit_contribution": 1.498025069795566,
+      "hard_drawdown_stopped": false,
+      "positive_months": 4,
+      "negative_months": 0,
+      "by_month": {
+        "2026-03": {
+          "trade_count": 34,
+          "net_pnl": 174.2798964141133,
+          "gross_profit": 402.048031527333,
+          "gross_loss": 227.76813511321973,
+          "win_rate": 0.35294117647058826,
+          "profit_factor": 1.7651636447191426
+        },
+        "2026-04": {
+          "trade_count": 63,
+          "net_pnl": 279.7092383139637,
+          "gross_profit": 1506.1615371240325,
+          "gross_loss": 1226.452298810069,
+          "win_rate": 0.25396825396825395,
+          "profit_factor": 1.2280636911727782
+        },
+        "2026-05": {
+          "trade_count": 62,
+          "net_pnl": 1822.894214167992,
+          "gross_profit": 6798.144423632084,
+          "gross_loss": 4975.250209464091,
+          "win_rate": 0.24193548387096775,
+          "profit_factor": 1.3663924702119346
+        },
+        "2026-06": {
+          "trade_count": 12,
+          "net_pnl": 141.34139240127004,
+          "gross_profit": 906.2859187106227,
+          "gross_loss": 764.9445263093526,
+          "win_rate": 0.3333333333333333,
+          "profit_factor": 1.1847733888406309
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 61,
+          "net_pnl": 1134.7669025573357,
+          "gross_profit": 3304.422671083822,
+          "gross_loss": 2169.6557685264866,
+          "win_rate": 0.3770491803278688,
+          "profit_factor": 1.5230170237226195
+        },
+        "LONG": {
+          "trade_count": 110,
+          "net_pnl": 1283.4578387400036,
+          "gross_profit": 6308.217239910251,
+          "gross_loss": 5024.759401170249,
+          "win_rate": 0.21818181818181817,
+          "profit_factor": 1.2554267251962532
+        }
+      },
+      "by_exit_reason": {
+        "time_stop": {
+          "trade_count": 47,
+          "net_pnl": 9425.808654772183,
+          "gross_profit": 9433.129309394073,
+          "gross_loss": 7.32065462188791,
+          "win_rate": 0.9787234042553191,
+          "profit_factor": 1288.5636321634554
+        },
+        "stop_loss": {
+          "trade_count": 123,
+          "net_pnl": -7187.094515074846,
+          "gross_profit": 0.0,
+          "gross_loss": 7187.094515074846,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "end_of_backtest": {
+          "trade_count": 1,
+          "net_pnl": 179.51060160000006,
+          "gross_profit": 179.51060160000006,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      }
+    },
+    "cost_1.5x": {
+      "candidate_count": 916,
+      "trade_count": 170,
+      "initial_equity": 200.0,
+      "final_equity": 8066.589848353886,
+      "net_profit": 7866.589848353886,
+      "return_pct": 39.33294924176943,
+      "win_rate": 0.27647058823529413,
+      "profit_factor": 1.4827389269361422,
+      "expectancy_usdt": 46.274057931493445,
+      "expectancy_r": 0.939386618107716,
+      "average_win": 514.0922040815724,
+      "average_loss": -132.4857214917075,
+      "average_win_loss_ratio": 3.8803593194286248,
+      "max_drawdown_pct": 0.4770978086124878,
+      "max_drawdown_duration_minutes": 37757,
+      "fee": 2480.6743888935,
+      "slippage": 2122.9212562297207,
+      "funding": 78.89155524738808,
+      "full_cost": 4524.704089875832,
+      "cost_to_raw_gross_profit_ratio": 0.18137394855341843,
+      "top5_profit_contribution": 1.3034190751192634,
+      "hard_drawdown_stopped": false,
+      "positive_months": 4,
+      "negative_months": 0,
+      "by_month": {
+        "2026-03": {
+          "trade_count": 39,
+          "net_pnl": 20.854190894859357,
+          "gross_profit": 262.55240293971104,
+          "gross_loss": 241.6982120448517,
+          "win_rate": 0.2564102564102564,
+          "profit_factor": 1.0862819410968148
+        },
+        "2026-04": {
+          "trade_count": 59,
+          "net_pnl": 1750.4816106982823,
+          "gross_profit": 3936.743060168904,
+          "gross_loss": 2186.2614494706218,
+          "win_rate": 0.3050847457627119,
+          "profit_factor": 1.8006735018458755
+        },
+        "2026-05": {
+          "trade_count": 60,
+          "net_pnl": 5867.971820973054,
+          "gross_profit": 17422.124095218835,
+          "gross_loss": 11554.152274245776,
+          "win_rate": 0.25,
+          "profit_factor": 1.5078669279833516
+        },
+        "2026-06": {
+          "trade_count": 12,
+          "net_pnl": 227.28222578768907,
+          "gross_profit": 2540.914033506455,
+          "gross_loss": 2313.631807718766,
+          "win_rate": 0.3333333333333333,
+          "profit_factor": 1.0982361260030342
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 67,
+          "net_pnl": 1166.6934216802488,
+          "gross_profit": 7269.29688999755,
+          "gross_loss": 6102.603468317303,
+          "win_rate": 0.34328358208955223,
+          "profit_factor": 1.1911796215725523
+        },
+        "LONG": {
+          "trade_count": 103,
+          "net_pnl": 6699.8964266736375,
+          "gross_profit": 16893.03670183635,
+          "gross_loss": 10193.140275162714,
+          "win_rate": 0.23300970873786409,
+          "profit_factor": 1.6572946359817153
+        }
+      },
+      "by_exit_reason": {
+        "time_stop": {
+          "trade_count": 48,
+          "net_pnl": 21136.564841918185,
+          "gross_profit": 21196.34844652489,
+          "gross_loss": 59.78360460670719,
+          "win_rate": 0.9375,
+          "profit_factor": 354.55119486299503
+        },
+        "stop_loss": {
+          "trade_count": 120,
+          "net_pnl": -16235.960138873308,
+          "gross_profit": 0.0,
+          "gross_loss": 16235.960138873308,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "take_profit": {
+          "trade_count": 1,
+          "net_pnl": 2435.7777084840127,
+          "gross_profit": 2435.7777084840127,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "end_of_backtest": {
+          "trade_count": 1,
+          "net_pnl": 530.2074368250004,
+          "gross_profit": 530.2074368250004,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      }
+    },
+    "cost_2.0x": {
+      "candidate_count": 916,
+      "trade_count": 170,
+      "initial_equity": 200.0,
+      "final_equity": 5328.303252954886,
+      "net_profit": 5128.303252954886,
+      "return_pct": 25.64151626477443,
+      "win_rate": 0.27647058823529413,
+      "profit_factor": 1.4356242404182873,
+      "expectancy_usdt": 30.16648972326404,
+      "expectancy_r": 0.8599263924028129,
+      "average_win": 359.5874989861302,
+      "average_loss": -95.70983088937587,
+      "average_win_loss_ratio": 3.7570591823712616,
+      "max_drawdown_pct": 0.4790781940630334,
+      "max_drawdown_duration_minutes": 38206,
+      "fee": 2223.1580979189994,
+      "slippage": 1822.2589624013692,
+      "funding": 55.20865387388907,
+      "full_cost": 3990.2084064464793,
+      "cost_to_raw_gross_profit_ratio": 0.22641871823558532,
+      "top5_profit_contribution": 1.4440629743175537,
+      "hard_drawdown_stopped": false,
+      "positive_months": 4,
+      "negative_months": 0,
+      "by_month": {
+        "2026-03": {
+          "trade_count": 39,
+          "net_pnl": 1.3791675857885863,
+          "gross_profit": 232.84007521783352,
+          "gross_loss": 231.46090763204495,
+          "win_rate": 0.2564102564102564,
+          "profit_factor": 1.0059585335592869
+        },
+        "2026-04": {
+          "trade_count": 59,
+          "net_pnl": 1350.8229983447297,
+          "gross_profit": 3120.1490247448023,
+          "gross_loss": 1769.3260264000726,
+          "win_rate": 0.3050847457627119,
+          "profit_factor": 1.7634675453755448
+        },
+        "2026-05": {
+          "trade_count": 60,
+          "net_pnl": 3739.227864251502,
+          "gross_profit": 11960.356509548714,
+          "gross_loss": 8221.128645297213,
+          "win_rate": 0.25,
+          "profit_factor": 1.454831450228002
+        },
+        "2026-06": {
+          "trade_count": 12,
+          "net_pnl": 36.873222772865404,
+          "gross_profit": 1587.266842836769,
+          "gross_loss": 1550.3936200639039,
+          "win_rate": 0.3333333333333333,
+          "profit_factor": 1.0237831362924115
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 67,
+          "net_pnl": 414.3959258011336,
+          "gross_profit": 4777.728986187701,
+          "gross_loss": 4363.333060386566,
+          "win_rate": 0.34328358208955223,
+          "profit_factor": 1.09497233423763
+        },
+        "LONG": {
+          "trade_count": 103,
+          "net_pnl": 4713.907327153751,
+          "gross_profit": 12122.88346616042,
+          "gross_loss": 7408.976139006667,
+          "win_rate": 0.23300970873786409,
+          "profit_factor": 1.636242746462098
+        }
+      },
+      "by_exit_reason": {
+        "time_stop": {
+          "trade_count": 48,
+          "net_pnl": 14568.069652112705,
+          "gross_profit": 14624.184713540633,
+          "gross_loss": 56.11506142792982,
+          "win_rate": 0.9375,
+          "profit_factor": 260.6106870670166
+        },
+        "stop_loss": {
+          "trade_count": 120,
+          "net_pnl": -11716.1941379653,
+          "gross_profit": 0.0,
+          "gross_loss": 11716.1941379653,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "take_profit": {
+          "trade_count": 1,
+          "net_pnl": 1939.4945312554862,
+          "gross_profit": 1939.4945312554862,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "end_of_backtest": {
+          "trade_count": 1,
+          "net_pnl": 336.93320755199926,
+          "gross_profit": 336.93320755199926,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      }
+    },
+    "exclude_top_1_path": {
+      "candidate_count": 916,
+      "trade_count": 107,
+      "initial_equity": 200.0,
+      "final_equity": 1877.7877187969339,
+      "net_profit": 1677.7877187969339,
+      "return_pct": 8.388938593984669,
+      "win_rate": 0.2616822429906542,
+      "profit_factor": 1.4284772751735704,
+      "expectancy_usdt": 15.680259054176952,
+      "expectancy_r": 0.9527693093346219,
+      "average_win": 199.76735621475396,
+      "average_loss": -49.56580069893897,
+      "average_win_loss_ratio": 4.030346597811145,
+      "max_drawdown_pct": 0.615406136950781,
+      "max_drawdown_duration_minutes": 59313,
+      "fee": 497.39242030549997,
+      "slippage": 468.39273561711406,
+      "funding": -22.655699897570027,
+      "full_cost": 988.440855820184,
+      "cost_to_raw_gross_profit_ratio": 0.17147639041467194,
+      "top5_profit_contribution": 2.6331321072312073,
+      "hard_drawdown_stopped": true,
+      "positive_months": 2,
+      "negative_months": 1,
+      "by_month": {
+        "2026-03": {
+          "trade_count": 39,
+          "net_pnl": 45.14558302157048,
+          "gross_profit": 297.83399756769103,
+          "gross_loss": 252.68841454612053,
+          "win_rate": 0.2564102564102564,
+          "profit_factor": 1.178661071987258
+        },
+        "2026-04": {
+          "trade_count": 59,
+          "net_pnl": 2450.3433727070237,
+          "gross_profit": 5295.651976445419,
+          "gross_loss": 2845.308603738396,
+          "win_rate": 0.3050847457627119,
+          "profit_factor": 1.8611872081248284
+        },
+        "2026-05": {
+          "trade_count": 9,
+          "net_pnl": -817.7012369316626,
+          "gross_profit": 0.0,
+          "gross_loss": 817.7012369316626,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 39,
+          "net_pnl": -652.40704597687,
+          "gross_profit": 483.5213830794869,
+          "gross_loss": 1135.928429056357,
+          "win_rate": 0.358974358974359,
+          "profit_factor": 0.4256618381152409
+        },
+        "LONG": {
+          "trade_count": 68,
+          "net_pnl": 2330.1947647738025,
+          "gross_profit": 5109.964590933623,
+          "gross_loss": 2779.7698261598216,
+          "win_rate": 0.20588235294117646,
+          "profit_factor": 1.8382689612804755
+        }
+      },
+      "by_exit_reason": {
+        "time_stop": {
+          "trade_count": 30,
+          "net_pnl": 2284.8863157551746,
+          "gross_profit": 2338.081943943507,
+          "gross_loss": 53.19562818833225,
+          "win_rate": 0.9,
+          "profit_factor": 43.95252060311855
+        },
+        "stop_loss": {
+          "trade_count": 76,
+          "net_pnl": -3862.502627027846,
+          "gross_profit": 0.0,
+          "gross_loss": 3862.502627027846,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "take_profit": {
+          "trade_count": 1,
+          "net_pnl": 3255.404030069604,
+          "gross_profit": 3255.404030069604,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      }
+    },
+    "exclude_top_3_path": {
+      "candidate_count": 916,
+      "trade_count": 105,
+      "initial_equity": 200.0,
+      "final_equity": 585.8390932477099,
+      "net_profit": 385.8390932477099,
+      "return_pct": 1.9291954662385495,
+      "win_rate": 0.26666666666666666,
+      "profit_factor": 1.2229168776147912,
+      "expectancy_usdt": 3.6746580309305705,
+      "expectancy_r": 0.41230768853295,
+      "average_win": 75.5965862741871,
+      "average_loss": -22.47877042116272,
+      "average_win_loss_ratio": 3.3630214134406753,
+      "max_drawdown_pct": 0.6079498759225764,
+      "max_drawdown_duration_minutes": 64288,
+      "fee": 223.15993424250004,
+      "slippage": 222.76949869760907,
+      "funding": -17.56972950979196,
+      "full_cost": 463.49916244990106,
+      "cost_to_raw_gross_profit_ratio": 0.20660371479619832,
+      "top5_profit_contribution": 3.1468252142619897,
+      "hard_drawdown_stopped": true,
+      "positive_months": 2,
+      "negative_months": 1,
+      "by_month": {
+        "2026-03": {
+          "trade_count": 39,
+          "net_pnl": 45.14558302157048,
+          "gross_profit": 297.83399756769103,
+          "gross_loss": 252.68841454612053,
+          "win_rate": 0.2564102564102564,
+          "profit_factor": 1.178661071987258
+        },
+        "2026-04": {
+          "trade_count": 59,
+          "net_pnl": 529.8675168917943,
+          "gross_profit": 1818.8704181095482,
+          "gross_loss": 1289.0029012177536,
+          "win_rate": 0.3050847457627119,
+          "profit_factor": 1.4110677457678453
+        },
+        "2026-05": {
+          "trade_count": 7,
+          "net_pnl": -189.17400666565547,
+          "gross_profit": 0.0,
+          "gross_loss": 189.17400666565547,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 39,
+          "net_pnl": -59.930628313586865,
+          "gross_profit": 458.9307289128755,
+          "gross_loss": 518.8613572264624,
+          "win_rate": 0.38461538461538464,
+          "profit_factor": 0.8844958725892753
+        },
+        "LONG": {
+          "trade_count": 66,
+          "net_pnl": 445.7697215612958,
+          "gross_profit": 1657.7736867643634,
+          "gross_loss": 1212.0039652030675,
+          "win_rate": 0.19696969696969696,
+          "profit_factor": 1.367795596680749
+        }
+      },
+      "by_exit_reason": {
+        "time_stop": {
+          "trade_count": 30,
+          "net_pnl": 2116.156919553529,
+          "gross_profit": 2116.704415677239,
+          "gross_loss": 0.5474961237099819,
+          "win_rate": 0.9333333333333333,
+          "profit_factor": 3866.1541589260523
+        },
+        "stop_loss": {
+          "trade_count": 75,
+          "net_pnl": -1730.3178263058194,
+          "gross_profit": 0.0,
+          "gross_loss": 1730.3178263058194,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        }
+      }
+    },
+    "exclude_top_5_path": {
+      "candidate_count": 916,
+      "trade_count": 105,
+      "initial_equity": 200.0,
+      "final_equity": 585.8390932477099,
+      "net_profit": 385.8390932477099,
+      "return_pct": 1.9291954662385495,
+      "win_rate": 0.26666666666666666,
+      "profit_factor": 1.2229168776147912,
+      "expectancy_usdt": 3.6746580309305705,
+      "expectancy_r": 0.41230768853295,
+      "average_win": 75.5965862741871,
+      "average_loss": -22.47877042116272,
+      "average_win_loss_ratio": 3.3630214134406753,
+      "max_drawdown_pct": 0.6079498759225764,
+      "max_drawdown_duration_minutes": 64288,
+      "fee": 223.15993424250004,
+      "slippage": 222.76949869760907,
+      "funding": -17.56972950979196,
+      "full_cost": 463.49916244990106,
+      "cost_to_raw_gross_profit_ratio": 0.20660371479619832,
+      "top5_profit_contribution": 3.1468252142619897,
+      "hard_drawdown_stopped": true,
+      "positive_months": 2,
+      "negative_months": 1,
+      "by_month": {
+        "2026-03": {
+          "trade_count": 39,
+          "net_pnl": 45.14558302157048,
+          "gross_profit": 297.83399756769103,
+          "gross_loss": 252.68841454612053,
+          "win_rate": 0.2564102564102564,
+          "profit_factor": 1.178661071987258
+        },
+        "2026-04": {
+          "trade_count": 59,
+          "net_pnl": 529.8675168917943,
+          "gross_profit": 1818.8704181095482,
+          "gross_loss": 1289.0029012177536,
+          "win_rate": 0.3050847457627119,
+          "profit_factor": 1.4110677457678453
+        },
+        "2026-05": {
+          "trade_count": 7,
+          "net_pnl": -189.17400666565547,
+          "gross_profit": 0.0,
+          "gross_loss": 189.17400666565547,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 39,
+          "net_pnl": -59.930628313586865,
+          "gross_profit": 458.9307289128755,
+          "gross_loss": 518.8613572264624,
+          "win_rate": 0.38461538461538464,
+          "profit_factor": 0.8844958725892753
+        },
+        "LONG": {
+          "trade_count": 66,
+          "net_pnl": 445.7697215612958,
+          "gross_profit": 1657.7736867643634,
+          "gross_loss": 1212.0039652030675,
+          "win_rate": 0.19696969696969696,
+          "profit_factor": 1.367795596680749
+        }
+      },
+      "by_exit_reason": {
+        "time_stop": {
+          "trade_count": 30,
+          "net_pnl": 2116.156919553529,
+          "gross_profit": 2116.704415677239,
+          "gross_loss": 0.5474961237099819,
+          "win_rate": 0.9333333333333333,
+          "profit_factor": 3866.1541589260523
+        },
+        "stop_loss": {
+          "trade_count": 75,
+          "net_pnl": -1730.3178263058194,
+          "gross_profit": 0.0,
+          "gross_loss": 1730.3178263058194,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        }
+      }
+    },
+    "exclude_top_symbol": {
+      "excluded_symbol": "INJUSDT",
+      "result": {
+        "candidate_count": 901,
+        "trade_count": 170,
+        "initial_equity": 200.0,
+        "final_equity": 8679.233202736265,
+        "net_profit": 8479.233202736265,
+        "return_pct": 42.396166013681324,
+        "win_rate": 0.27058823529411763,
+        "profit_factor": 1.4181520806192347,
+        "expectancy_usdt": 49.87784236903685,
+        "expectancy_r": 0.959283941352406,
+        "average_win": 625.1544003834543,
+        "average_loss": -163.53120334598898,
+        "average_win_loss_ratio": 3.822844739060546,
+        "max_drawdown_pct": 0.518934278521647,
+        "max_drawdown_duration_minutes": 42113,
+        "fee": 2211.282743096501,
+        "slippage": 2037.8850774792968,
+        "funding": 81.88321483277676,
+        "full_cost": 4167.2846057430215,
+        "cost_to_raw_gross_profit_ratio": 0.14147887566579834,
+        "top5_profit_contribution": 1.5965644836027506,
+        "hard_drawdown_stopped": false,
+        "positive_months": 4,
+        "negative_months": 0,
+        "by_month": {
+          "2026-03": {
+            "trade_count": 39,
+            "net_pnl": 45.14558302157048,
+            "gross_profit": 297.83399756769103,
+            "gross_loss": 252.68841454612053,
+            "win_rate": 0.2564102564102564,
+            "profit_factor": 1.178661071987258
+          },
+          "2026-04": {
+            "trade_count": 59,
+            "net_pnl": 2450.3433727070237,
+            "gross_profit": 5295.651976445419,
+            "gross_loss": 2845.308603738396,
+            "win_rate": 0.3050847457627119,
+            "profit_factor": 1.8611872081248284
+          },
+          "2026-05": {
+            "trade_count": 60,
+            "net_pnl": 5548.591189363968,
+            "gross_profit": 20273.65757512179,
+            "gross_loss": 14725.066385757824,
+            "win_rate": 0.23333333333333334,
+            "profit_factor": 1.3768126434207861
+          },
+          "2026-06": {
+            "trade_count": 12,
+            "net_pnl": 435.1530576437025,
+            "gross_profit": 2889.958868503999,
+            "gross_loss": 2454.805810860297,
+            "win_rate": 0.3333333333333333,
+            "profit_factor": 1.1772657762657002
+          }
+        },
+        "by_side": {
+          "SHORT": {
+            "trade_count": 67,
+            "net_pnl": 2032.6644902729925,
+            "gross_profit": 9208.959336618993,
+            "gross_loss": 7176.294846346001,
+            "win_rate": 0.34328358208955223,
+            "profit_factor": 1.2832470702214773
+          },
+          "LONG": {
+            "trade_count": 103,
+            "net_pnl": 6446.568712463276,
+            "gross_profit": 19548.143081019905,
+            "gross_loss": 13101.574368556632,
+            "win_rate": 0.22330097087378642,
+            "profit_factor": 1.4920453474610529
+          }
+        },
+        "by_exit_reason": {
+          "time_stop": {
+            "trade_count": 47,
+            "net_pnl": 24855.557473304965,
+            "gross_profit": 24908.753101493297,
+            "gross_loss": 53.19562818833225,
+            "win_rate": 0.9361702127659575,
+            "profit_factor": 468.24812394934173
+          },
+          "stop_loss": {
+            "trade_count": 121,
+            "net_pnl": -20224.6735867143,
+            "gross_profit": 0.0,
+            "gross_loss": 20224.6735867143,
+            "win_rate": 0.0,
+            "profit_factor": 0.0
+          },
+          "take_profit": {
+            "trade_count": 1,
+            "net_pnl": 3255.404030069604,
+            "gross_profit": 3255.404030069604,
+            "gross_loss": 0.0,
+            "win_rate": 1.0,
+            "profit_factor": null
+          },
+          "end_of_backtest": {
+            "trade_count": 1,
+            "net_pnl": 592.9452860759986,
+            "gross_profit": 592.9452860759986,
+            "gross_loss": 0.0,
+            "win_rate": 1.0,
+            "profit_factor": null
+          }
+        }
+      }
+    }
+  }
+}

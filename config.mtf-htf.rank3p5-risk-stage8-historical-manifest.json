@@ -1,0 +1,18 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-b.json",
+  "experiment_budget": 2,
+  "research_name": "mtf_core_v3_rank3p5_risk_stage8_historical",
+  "historical_test_range": "2026-04-01/2026-06-12",
+  "historical_test_is_not_untouched": true,
+  "experiments": [
+    {
+      "name": "frozen_risk_3p00pct"
+    },
+    {
+      "name": "selected_risk_3p50pct",
+      "risk": {
+        "risk_per_trade_pct": 0.0321839081
+      }
+    }
+  ]
+}

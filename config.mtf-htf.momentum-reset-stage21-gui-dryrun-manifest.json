@@ -1,0 +1,55 @@
+{
+  "saved_at": "2026-07-18",
+  "branch": "codex/cmipr-realistic-20260713",
+  "strategy": "mtf_1h_momentum_reset_30m_contraction_release",
+  "research_stage": "stage21_full12m_frozen",
+  "deployment_scope": "gui_dry_run_only",
+  "default_config": {
+    "path": "config.gui.mtf-momentum-reset-stage21.json",
+    "sha256": "cb7bdc9c4c8577a9555361f40a7d1490e92eacded588f3c9eb784c467d6654c5",
+    "dry_run": true,
+    "symbol_count": 30,
+    "side": "LONG",
+    "max_open_positions": 1,
+    "max_daily_trades": 2,
+    "max_addons": 0,
+    "risk_per_trade_pct": 0.0321839081
+  },
+  "frozen_rules": {
+    "minimum_rank_score": 4.25,
+    "minimum_target_to_full_cost_ratio": 12.0,
+    "minimum_btc_closed_4h_return": -0.001,
+    "minimum_directional_breadth_above_ema21": 0.55,
+    "event_cluster_hours": 4,
+    "symbol_cooldown_hours": 12,
+    "take_profit_r": 2.0,
+    "fail_fast_minutes": 120,
+    "fail_fast_min_mfe_r": 0.5,
+    "max_holding_minutes": 720
+  },
+  "implementation": {
+    "crypto_scalper/config.py": "f36a12f9d0c8a07b4291e035d745aad2ba5772697b1fcabf29701ed623ea8f1b",
+    "crypto_scalper/mtf_momentum_reset.py": "272f09a0919b784093d68655ba7af121ca569c46669f7df517d02156e359399c",
+    "crypto_scalper/live_trader.py": "2ad3614b7dec7e950f2e60dced7e525a98438510b448563ba1ebddad346f8339",
+    "crypto_scalper/gui.py": "36811abb3c398037ea57f73b2d0f907c0d26dc07691381eb8a387e8d5567388f"
+  },
+  "historical_result": {
+    "path": "reports/mtf_momentum_reset_full12m_stage21_path.json",
+    "sha256": "dfa5e621812ed6b0ec710f4fe8e1bd654c08881f6a02cdc9b83ec7c884e063c1",
+    "summary": "reports/mtf_momentum_reset_full12m_stage21_summary.md",
+    "summary_sha256": "8bf9bfdf6391031c5ad95281782db1425d6be2fef70c3a19f977442367fbc3b5",
+    "initial_equity": 200.0,
+    "final_equity": 332.629114215725,
+    "return_pct": 66.3145571078625,
+    "trade_count": 136,
+    "profit_factor": 1.4248740179268045,
+    "max_drawdown_pct": 15.824108614858783,
+    "untouched_holdout": false
+  },
+  "preserved_legacy_freeze": {
+    "config_sha256": "bfe10d859b0b109a374f4769b37fb54480260d2d8117fe7dd2ce15d649790f20",
+    "full12m_report_sha256": "3b54ab9d67b59d47b95674e163fb0c56e2c8207d1b071ce2510b9bc8c8a415be",
+    "stress_report_sha256": "9ac4078647fb1c5432803bfd5a788a0136e63a1fb944cff26cc20f42c7edf31c"
+  },
+  "caveat": "Historical development data is not an untouched holdout. Keep dry-run enabled until new shadow evidence is collected."
+}

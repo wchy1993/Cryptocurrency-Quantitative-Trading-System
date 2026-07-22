@@ -1,0 +1,30 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-b.json",
+  "experiment_budget": 3,
+  "research_name": "mtf_core_v3_rank3p5_exit_recheck_stage6",
+  "selection_data": [
+    "2025-06-12/2025-12-31 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "frozen_reference": "config.mtf-htf.long-rank3p5-frozen-20260717-manifest.json",
+  "experiments": [
+    {
+      "name": "frozen_exit_baseline"
+    },
+    {
+      "name": "disable_1h_confirmation_exit",
+      "strategy": {
+        "mtf_exit_on_1h_confirm_lost": false
+      }
+    },
+    {
+      "name": "breakeven_at_1r",
+      "strategy": {
+        "mtf_profit_protection_enabled": true,
+        "mtf_move_stop_to_breakeven_r": 1.0,
+        "mtf_trailing_mode": "none"
+      }
+    }
+  ]
+}

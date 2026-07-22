@@ -1,0 +1,35 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-b.json",
+  "experiment_budget": 4,
+  "research_name": "mtf_core_v3_rank3p5_signal_frequency_stage4",
+  "selection_data": [
+    "2025-06-12/2025-12-31 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "frozen_reference": "config.mtf-htf.long-rank3p5-frozen-20260717-manifest.json",
+  "experiments": [
+    {
+      "name": "frozen_baseline"
+    },
+    {
+      "name": "long_funding_floor_neg_5e5",
+      "strategy": {
+        "mtf_long_min_funding_rate": -0.00005
+      }
+    },
+    {
+      "name": "rsi_neutral_40_60",
+      "strategy": {
+        "mtf_30m_rsi_min": 40.0,
+        "mtf_30m_rsi_max": 60.0
+      }
+    },
+    {
+      "name": "trigger_sweep_and_structure",
+      "strategy": {
+        "mtf_15m_trigger_mode": "both"
+      }
+    }
+  ]
+}

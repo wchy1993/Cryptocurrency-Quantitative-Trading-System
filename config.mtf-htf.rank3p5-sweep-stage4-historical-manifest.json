@@ -1,0 +1,20 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-b.json",
+  "experiment_budget": 1,
+  "research_name": "mtf_core_v3_rank3p5_sweep_stage4_historical",
+  "selection_source": "config.mtf-htf.rank3p5-signal-frequency-stage4-manifest.json",
+  "selection_data": [
+    "2025-06-12/2025-12-31 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "historical_test_is_not_untouched_holdout": true,
+  "experiments": [
+    {
+      "name": "rank3p5_sweep_and_structure_historical",
+      "strategy": {
+        "mtf_15m_trigger_mode": "both"
+      }
+    }
+  ]
+}

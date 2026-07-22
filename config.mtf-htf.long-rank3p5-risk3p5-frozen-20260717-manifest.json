@@ -1,0 +1,44 @@
+{
+  "snapshot_name": "mtf_core_v3_rank3p5_max1_no_addon_risk3p5_frozen_20260717",
+  "frozen_at": "2026-07-17",
+  "branch": "codex/cmipr-realistic-20260713",
+  "git_head": "a0e205a41e94aef23bcc0939111d89564d91a391",
+  "strategy_config": {
+    "path": "config.mtf-htf.long-rank3p5-aggressive-3p5.json",
+    "sha256": "bfe10d859b0b109a374f4769b37fb54480260d2d8117fe7dd2ce15d649790f20"
+  },
+  "full_12m_report": {
+    "path": "reports/mtf_htf_long_rank3p5_risk3p5_full12m.json",
+    "sha256": "3b54ab9d67b59d47b95674e163fb0c56e2c8207d1b071ce2510b9bc8c8a415be"
+  },
+  "stress_report": {
+    "path": "reports/mtf_htf_long_rank3p5_risk3p5_stress12m.json",
+    "sha256": "9ac4078647fb1c5432803bfd5a788a0136e63a1fb944cff26cc20f42c7edf31c"
+  },
+  "frozen_behavior": {
+    "symbols": 30,
+    "max_open_positions": 1,
+    "max_new_entries_per_cycle": 1,
+    "initial_entry_fraction": 1.0,
+    "max_scale_ins_per_symbol": 0,
+    "allow_loss_scale_in": false,
+    "mtf_long_min_rank_score": 3.5,
+    "mtf_short_min_rank_score": -999.0,
+    "take_profit_r": 2.0,
+    "risk_per_trade_pct": 0.0321839081,
+    "full_cost": true,
+    "conservative_1m_execution": true,
+    "rejected_30m_exit_enabled": false
+  },
+  "frozen_result": {
+    "initial_equity": 200.0,
+    "final_equity": 314.55970215349544,
+    "net_pnl": 114.55970215349545,
+    "return_pct": 57.27985107674771,
+    "trades": 60,
+    "win_rate_pct": 40.0,
+    "profit_factor": 1.7099500511978727,
+    "max_drawdown_pct": 30.469804236099897
+  },
+  "note": "This is an aggressive historical research candidate. The studied period is not an untouched holdout; final acceptance requires post-freeze shadow/dry-run data. The original 3 percent frozen configuration remains unchanged."
+}

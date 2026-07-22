@@ -1,0 +1,24 @@
+{
+  "status": "recent_holdout_frozen_separately_from_v2",
+  "source_strategy_modified": false,
+  "decision": {
+    "status": "do_not_promote",
+    "reason": "the frozen candidate lost money and hit the hard drawdown stop; every fixed exit family representative also hit the hard stop",
+    "selected_profitable": false,
+    "selected_completed_without_hard_stop": false,
+    "all_evaluated_variants_hard_stopped": true
+  },
+  "report": "reports/volatility_breakout_v3_exit_protection_recent_holdout.json",
+  "summary": "reports/volatility_breakout_v3_exit_protection_recent_holdout.md",
+  "hashes": {
+    "config.volatility-breakout.v3-exit-protection-holdout.json": "dfc5bf5b7b4c9179680b5a79b63d17a6052f081192909ca236c28543d937d03f",
+    "reports/volatility_breakout_v3_exit_protection_3m.json": "14f6b58dcd34d2d96afef00364ad3463222b1ba0f5043ed53e12f8e47db14c74",
+    "config.volatility-breakout.v3-exit-protection-selected.json": "86b9f633efae11f613d2d00e3455710709da173ffd390f6ff80e826d3ace5447",
+    "reports/volatility_breakout_v3_exit_protection_recent_holdout.json": "30b42dd9e0b2740943bbfd636a88b2aca1cb36a6da7499ef5fb96671c7fcecc7",
+    "reports/volatility_breakout_v3_exit_protection_recent_holdout.md": "bd07745e7dc564ad14c83c8f65b1c4a57ba0afcbb8bd6633f8bc3be340c6e306",
+    "crypto_scalper/volatility_breakout_exit_protection.py": "7796495b20efcf0aa6f2b3acfb148d0c0da90ab99f5004c36e89c6a83ada3196",
+    "crypto_scalper/volatility_breakout_exit_protection_research.py": "31f3bc36444698c3761fe26b2e253f61f658cb1e5132346141e13ebbc453c021",
+    "crypto_scalper/volatility_breakout_exit_protection_holdout.py": "b9019613d9d4153190cc62cc7a6ace8dd12d86a75fbbfbecf83ee0569e404694",
+    "tests/test_volatility_breakout_exit_protection.py": "1a6d88e897eeabb10fd3086d9843ec2e8705484f30b0c160bd2555a756f57e54"
+  }
+}

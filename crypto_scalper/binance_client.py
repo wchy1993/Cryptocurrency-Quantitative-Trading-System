@@ -126,6 +126,32 @@ class BinanceFuturesClient:
             candle.validate()
         return candles
 
+    def premium_index(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if symbol:
+            params["symbol"] = symbol.upper()
+        payload = self._request("GET", "/fapi/v1/premiumIndex", params)
+        return payload if isinstance(payload, list) else [payload]
+
+    def funding_rate_history(
+        self,
+        symbol: str,
+        *,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "limit": max(1, min(1000, int(limit))),
+        }
+        if start_time is not None:
+            params["startTime"] = max(0, int(start_time))
+        if end_time is not None:
+            params["endTime"] = max(0, int(end_time))
+        payload = self._request("GET", "/fapi/v1/fundingRate", params)
+        return payload if isinstance(payload, list) else []
+
     def account(self) -> dict[str, Any]:
         return self._signed_request("GET", "/fapi/v2/account")
 

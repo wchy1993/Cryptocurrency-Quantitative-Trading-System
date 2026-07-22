@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 from crypto_scalper.data import write_candles_csv
 from crypto_scalper.live_config import default_live_config
@@ -15,15 +17,90 @@ from crypto_scalper.live_portfolio_backtest import (
     _align_candles_by_common_timestamps,
     _entry_scan_cycles_for_bar,
     _load_symbol_data,
+    _maybe_scale_in_position,
+    _position_executable_net_profit_pct,
     _resample_factor,
     _starting_capital_drawdown_stop_hit,
     _weekly_profit_drawdown_stop_hit,
 )
 from crypto_scalper.binance_client import SymbolRules
 from crypto_scalper.models import Candle, Direction, Signal
+from crypto_scalper.mtf_4h_rsi_regime import MTF_REASON_TOKEN
 
 
 class LivePortfolioBacktestTests(unittest.TestCase):
+    def test_mtf_winner_addon_does_not_read_disabled_legacy_signal_cache(self) -> None:
+        config = default_live_config()
+        config = replace(
+            config,
+            trading=replace(
+                config.trading,
+                max_scale_ins_per_symbol=1,
+                scale_in_entry_fraction=0.30,
+                scale_in_min_profit_pct=0.001,
+            ),
+        )
+        position = PortfolioPosition(
+            symbol="BTCUSDT",
+            direction=Direction.LONG,
+            quantity=1.0,
+            entry_price=100.0,
+            stop_price=99.0,
+            take_profit_price=102.0,
+            entry_fee=0.0,
+            entry_index=0,
+            max_holding_bars=10,
+            best_price=101.0,
+            entry_reason=MTF_REASON_TOKEN,
+        )
+        candle = Candle(datetime(2026, 1, 1), 101.0, 101.1, 100.9, 101.0, 1000.0)
+        trader = Mock()
+        continuation = Signal(Direction.LONG, 0.7, "mtf_winner_addon_continuation", 0.01, 0.02)
+        trader._continuation_signal.return_value = continuation
+        trader._scale_in_confirmation_reason.return_value = (True, "confirmed")
+        trader._size_order.return_value = ("0", "test_stop")
+
+        cash = _maybe_scale_in_position(
+            trader,
+            config,
+            200.0,
+            {"BTCUSDT": position},
+            "BTCUSDT",
+            {"BTCUSDT": [candle]},
+            0,
+            Mock(),
+            {},
+            {},
+            {},
+            [],
+            [],
+        )
+
+        self.assertEqual(cash, 200.0)
+        trader._continuation_signal.assert_called_once()
+
+    def test_scale_in_full_cost_profit_includes_entry_and_exit_costs(self) -> None:
+        config = default_live_config()
+        position = PortfolioPosition(
+            symbol="BTCUSDT",
+            direction=Direction.LONG,
+            quantity=1.0,
+            entry_price=100.0,
+            stop_price=99.0,
+            take_profit_price=102.0,
+            entry_fee=0.05,
+            entry_index=0,
+            max_holding_bars=10,
+            best_price=100.0,
+            entry_time=datetime(2026, 1, 1),
+        )
+        candle = Candle(datetime(2026, 1, 1, 0, 1), 100.2, 100.3, 100.1, 100.2, 10_000.0)
+        rules = SymbolRules("BTCUSDT", Decimal("0.001"), Decimal("0.001"), Decimal("0.01"), Decimal("5"))
+
+        net_profit_pct = _position_executable_net_profit_pct(config, position, candle, rules)
+
+        self.assertLess(net_profit_pct, (candle.close - position.entry_price) / position.entry_price)
+
     def test_scale_in_uses_symbol_tick_for_sub_cent_asset(self) -> None:
         config = default_live_config()
         position = PortfolioPosition(

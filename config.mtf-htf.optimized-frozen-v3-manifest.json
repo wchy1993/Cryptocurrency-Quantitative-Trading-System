@@ -1,0 +1,16 @@
+{
+  "base_config": "config.mtf-htf.optimized-frozen-v1.json",
+  "experiment_budget": 1,
+  "historical_research_complete": true,
+  "final_acceptance_requires_post_freeze_shadow": true,
+  "experiments": [
+    {
+      "name": "mtf_htf_structure_only_v3",
+      "strategy": {
+        "mtf_15m_trigger_mode": "structure_break",
+        "mtf_fail_fast_minutes": 120,
+        "mtf_fail_fast_min_r": 0.50
+      }
+    }
+  ]
+}

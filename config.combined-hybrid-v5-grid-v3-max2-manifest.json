@@ -1,0 +1,20 @@
+{
+  "strategy_name": "hybrid_v5_balanced_expansion_runner_plus_dynamic_trend_grid_v3_max2",
+  "status": "independent_combined_research_artifacts",
+  "config": "config.combined-hybrid-v5-grid-v3-max2.json",
+  "report": "reports/combined_hybrid_v5_grid_v3_max2_3m_6m.json",
+  "summary": "reports/combined_hybrid_v5_grid_v3_max2_3m_6m.md",
+  "hashes": {
+    "crypto_scalper/combined_hybrid_v5_grid_v3_backtest.py": "7214ca7b401e9153b068fa897f7f1262de53804dd6f0b1cf3f3fb216c99a5cbf",
+    "tests/test_combined_hybrid_v5_grid_v3_backtest.py": "d0f0ceb33fcc56c8fc0c4ea978338b3b9fa216072d419ca5be21dfd017d8ff9c",
+    "config.combined-hybrid-v5-grid-v3-max2.json": "467b06babd1653f8404fa35731026ca72060f0a216237620876f7a4ad3a8af76",
+    "reports/combined_hybrid_v5_grid_v3_max2_3m_6m.json": "77be68f6d831ad2fc98ad33d78974bd31106e1338c3c84041346673de44831d6",
+    "reports/combined_hybrid_v5_grid_v3_max2_3m_6m.md": "996291982616e91bc691c9c7cbe06306136dbd7b151b41667f621d75e82d27fe"
+  },
+  "preserved": {
+    "active_gui": "unchanged",
+    "hybrid_v5_source": "unchanged",
+    "grid_v3_source": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}

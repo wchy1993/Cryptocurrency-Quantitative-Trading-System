@@ -1,0 +1,18 @@
+{
+  "base_config": "config.mtf-htf.optimized-frozen-v1.json",
+  "experiment_budget": 1,
+  "selection_data": [
+    "2025-06-12/2026-01-01 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "experiments": [
+    {
+      "name": "mtf_htf_frozen_v2",
+      "strategy": {
+        "mtf_fail_fast_minutes": 120,
+        "mtf_fail_fast_min_r": 0.50
+      }
+    }
+  ]
+}

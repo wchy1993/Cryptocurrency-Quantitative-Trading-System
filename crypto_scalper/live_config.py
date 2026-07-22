@@ -116,6 +116,7 @@ class LiveTradingConfig:
     scale_in_entry_fraction: float = 0.35
     max_scale_ins_per_symbol: int = 2
     scale_in_min_profit_pct: float = 0.004
+    scale_in_profit_basis: str = "gross"
     scale_in_cooldown_seconds: int = 3600
     allow_loss_scale_in: bool = False
     loss_scale_in_trigger_pct: float = 0.006
@@ -173,6 +174,8 @@ class LiveRiskConfig:
     starting_capital_usdt: float = 100.0
     max_account_margin_usage_pct: float = 0.10
     max_symbol_margin_pct: float = 0.04
+    max_maintenance_margin_ratio_pct: float = 0.0
+    estimated_maintenance_margin_rate: float = 0.005
     min_symbol_margin_pct: float = 0.01
     max_position_notional_usdt: float = 10_000.0
     risk_per_trade_pct: float = 0.06
@@ -209,6 +212,83 @@ class LiveRiskConfig:
     min_available_balance_usdt: float = 20.0
     min_order_notional_usdt: float = 5.0
     cooldown_seconds_after_loss: int = 300
+
+
+@dataclass(frozen=True)
+class DualThrustShadowConfig:
+    enabled: bool = False
+    shadow_only: bool = True
+    strategy_name: str = "dual_thrust_volatility_breakout_v2_balanced"
+    frozen_version: str = "50_balanced_20260718"
+    enabled_symbols: tuple[str, ...] = ()
+    timeframe_minutes: int = 60
+    lookback_days: int = 5
+    long_k: float = 0.70
+    short_k: float = 0.60
+    allow_long: bool = True
+    allow_short: bool = True
+    atr_period: int = 14
+    trend_ema_period: int = 48
+    max_signals_per_symbol_day: int = 2
+    stop_atr_multiple: float = 0.75
+    take_profit_r: float = 60.0
+    partial_take_profit_r: float = 0.0
+    partial_take_profit_fraction: float = 0.0
+    fail_fast_minutes: int = 120
+    fail_fast_min_mfe_r: float = 0.10
+    fail_fast_max_current_r: float = -0.50
+    max_holding_minutes: int = 960
+    risk_per_trade_pct: float = 0.04
+    max_trade_risk_pct: float = 0.10
+    max_open_positions: int = 1
+    max_daily_trades: int = 5
+    symbol_cooldown_minutes: int = 120
+    max_notional_multiple: float = 9.0
+    hard_drawdown_stop_pct: float = 0.60
+    ranking_mode: str = "quality_desc"
+    long_risk_multiplier: float = 1.0
+    short_risk_multiplier: float = 1.0
+    max_directional_btc_return_4h: float = 0.02
+    max_signal_age_minutes: int = 5
+    request_pacing_seconds: float = 0.08
+    scan_grace_seconds: int = 3
+    heartbeat_seconds: int = 300
+    state_path: str = "logs/dual_thrust_v2_balanced_50_shadow_state.json"
+    event_log_path: str = "logs/dual_thrust_v2_balanced_50_shadow_events.jsonl"
+    report_path: str = "reports/dual_thrust_v2_balanced_50_shadow_acceptance.json"
+
+
+@dataclass(frozen=True)
+class CombinedVolatilityTrendGridShadowConfig:
+    """Safety envelope for the isolated two-strategy paper account.
+
+    The detailed source parameters stay in the frozen research configs named by
+    ``source_combined_config_path``.  The live shadow verifies and hashes those
+    files before it accepts or resumes a sample.
+    """
+
+    enabled: bool = False
+    shadow_only: bool = True
+    strategy_name: str = "volatility_breakout_v2_balanced_plus_dynamic_trend_grid_v2"
+    frozen_version: str = "combined_max2_shadow_20260719"
+    enabled_symbols: tuple[str, ...] = ()
+    max_open_positions: int = 2
+    max_open_positions_per_strategy: int = 1
+    max_gross_notional_multiple: float = 9.0
+    hard_drawdown_stop_pct: float = 0.60
+    allow_same_symbol_across_strategies: bool = False
+    entry_priority: tuple[str, ...] = (
+        "volatility_breakout",
+        "dynamic_trend_following_grid",
+    )
+    source_combined_config_path: str = "config.combined-volatility-trend-grid.max2.json"
+    max_signal_age_minutes: int = 5
+    request_pacing_seconds: float = 0.08
+    scan_grace_seconds: int = 3
+    heartbeat_seconds: int = 300
+    state_path: str = "logs/combined_volatility_trend_grid_max2_shadow_state.json"
+    event_log_path: str = "logs/combined_volatility_trend_grid_max2_shadow_events.jsonl"
+    report_path: str = "reports/combined_volatility_trend_grid_max2_shadow_acceptance.json"
 
 
 @dataclass(frozen=True)
@@ -260,8 +340,11 @@ class RegimeScoreConfig:
 class ReversalAlphaConfig:
     enabled: bool = False
     shadow_mode: bool = True
+    allow_long: bool = True
+    allow_short: bool = False
     setup_lookback_bars: int = 5
     setup_extension_atr_min: float = 0.50
+    setup_extension_atr_max: float = 999.0
     setup_long_rsi_extreme_max: float = 40.0
     setup_short_rsi_extreme_min: float = 60.0
     setup_long_kdj_extreme_max: float = 35.0
@@ -270,12 +353,44 @@ class ReversalAlphaConfig:
     setup_require_kdj_recovery: bool = True
     setup_macd_improvement_bars: int = 2
     setup_require_no_new_extreme: bool = True
+    setup_ema_slope_lookback_bars: int = 3
+    setup_max_adverse_ema_slope_atr: float = 0.80
+    setup_max_rebound_atr: float = 2.50
     trigger_ema_period: int = 9
     trigger_require_directional_candle: bool = True
     trigger_close_position_min: float = 0.55
     trigger_require_macd_improvement: bool = True
+    trigger_require_confirmed_macd_cross: bool = False
+    trigger_macd_cross_lookback_bars: int = 3
+    trigger_body_atr_min: float = 0.10
+    trigger_volume_ratio_min: float = 0.80
+    trigger_reclaim_margin_atr_min: float = 0.0
+    confirmation_15m_require_reclaim: bool = False
+    confirmation_15m_ema_period: int = 9
+    confirmation_15m_require_macd_improvement: bool = False
     btc_adverse_15m_return: float = 0.006
     btc_adverse_1h_return: float = 0.012
+    btc_1h_min_ema_distance_atr: float = -999.0
+    btc_1h_min_ema_slope_atr: float = -999.0
+    stop_structure_lookback_bars: int = 4
+    stop_atr_buffer: float = 0.15
+    min_stop_atr: float = 0.50
+    max_stop_atr: float = 2.50
+    min_stop_pct: float = 0.0025
+    max_stop_pct: float = 0.025
+    take_profit_r: float = 1.50
+    min_target_to_cost_ratio: float = 3.0
+    max_entry_chase_atr: float = 0.60
+    risk_multiplier: float = 0.60
+    quality_score_min: float = 0.50
+    fail_fast_minutes: int = 20
+    fail_fast_min_mfe_r: float = 0.20
+    breakeven_trigger_r: float = 0.70
+    breakeven_cost_buffer_pct: float = 0.0015
+    giveback_enabled: bool = False
+    giveback_activation_r: float = 1.20
+    allowed_giveback_r: float = 0.70
+    time_stop_minutes: int = 90
 
 
 @dataclass(frozen=True)
@@ -486,6 +601,11 @@ class CmiprRegimeConfig:
     enter_ema_slope_pct: float = 0.0012
     exit_ema_slope_pct: float = -0.0002
     min_state_hold_bars_1h: int = 3
+    phase_model_enabled: bool = False
+    early_min_breadth_acceleration_1h: float = 0.01
+    early_max_breadth_above_ema21: float = 0.92
+    early_max_btc_return_1h: float = 0.03
+    early_min_eth_return_1h: float = -0.02
 
 
 @dataclass(frozen=True)
@@ -501,10 +621,15 @@ class CmiprRankingConfig:
     weight_volume_trend: float = 0.05
     weight_trend_alignment: float = 0.05
     max_extension_atr: float = 3.0
+    strength_acceleration_enabled: bool = False
+    strength_acceleration_lookback_hours: int = 1
+    min_long_strength_acceleration: float = 0.01
+    max_short_strength_acceleration: float = -0.01
 
 
 @dataclass(frozen=True)
 class CmiprCompressionConfig:
+    timeframe: str = "30m"
     lookback_bars_30m: int = 12
     atr_period: int = 14
     atr_percentile_lookback: int = 96
@@ -519,6 +644,7 @@ class CmiprCompressionConfig:
 
 @dataclass(frozen=True)
 class CmiprIgnitionConfig:
+    timeframe: str = "15m"
     breakout_lookback_15m: int = 20
     min_breakout_distance_atr: float = 0.10
     max_breakout_distance_atr: float = 1.50
@@ -559,7 +685,21 @@ class CmiprEntryConfig:
     max_stop_atr: float = 2.50
     initial_risk_fraction: float = 0.40
     min_target_to_cost_ratio: float = 4.0
+    cost_guard_target_r: float = 0.0
     extra_execution_delay_minutes: int = 0
+    bull_flag_min_bars_5m: int = 3
+    bull_flag_max_range_atr: float = 1.50
+    bull_flag_max_volume_to_ignition: float = 1.20
+    bull_flag_min_breakout_volume_ratio: float = 1.05
+    bull_flag_min_close_position: float = 0.60
+    bull_flag_max_chase_atr: float = 0.50
+    event_structure_mode: str = "current"
+    immediate_max_age_minutes: int = 120
+    delayed_recompression_enabled: bool = False
+    entry_revalidation_mode: str = "none"
+    max_breadth_deterioration: float = 0.15
+    max_rank_deterioration: float = 0.20
+    min_entry_rank_percentile: float = 0.75
 
 
 @dataclass(frozen=True)
@@ -577,6 +717,7 @@ class CmiprPyramidConfig:
     require_full_cost_current_r: bool = True
     include_stop_slippage_in_risk: bool = True
     min_new_stop_noise_atr: float = 0.50
+    addon_trigger_r_basis: str = "campaign"
 
 
 @dataclass(frozen=True)
@@ -597,6 +738,15 @@ class CmiprExitConfig:
     max_holding_minutes: int = 2880
     runner_enabled: bool = True
     fixed_take_profit_r: float = 1.50
+    take_profit_r_basis: str = "campaign"
+    fail_fast_r_basis: str = "campaign"
+    breakeven_r_basis: str = "campaign"
+    runner_activation_r_basis: str = "campaign"
+    giveback_r_basis: str = "campaign"
+    fail_fast_mode: str = "current"
+    conditional_fail_fast_minutes: int = 15
+    conditional_fail_fast_min_mfe_r: float = 0.20
+    conditional_min_failed_checks: int = 3
 
 
 @dataclass(frozen=True)
@@ -637,11 +787,14 @@ class CmiprResearchConfig:
     fixed_equity_usdt: float = 160.0
     fixed_trade_risk_usdt: float = 0.80
     min_research_trades: int = 30
+    event_diagnostics_enabled: bool = False
+    event_diagnostic_min_bucket_size: int = 30
 
 
 @dataclass(frozen=True)
 class CmiprStrategyConfig:
     enabled: bool = False
+    mode: str = "standard"
     enabled_symbols: tuple[str, ...] = ()
     allow_long: bool = True
     allow_short: bool = True
@@ -659,6 +812,343 @@ class CmiprStrategyConfig:
     risk_control: CmiprRiskControlConfig = field(default_factory=CmiprRiskControlConfig)
     execution_safety: CmiprExecutionSafetyConfig = field(default_factory=CmiprExecutionSafetyConfig)
     research: CmiprResearchConfig = field(default_factory=CmiprResearchConfig)
+
+
+@dataclass(frozen=True)
+class MtperPreCrossConfig:
+    ema_fast_period: int = 21
+    ema_slow_period: int = 55
+    atr_period: int = 14
+    max_gap_abs_atr: float = 0.45
+    min_gap_abs_atr: float = 0.01
+    gap_contracting_bars: int = 2
+    ema_slope_lookback_bars: int = 3
+    min_fast_slope_atr: float = 0.01
+    macd_improvement_bars: int = 2
+    setup_expiry_4h_bars: int = 6
+    formal_cross_max_age_bars: int = 1
+
+
+@dataclass(frozen=True)
+class MtperExtremeConfig:
+    score_threshold: float = 0.50
+    ema21_distance_atr: float = 0.70
+    ema55_distance_atr: float = 1.00
+    price_zscore_threshold: float = 1.00
+    zscore_lookback_4h: int = 50
+    rsi_period: int = 14
+    long_rsi_ceiling: float = 45.0
+    short_rsi_floor: float = 55.0
+    rsi_percentile_lookback: int = 50
+    long_rsi_percentile_max: float = 0.35
+    short_rsi_percentile_min: float = 0.65
+    range_lookbacks: tuple[int, ...] = (20, 50, 100)
+    long_range_position_max: float = 0.35
+    short_range_position_min: float = 0.65
+    streak_bars: int = 2
+    atr_percentile_lookback: int = 100
+    max_atr_percentile: float = 0.92
+    wick_exhaustion_min_ratio: float = 0.25
+    volume_climax_ratio: float = 1.30
+
+
+@dataclass(frozen=True)
+class MtperRegimeConfig:
+    btc_symbol: str = "BTCUSDT"
+    eth_symbol: str = "ETHUSDT"
+    btc_shock_1h_pct: float = 0.04
+    eth_shock_1h_pct: float = 0.05
+    chaos_atr_percentile: float = 0.98
+    trend_expansion_gap_change_atr: float = 0.05
+    trend_expansion_min_checks: int = 4
+    min_breadth_not_adverse: float = 0.30
+
+
+@dataclass(frozen=True)
+class MtperHigherTimeframeConfig:
+    no_new_extreme_bars_2h: int = 2
+    no_new_extreme_bars_1h: int = 3
+    macd_improvement_bars_2h: int = 2
+    macd_improvement_bars_1h: int = 2
+    min_2h_exhaustion_checks: int = 3
+    min_1h_permission_checks: int = 3
+    max_adverse_ema21_slope_atr_2h: float = 0.20
+    max_adverse_ema21_slope_atr_1h: float = 0.25
+    volume_exhaustion_ratio: float = 1.05
+
+
+@dataclass(frozen=True)
+class MtperEntryConfig:
+    trigger_mode: str = "combined"
+    higher_low_lookback_15m: int = 4
+    reclaim_ema_period: int = 9
+    structure_breakout_lookback_15m: int = 6
+    confirmation_min_close_position: float = 0.58
+    confirmation_max_wick_ratio: float = 0.55
+    confirmation_min_volume_ratio: float = 0.75
+    max_entry_chase_atr: float = 0.75
+    hard_stop_lookback_4h: int = 4
+    hard_stop_atr_buffer: float = 0.15
+    min_stop_atr_15m: float = 0.75
+    max_stop_atr_15m: float = 12.0
+    min_stop_pct: float = 0.003
+    max_stop_pct: float = 0.15
+    initial_risk_fraction: float = 0.50
+    min_target_to_cost_ratio: float = 3.0
+    extra_execution_delay_minutes: int = 0
+
+
+@dataclass(frozen=True)
+class MtperSecondEntryConfig:
+    enabled: bool = False
+    mode: str = "none"
+    risk_fraction: float = 0.50
+    minimum_time_between_entries_minutes: int = 60
+    minimum_new_confirmation_atr: float = 0.25
+    adverse_zone_atr: float = 0.50
+    winner_min_executable_r: float = 0.25
+    max_entries_per_campaign: int = 2
+
+
+@dataclass(frozen=True)
+class MtperExitConfig:
+    target_mode: str = "ladder_a"
+    target_1_fraction: float = 0.30
+    target_2_fraction: float = 0.40
+    trend_conversion_fraction: float = 0.30
+    target_1_min_r: float = 0.50
+    target_2_min_r: float = 1.00
+    breakeven_trigger_r: float = 0.60
+    breakeven_cost_buffer_pct: float = 0.0015
+    structural_fail_fast_enabled: bool = True
+    time_nonresponse_hours: int = 12
+    time_nonresponse_min_mfe_r: float = 0.20
+    time_nonresponse_min_failed_checks: int = 3
+    max_holding_hours: int = 240
+    trend_conversion_enabled: bool = True
+    trend_trailing_mode: str = "2h_ema21"
+    giveback_mode: str = "segmented"
+    giveback_trigger_r: float = 1.00
+    giveback_low_r: float = 0.60
+    giveback_mid_r: float = 1.00
+    giveback_high_r: float = 1.50
+    giveback_mid_mfe_r: float = 2.0
+    giveback_high_mfe_r: float = 4.0
+
+
+@dataclass(frozen=True)
+class MtperRiskControlConfig:
+    campaign_risk_pct: float = 0.0075
+    max_campaign_risk_pct: float = 0.02
+    max_open_campaigns: int = 2
+    max_same_direction_campaigns: int = 1
+    max_correlated_campaigns: int = 1
+    max_total_open_risk_pct: float = 0.02
+    liquidation_buffer_pct: float = 0.01
+    symbol_cooldown_hours: int = 24
+    consecutive_campaign_loss_limit: int = 4
+    consecutive_loss_pause_hours: int = 12
+    daily_loss_stop_pct: float = 0.03
+    soft_drawdown_pct: float = 0.08
+    soft_drawdown_risk_multiplier: float = 0.60
+    hard_drawdown_pct: float = 0.15
+
+
+@dataclass(frozen=True)
+class MtperResearchConfig:
+    stage_variant: str = "pre_cross_htf_15m"
+    model_variant: str = "core"
+    max_experiments_per_stage: int = 18
+    min_research_campaigns: int = 30
+    validation_selection_only: bool = True
+    historical_test_start: str = "2026-04-01T00:00:00"
+    historical_test_end: str = "2026-06-11T23:59:00"
+    final_acceptance_source: str = "post_freeze_shadow_or_dry_run"
+    random_seed: int = 260715
+
+
+@dataclass(frozen=True)
+class MtperStrategyConfig:
+    enabled: bool = False
+    enabled_symbols: tuple[str, ...] = ()
+    allow_long: bool = True
+    allow_short: bool = True
+    disable_legacy_strategies: bool = True
+    pre_cross: MtperPreCrossConfig = field(default_factory=MtperPreCrossConfig)
+    extreme: MtperExtremeConfig = field(default_factory=MtperExtremeConfig)
+    regime: MtperRegimeConfig = field(default_factory=MtperRegimeConfig)
+    higher_timeframe: MtperHigherTimeframeConfig = field(default_factory=MtperHigherTimeframeConfig)
+    entry: MtperEntryConfig = field(default_factory=MtperEntryConfig)
+    second_entry: MtperSecondEntryConfig = field(default_factory=MtperSecondEntryConfig)
+    exit: MtperExitConfig = field(default_factory=MtperExitConfig)
+    risk_control: MtperRiskControlConfig = field(default_factory=MtperRiskControlConfig)
+    research: MtperResearchConfig = field(default_factory=MtperResearchConfig)
+
+
+@dataclass(frozen=True)
+class MtpcRegimeConfig:
+    btc_symbol: str = "BTCUSDT"
+    eth_symbol: str = "ETHUSDT"
+    ema_fast_period: int = 21
+    ema_slow_period: int = 55
+    ema_slope_lookback_bars: int = 3
+    min_4h_fast_slope_atr: float = 0.02
+    max_4h_fast_slope_atr: float = 999.0
+    min_1h_fast_slope_atr: float = 0.04
+    max_1h_fast_slope_atr: float = 999.0
+    min_1h_ema_gap_atr: float = 0.08
+    max_1h_ema_gap_atr: float = 999.0
+    min_breadth_above_ema21: float = 0.52
+    min_breadth_positive_1h: float = 0.50
+    max_breadth_overheated: float = 0.92
+    btc_shock_1h_pct: float = 0.035
+    chaos_atr_percentile: float = 0.98
+    require_btc_eth_alignment: bool = True
+    enter_confirmation_bars_1h: int = 2
+    exit_confirmation_bars_1h: int = 1
+    min_state_hold_bars_1h: int = 2
+    allow_neutral_symbol_long: bool = False
+    allow_neutral_symbol_short: bool = False
+
+
+@dataclass(frozen=True)
+class MtpcRankingConfig:
+    enabled: bool = True
+    min_percentile: float = 0.55
+    max_percentile: float = 0.95
+    short_min_percentile: float = 0.55
+    short_max_percentile: float = 0.95
+    max_candidates_per_scan: int = 6
+    return_4h_weight: float = 0.30
+    return_12h_weight: float = 0.20
+    relative_btc_4h_weight: float = 0.20
+    ema_alignment_weight: float = 0.15
+    macd_weight: float = 0.15
+    max_extension_atr_1h: float = 2.25
+
+
+@dataclass(frozen=True)
+class MtpcImpulseConfig:
+    timeframe: str = "15m"
+    breakout_lookback_bars: int = 12
+    min_breakout_distance_atr: float = 0.03
+    max_breakout_distance_atr: float = 1.20
+    min_body_atr: float = 0.25
+    min_close_position: float = 0.62
+    max_upper_wick_ratio: float = 0.35
+    min_volume_ratio: float = 1.00
+    min_prior_move_atr: float = -999.0
+    max_prior_move_atr: float = 2.50
+    max_ema21_extension_atr: float = 2.00
+    pending_expiry_minutes: int = 180
+
+
+@dataclass(frozen=True)
+class MtpcPullbackConfig:
+    pullback_timeframe: str = "15m"
+    confirmation_timeframe: str = "5m"
+    min_bars_after_impulse: int = 1
+    max_bars_after_impulse: int = 10
+    min_depth_atr: float = 0.10
+    max_depth_atr: float = 1.20
+    min_retrace_fraction: float = 0.10
+    max_retrace_fraction: float = 0.75
+    max_volume_to_impulse: float = 0.90
+    max_close_below_breakout_atr: float = 0.20
+    ema_proximity_atr: float = 0.45
+    confirmation_ema_period: int = 9
+    confirmation_higher_low_bars: int = 3
+    confirmation_min_close_position: float = 0.60
+    confirmation_max_upper_wick_ratio: float = 0.45
+    confirmation_min_volume_ratio: float = 0.75
+    require_confirmation_macd_improvement: bool = True
+    confirmation_break_previous_high: bool = True
+    stop_atr_buffer: float = 0.20
+    min_stop_atr: float = 0.40
+    max_stop_atr: float = 2.40
+    min_stop_pct: float = 0.0025
+    max_stop_pct: float = 0.045
+    max_entry_chase_atr: float = 0.40
+    min_target_to_cost_ratio: float = 4.0
+    extra_execution_delay_minutes: int = 0
+    trend_ema_lookback_bars: int = 12
+    trend_ema_min_depth_atr: float = 0.30
+    trend_ema_max_depth_atr: float = 1.20
+    trend_ema_min_prior_extension_atr: float = 0.50
+    trend_ema_max_volume_ratio: float = 1.15
+    trend_ema_proximity_atr: float = 0.45
+    trend_ema_max_adverse_close_atr: float = 0.20
+    trend_ema_min_reclaim_extension_atr: float = 0.00
+    trend_ema_max_reclaim_extension_atr: float = 0.55
+    trend_ema_min_alignment_atr: float = 0.00
+
+
+@dataclass(frozen=True)
+class MtpcExitConfig:
+    r_basis: str = "initial_leg"
+    take_profit_1_r: float = 1.00
+    take_profit_1_fraction: float = 1.00
+    take_profit_2_r: float = 1.80
+    runner_enabled: bool = False
+    runner_timeframe: str = "15m"
+    runner_ema_period: int = 21
+    structural_fail_fast_enabled: bool = True
+    time_nonresponse_minutes: int = 60
+    time_nonresponse_min_mfe_r: float = 0.15
+    time_nonresponse_min_failed_checks: int = 3
+    breakeven_enabled: bool = True
+    breakeven_trigger_r: float = 0.70
+    breakeven_cost_buffer_pct: float = 0.0015
+    max_holding_minutes: int = 1440
+    giveback_enabled: bool = False
+    giveback_activation_r: float = 1.20
+    allowed_giveback_r: float = 0.70
+
+
+@dataclass(frozen=True)
+class MtpcRiskControlConfig:
+    trade_risk_pct: float = 0.01
+    max_trade_risk_pct: float = 0.02
+    max_open_positions: int = 1
+    max_same_direction_positions: int = 1
+    symbol_cooldown_hours: int = 12
+    setup_invalidation_cooldown_minutes: int = 720
+    entry_cancel_cooldown_minutes: int = 720
+    liquidation_buffer_pct: float = 0.01
+    max_total_open_risk_pct: float = 0.02
+    consecutive_loss_limit: int = 3
+    consecutive_loss_pause_hours: int = 6
+    daily_loss_stop_pct: float = 0.03
+    hard_drawdown_pct: float = 0.15
+
+
+@dataclass(frozen=True)
+class MtpcResearchConfig:
+    stage_variant: str = "first_pullback"
+    max_experiments_per_stage: int = 18
+    min_research_trades: int = 30
+    validation_selection_only: bool = True
+    historical_test_start: str = "2026-04-01T00:00:00"
+    historical_test_end: str = "2026-06-11T23:59:00"
+    final_acceptance_source: str = "post_freeze_shadow_or_dry_run"
+    random_seed: int = 260716
+
+
+@dataclass(frozen=True)
+class MtpcStrategyConfig:
+    enabled: bool = False
+    enabled_symbols: tuple[str, ...] = ()
+    allow_long: bool = True
+    allow_short: bool = False
+    disable_legacy_strategies: bool = True
+    combine_with_mtf: bool = False
+    regime: MtpcRegimeConfig = field(default_factory=MtpcRegimeConfig)
+    ranking: MtpcRankingConfig = field(default_factory=MtpcRankingConfig)
+    impulse: MtpcImpulseConfig = field(default_factory=MtpcImpulseConfig)
+    pullback: MtpcPullbackConfig = field(default_factory=MtpcPullbackConfig)
+    exit: MtpcExitConfig = field(default_factory=MtpcExitConfig)
+    risk_control: MtpcRiskControlConfig = field(default_factory=MtpcRiskControlConfig)
+    research: MtpcResearchConfig = field(default_factory=MtpcResearchConfig)
 
 
 @dataclass(frozen=True)
@@ -699,6 +1189,12 @@ class LiveAppConfig:
     regime_score: RegimeScoreConfig = field(default_factory=RegimeScoreConfig)
     reversal_alpha: ReversalAlphaConfig = field(default_factory=ReversalAlphaConfig)
     cmipr: CmiprStrategyConfig = field(default_factory=CmiprStrategyConfig)
+    mtper: MtperStrategyConfig = field(default_factory=MtperStrategyConfig)
+    mtpc: MtpcStrategyConfig = field(default_factory=MtpcStrategyConfig)
+    dual_thrust_shadow: DualThrustShadowConfig = field(default_factory=DualThrustShadowConfig)
+    combined_volatility_trend_grid_shadow: CombinedVolatilityTrendGridShadowConfig = field(
+        default_factory=CombinedVolatilityTrendGridShadowConfig
+    )
 
 
 T = TypeVar("T")
@@ -721,6 +1217,20 @@ def _coerce_dataclass(cls: type[T], values: dict[str, Any]) -> T:
     if cls is MultiTimeframeFilterConfig and "timeframes" in values:
         values = dict(values)
         values["timeframes"] = tuple(_normalize_timeframes(values["timeframes"]))
+    if cls is DualThrustShadowConfig and "enabled_symbols" in values:
+        values = dict(values)
+        values["enabled_symbols"] = tuple(_normalize_symbols(values["enabled_symbols"]))
+    if cls is CombinedVolatilityTrendGridShadowConfig:
+        values = dict(values)
+        if "enabled_symbols" in values:
+            values["enabled_symbols"] = tuple(_normalize_symbols(values["enabled_symbols"]))
+        if "entry_priority" in values:
+            raw_priority = values["entry_priority"]
+            if isinstance(raw_priority, str):
+                raw_priority = raw_priority.replace("，", ",").split(",")
+            values["entry_priority"] = tuple(
+                str(item).strip() for item in raw_priority if str(item).strip()
+            )
     if cls is MacroEventConfig and "symbols" in values:
         values = dict(values)
         values["symbols"] = tuple(_normalize_symbols(values["symbols"]))
@@ -825,6 +1335,47 @@ def _coerce_cmipr_config(values: dict[str, Any]) -> CmiprStrategyConfig:
     return _coerce_dataclass(CmiprStrategyConfig, values)
 
 
+def _coerce_mtper_config(values: dict[str, Any]) -> MtperStrategyConfig:
+    values = dict(values or {})
+    if "enabled_symbols" in values:
+        values["enabled_symbols"] = tuple(_normalize_symbols(values["enabled_symbols"]))
+    nested = {
+        "pre_cross": MtperPreCrossConfig,
+        "extreme": MtperExtremeConfig,
+        "regime": MtperRegimeConfig,
+        "higher_timeframe": MtperHigherTimeframeConfig,
+        "entry": MtperEntryConfig,
+        "second_entry": MtperSecondEntryConfig,
+        "exit": MtperExitConfig,
+        "risk_control": MtperRiskControlConfig,
+        "research": MtperResearchConfig,
+    }
+    for key, cls in nested.items():
+        nested_values = dict(values.get(key, {}) or {})
+        if key == "extreme" and "range_lookbacks" in nested_values:
+            nested_values["range_lookbacks"] = tuple(int(item) for item in nested_values["range_lookbacks"])
+        values[key] = _coerce_dataclass(cls, nested_values)
+    return _coerce_dataclass(MtperStrategyConfig, values)
+
+
+def _coerce_mtpc_config(values: dict[str, Any]) -> MtpcStrategyConfig:
+    values = dict(values or {})
+    if "enabled_symbols" in values:
+        values["enabled_symbols"] = tuple(_normalize_symbols(values["enabled_symbols"]))
+    nested = {
+        "regime": MtpcRegimeConfig,
+        "ranking": MtpcRankingConfig,
+        "impulse": MtpcImpulseConfig,
+        "pullback": MtpcPullbackConfig,
+        "exit": MtpcExitConfig,
+        "risk_control": MtpcRiskControlConfig,
+        "research": MtpcResearchConfig,
+    }
+    for key, cls in nested.items():
+        values[key] = _coerce_dataclass(cls, values.get(key, {}))
+    return _coerce_dataclass(MtpcStrategyConfig, values)
+
+
 def load_live_config(path: str | Path) -> LiveAppConfig:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     return LiveAppConfig(
@@ -839,6 +1390,13 @@ def load_live_config(path: str | Path) -> LiveAppConfig:
         regime_score=_coerce_dataclass(RegimeScoreConfig, raw.get("regime_score", {})),
         reversal_alpha=_coerce_dataclass(ReversalAlphaConfig, raw.get("reversal_alpha", {})),
         cmipr=_coerce_cmipr_config(raw.get("cmipr", {})),
+        mtper=_coerce_mtper_config(raw.get("mtper", {})),
+        mtpc=_coerce_mtpc_config(raw.get("mtpc", {})),
+        dual_thrust_shadow=_coerce_dataclass(DualThrustShadowConfig, raw.get("dual_thrust_shadow", {})),
+        combined_volatility_trend_grid_shadow=_coerce_dataclass(
+            CombinedVolatilityTrendGridShadowConfig,
+            raw.get("combined_volatility_trend_grid_shadow", {}),
+        ),
     )
 
 
@@ -855,6 +1413,12 @@ def write_live_config(path: str | Path, config: LiveAppConfig) -> None:
         "regime_score": asdict(config.regime_score),
         "reversal_alpha": asdict(config.reversal_alpha),
         "cmipr": asdict(config.cmipr),
+        "mtper": asdict(config.mtper),
+        "mtpc": asdict(config.mtpc),
+        "dual_thrust_shadow": asdict(config.dual_thrust_shadow),
+        "combined_volatility_trend_grid_shadow": asdict(
+            config.combined_volatility_trend_grid_shadow
+        ),
     }
     Path(path).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 

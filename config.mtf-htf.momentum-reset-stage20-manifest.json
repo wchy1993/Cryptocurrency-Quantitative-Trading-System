@@ -1,0 +1,72 @@
+{
+  "research_name": "mtf_1h_momentum_reset_30m_compression_release",
+  "research_version": "stage20_20260718",
+  "branch": "codex/cmipr-realistic-20260713",
+  "deployable": false,
+  "live_config_modified": false,
+  "gui_modified": false,
+  "legacy_mtf_modified": false,
+  "frozen_baseline": {
+    "config": "config.mtf-htf.long-rank3p5-aggressive-3p5.json",
+    "config_sha256": "bfe10d859b0b109a374f4769b37fb54480260d2d8117fe7dd2ce15d649790f20",
+    "full12m_report": "reports/mtf_htf_long_rank3p5_risk3p5_full12m.json",
+    "full12m_report_sha256": "3b54ab9d67b59d47b95674e163fb0c56e2c8207d1b071ce2510b9bc8c8a415be",
+    "stress_report": "reports/mtf_htf_long_rank3p5_risk3p5_stress12m.json",
+    "stress_report_sha256": "9ac4078647fb1c5432803bfd5a788a0136e63a1fb944cff26cc20f42c7edf31c"
+  },
+  "setup": {
+    "higher_timeframe_context": "existing trend_pullback context",
+    "reset": "closed 1h momentum reset",
+    "release": "closed 30m contraction release",
+    "old_15m_confirmation_used": false,
+    "mtpc_used": false,
+    "side": "LONG",
+    "minimum_rank_score": 4.25,
+    "minimum_target_to_full_cost_ratio": 12.0,
+    "minimum_btc_closed_4h_return": -0.001,
+    "minimum_directional_breadth_above_ema21": 0.55,
+    "simultaneous_candidate_priority": [
+      "target_to_cost_ratio",
+      "rank_score"
+    ]
+  },
+  "execution_assumptions": {
+    "entry": "next 1m open after the closed 30m release",
+    "cost": "existing full-cost model",
+    "same_bar_path": "conservative adverse ordering",
+    "target": "frozen 2R diagnostic target",
+    "max_open_positions": 1,
+    "max_daily_trades": 2,
+    "symbol_cooldown_hours": 12,
+    "normalized_path_risk_pct": 0.0321839081
+  },
+  "time_splits": {
+    "train": "2025-06-12T00:00:00/2026-01-01T00:00:00",
+    "validation": "2026-01-01T00:00:00/2026-04-01T00:00:00",
+    "historical_evaluation": "2026-04-01T00:00:00/2026-06-12T00:00:00",
+    "historical_evaluation_is_untouched": false,
+    "label_embargo_hours": 12,
+    "event_cluster_hours": 4
+  },
+  "experiment_budgets": {
+    "stage16_setup_quality": 6,
+    "stage18_rank_cost_direction": 3,
+    "stage19_market_regime": 4,
+    "stage20_candidate_priority": 6
+  },
+  "reports": [
+    "reports/mtf_momentum_reset_train_stage16.json",
+    "reports/mtf_momentum_reset_trend_train_stage17.json",
+    "reports/mtf_momentum_reset_trend_validation_stage17.json",
+    "reports/mtf_momentum_reset_trend_historical_stage17.json",
+    "reports/mtf_momentum_reset_stage18_selection.json",
+    "reports/mtf_momentum_reset_regime_stage19.json",
+    "reports/mtf_momentum_reset_priority_stage20.json",
+    "reports/mtf_momentum_reset_stage20_20260718.md"
+  ],
+  "decision": {
+    "status": "research_candidate_only",
+    "reason": "positive full-cost train, validation, and historical diagnostics, but validation path fails exclude-top-1 robustness and historical performance remains month-concentrated",
+    "next_gate": "freeze parameters and collect new shadow data before any GUI, dry-run, or live integration"
+  }
+}

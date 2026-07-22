@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import hashlib
 import json
+import math
+import statistics
 import sys
 import time
 from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any
 
 from .alpha_diagnostics import AlphaCandidateDiagnostics
@@ -55,16 +59,35 @@ from .mtf_4h_rsi_regime import (
     closed_candles_for_decision,
     funding_at,
     load_auxiliary_features,
+    mtf_min_rank_score_for_direction,
     mtf_report_from_summary,
     oi_change_at,
 )
-from .risk import BacktestExecutionConfig, BacktestExecutionStats, execution_config_from_live_config, market_exit_fill
+from .mtf_candidate_quality import mtf_candidate_quality
+from .risk import (
+    BacktestExecutionConfig,
+    BacktestExecutionStats,
+    capacity_limited_quantity,
+    execution_config_from_live_config,
+    market_exit_fill,
+)
 from .risk import market_entry_fill
 from .indicators import atr, ema, macd
 from .realistic_data import load_funding_rate_directory
 from .regime_score import RegimeScoreEngine
-from .reversal_alpha import ReversalAlphaEngine
+from .reversal_alpha import REVERSAL_V2_REASON_TOKEN, ReversalAlphaEngine
 from .cmipr import CMIPR_REASON_TOKEN, CmiprEngine, CmiprState, audit_derivative_coverage
+from .mtper import MTPER_REASON_TOKEN, MtperEngine, MtperState
+from .mtpc import MTPC_REASON_TOKEN, MtpcEngine, MtpcState
+from .cmipr_r_basis import (
+    CAMPAIGN_R_BASIS,
+    CMIPR_R_DEFINITION_VERSION,
+    INITIAL_LEG_R_BASIS,
+    executable_net_pnl,
+    initial_leg_risk,
+    net_pnl_r,
+    normalize_r_basis,
+)
 
 
 _POINT_IN_TIME_UNIVERSE: dict[Any, frozenset[str]] = {}
@@ -247,7 +270,7 @@ def run_execution_backtest(
     trade_end: Any = None,
     cost_experiment: str | None = None,
     backtest_mode: str | None = None,
-    mtf_candidate_cache: dict[tuple[str, Any], EntryCandidate | None] | None = None,
+    mtf_candidate_cache: dict[tuple[Any, ...], EntryCandidate | None] | None = None,
 ) -> dict[str, Any]:
     config = load_live_config(config_path)
     execution_timeframe = "1m"
@@ -306,7 +329,10 @@ def run_execution_backtest(
         }
     mtf_candles = None
     cmipr_enabled = bool(getattr(getattr(config, "cmipr", None), "enabled", False))
-    if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False) or cmipr_enabled:
+    mtper_enabled = bool(getattr(getattr(config, "mtper", None), "enabled", False))
+    mtpc_enabled = bool(getattr(getattr(config, "mtpc", None), "enabled", False))
+    reversal_v2_enabled = bool(getattr(getattr(config, "reversal_alpha", None), "enabled", False))
+    if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False) or cmipr_enabled or mtper_enabled or mtpc_enabled or reversal_v2_enabled:
         mtf_candles = {
             timeframe: {
                 symbol: _resample_to_timeframe(candles, execution_timeframe, timeframe)
@@ -391,8 +417,9 @@ def run_execution_backtest_config(
     trade_end: Any = None,
     cost_experiment: str | None = None,
     backtest_mode: str | None = None,
-    mtf_candidate_cache: dict[tuple[str, Any], EntryCandidate | None] | None = None,
+    mtf_candidate_cache: dict[tuple[Any, ...], EntryCandidate | None] | None = None,
     cmipr_feature_cache: dict[tuple[Any, ...], Any] | None = None,
+    mtf_aux_features_override: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     symbols = tuple(
         symbol
@@ -434,7 +461,10 @@ def run_execution_backtest_config(
         for symbol, candles in fast_breakout_candles_by_symbol.items()
     }
     cmipr_enabled = bool(getattr(getattr(config, "cmipr", None), "enabled", False))
-    if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False) or cmipr_enabled:
+    mtper_enabled = bool(getattr(getattr(config, "mtper", None), "enabled", False))
+    mtpc_enabled = bool(getattr(getattr(config, "mtpc", None), "enabled", False))
+    reversal_v2_enabled = bool(getattr(getattr(config, "reversal_alpha", None), "enabled", False))
+    if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False) or cmipr_enabled or mtper_enabled or mtpc_enabled or reversal_v2_enabled:
         if mtf_candles_by_timeframe is None:
             mtf_candles_by_timeframe = {
                 timeframe: {
@@ -462,13 +492,17 @@ def run_execution_backtest_config(
         }
         for timeframe, candles_by_symbol in mtf_candles_by_timeframe.items()
     }
-    mtf_aux_features = (
+    cmipr_only = cmipr_enabled and bool(getattr(config.cmipr, "disable_legacy_strategies", True))
+    mtper_only = mtper_enabled and bool(getattr(config.mtper, "disable_legacy_strategies", True))
+    mtpc_only = mtpc_enabled and bool(getattr(config.mtpc, "disable_legacy_strategies", True))
+    cmipr_core_model = cmipr_only and str(config.cmipr.research.model_variant).strip().lower() == "core"
+    mtf_aux_features = mtf_aux_features_override if mtf_aux_features_override is not None else (
         load_auxiliary_features(
             symbols,
             str(getattr(config.strategy, "mtf_oi_data_dir", "data/binance_oi_taker_5m")),
             str(getattr(config.strategy, "mtf_funding_data_dir", "data/binance_oi_flush_funding")),
         )
-        if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False) or cmipr_enabled
+        if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False) or (cmipr_enabled and not cmipr_core_model)
         else {}
     )
 
@@ -482,7 +516,11 @@ def run_execution_backtest_config(
     if low_base_ignition_enabled:
         client = HistoricalClient(execution_candles_by_symbol, "1m", historical_filter_timeframes)
     else:
-        client = HistoricalClient(signal_candles_by_symbol, config.trading.timeframe, historical_filter_timeframes)
+        client = HistoricalClient(
+            signal_candles_by_symbol,
+            config.trading.timeframe,
+            () if cmipr_only or mtper_only or mtpc_only else historical_filter_timeframes,
+        )
     trader = BinanceAutoTrader(config, client)
     execution_config = execution_config_from_live_config(config, cost_experiment=cost_experiment, mode=backtest_mode)
     if execution_config.funding_enabled and getattr(config.risk, "funding_data_dir", ""):
@@ -496,17 +534,19 @@ def run_execution_backtest_config(
     legacy_disabled = (
         bool(getattr(config.strategy, "mtf_disable_legacy_strategies", False))
         and bool(getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False))
-    ) or (cmipr_enabled and bool(getattr(config.cmipr, "disable_legacy_strategies", True)))
+    ) or (cmipr_enabled and bool(getattr(config.cmipr, "disable_legacy_strategies", True))) or mtper_only or mtpc_only
     if legacy_disabled:
-        flat = Signal(Direction.FLAT, 0.0, "legacy_disabled_for_mtf", 0.0, 0.0)
-        signal_cache = {symbol: [flat] * common_signal_length for symbol in signal_candles_by_symbol}
-        reversal_cache = {symbol: [flat] * common_signal_length for symbol in signal_candles_by_symbol}
+        signal_cache = {}
+        reversal_cache = {}
+        mtf_cache = {}
+        market_regime_cache = []
+        btc_market_state_cache = []
     else:
         signal_cache = _build_signal_cache(config, signal_candles_by_symbol, common_signal_length)
         reversal_cache = _build_indicator_reversal_cache(config, signal_candles_by_symbol, common_signal_length)
-    mtf_cache = _build_mtf_cache(config, client, symbols)
-    market_regime_cache = _build_market_regime_cache(config, signal_candles_by_symbol, common_signal_length)
-    btc_market_state_cache = _build_btc_market_state_cache(config, signal_candles_by_symbol, common_signal_length)
+        mtf_cache = _build_mtf_cache(config, client, symbols)
+        market_regime_cache = _build_market_regime_cache(config, signal_candles_by_symbol, common_signal_length)
+        btc_market_state_cache = _build_btc_market_state_cache(config, signal_candles_by_symbol, common_signal_length)
 
     execution_timestamps = [candle.timestamp for candle in next(iter(execution_candles_by_symbol.values()))]
     signal_timestamps = [candle.timestamp for candle in next(iter(signal_candles_by_symbol.values()))]
@@ -550,6 +590,10 @@ def run_execution_backtest_config(
         raise RuntimeError(cmipr_coverage.reason)
     cmipr_stats: dict[str, int] = {}
     cmipr_account_runtime = CmiprAccountRuntime()
+    mtper_engine = MtperEngine(config, mtf_candles_by_timeframe) if mtper_enabled else None
+    mtper_stats: dict[str, int] = {}
+    mtpc_engine = MtpcEngine(config, mtf_candles_by_timeframe) if mtpc_enabled else None
+    mtpc_stats: dict[str, int] = {}
     alpha_diagnostics_enabled = bool(getattr(config.risk, "alpha_diagnostics_enabled", False))
     regime_score_config = getattr(config, "regime_score", None)
     regime_score_engine = None
@@ -566,14 +610,11 @@ def run_execution_backtest_config(
         )
     reversal_alpha_config = getattr(config, "reversal_alpha", None)
     reversal_alpha_engine = None
-    if alpha_diagnostics_enabled and reversal_alpha_config is not None and bool(getattr(reversal_alpha_config, "enabled", False)):
+    if reversal_alpha_config is not None and bool(getattr(reversal_alpha_config, "enabled", False)):
         reversal_alpha_engine = ReversalAlphaEngine(
             reversal_alpha_config,
             {
-                timeframe: {
-                    symbol: _resample_to_timeframe(candles, "1m", timeframe)
-                    for symbol, candles in execution_candles_by_symbol.items()
-                }
+                timeframe: mtf_candles_by_timeframe.get(timeframe, {})
                 for timeframe in ("5m", "15m", "30m", "1h")
             },
         )
@@ -593,6 +634,8 @@ def run_execution_backtest_config(
     portfolio_control_stats: dict[str, int] = {}
     portfolio_symbol_cooldown_until: dict[str, Any] = {}
     portfolio_runtime = PortfolioRuntimeControl()
+    reversal_v2_stats: dict[str, int] = {}
+    reversal_v2_consumed_events: set[str] = set()
     vbp_control = VbpRuntimeControl()
     vbp_feature_cache = _build_vbp_feature_cache(config, execution_candles_by_symbol) if vbp_enabled else {}
     if mtf_candidate_cache is None:
@@ -650,6 +693,11 @@ def run_execution_backtest_config(
             vbp_stats,
             cmipr_engine,
             cmipr_stats,
+            mtper_engine,
+            mtper_stats,
+            mtpc_engine,
+            mtpc_stats,
+            reversal_v2_stats,
         )
         _record_monthly_closed_trades(monthly_stats, timestamp, trades[closed_before:])
         if cmipr_enabled:
@@ -700,6 +748,12 @@ def run_execution_backtest_config(
             portfolio_runtime,
             cmipr_engine,
             cmipr_stats,
+            mtper_engine,
+            mtper_stats,
+            mtpc_engine,
+            mtpc_stats,
+            reversal_v2_stats,
+            mtf_reject_stats,
         )
         equity = _mark_equity(cash, positions, execution_candles_by_symbol, execution_index)
         trader._peak_equity = max(getattr(trader, "_peak_equity", starting_equity), equity)
@@ -805,7 +859,63 @@ def run_execution_backtest_config(
             if len(positions) + len(pending_entries) >= _entry_position_limit(config):
                 continue
 
-        if cmipr_enabled and cmipr_engine is not None:
+        if mtpc_enabled and mtpc_engine is not None:
+            occupied = set(positions) | {entry.candidate.symbol for entry in pending_entries}
+            allowed = (
+                set(_POINT_IN_TIME_UNIVERSE.get(timestamp.date(), frozenset()))
+                if bool(config.risk.point_in_time_universe_enabled)
+                else set(mtpc_engine.symbols)
+            )
+            mtpc_candidates = mtpc_engine.scan(timestamp, occupied, allowed)
+            if (
+                bool(getattr(config.mtpc, "combine_with_mtf", False))
+                and bool(getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False))
+            ):
+                mtf_candidates = _entry_candidates_for_scan(
+                    trader,
+                    config,
+                    client,
+                    signal_candles_by_symbol,
+                    signal_cache,
+                    reversal_cache,
+                    mtf_cache,
+                    market_regime_cache,
+                    btc_market_state_cache,
+                    entry_timing_candles_by_symbol,
+                    entry_timing_timestamps_by_symbol,
+                    execution_timing_candles_by_symbol,
+                    execution_timing_timestamps_by_symbol,
+                    fast_breakout_candles_by_symbol,
+                    fast_breakout_timestamps_by_symbol,
+                    mtf_candles_by_timeframe,
+                    mtf_timestamps_by_timeframe,
+                    mtf_aux_features,
+                    mtf_reject_stats,
+                    mtf_daily_entry_counts,
+                    mtf_symbol_cooldown_until,
+                    mtf_candidate_cache,
+                    positions,
+                    reentry_block_until,
+                    signal_index,
+                    timestamp,
+                    indicator_reversal_pause_until_time,
+                    alpha_diagnostics,
+                    reversal_alpha_engine,
+                    reversal_v2_consumed_events,
+                    reversal_v2_stats,
+                )
+                candidates = _merge_candidate_sleeves(mtf_candidates, mtpc_candidates)
+            else:
+                candidates = mtpc_candidates
+        elif mtper_enabled and mtper_engine is not None:
+            occupied = set(positions) | {entry.candidate.symbol for entry in pending_entries}
+            allowed = (
+                set(_POINT_IN_TIME_UNIVERSE.get(timestamp.date(), frozenset()))
+                if bool(config.risk.point_in_time_universe_enabled)
+                else set(mtper_engine.symbols)
+            )
+            candidates = mtper_engine.scan(timestamp, occupied, allowed)
+        elif cmipr_enabled and cmipr_engine is not None:
             occupied = set(positions) | {entry.candidate.symbol for entry in pending_entries}
             allowed = set(_POINT_IN_TIME_UNIVERSE.get(timestamp.date(), frozenset())) if bool(config.risk.point_in_time_universe_enabled) else set(cmipr_engine.symbols)
             candidates = cmipr_engine.scan(timestamp, occupied, allowed)
@@ -839,11 +949,34 @@ def run_execution_backtest_config(
                 timestamp,
                 indicator_reversal_pause_until_time,
                 alpha_diagnostics,
+                reversal_alpha_engine,
+                reversal_v2_consumed_events,
+                reversal_v2_stats,
             )
+        if bool(config.risk.point_in_time_universe_enabled):
+            candidates = [
+                candidate
+                for candidate in candidates
+                if _point_in_time_symbol_allowed(config, candidate.symbol, timestamp)
+            ]
         pending_symbols = {entry.candidate.symbol for entry in pending_entries}
         candidates = [candidate for candidate in candidates if candidate.symbol not in pending_symbols]
         if cmipr_enabled:
             max_same_direction = max(1, int(config.cmipr.risk_control.max_same_direction_positions))
+            candidates = [
+                candidate
+                for candidate in candidates
+                if sum(1 for position in positions.values() if position.direction == candidate.signal.direction) < max_same_direction
+            ]
+        if mtper_enabled:
+            max_same_direction = max(1, int(config.mtper.risk_control.max_same_direction_campaigns))
+            candidates = [
+                candidate
+                for candidate in candidates
+                if sum(1 for position in positions.values() if position.direction == candidate.signal.direction) < max_same_direction
+            ]
+        if mtpc_enabled:
+            max_same_direction = max(1, int(config.mtpc.risk_control.max_same_direction_positions))
             candidates = [
                 candidate
                 for candidate in candidates
@@ -888,13 +1021,36 @@ def run_execution_backtest_config(
                         + (
                             max(0, int(config.cmipr.entry.extra_execution_delay_minutes))
                             if CMIPR_REASON_TOKEN in str(candidate.signal.reason)
-                            else 0
+                            else (
+                                max(0, int(config.mtper.entry.extra_execution_delay_minutes))
+                                if MTPER_REASON_TOKEN in str(candidate.signal.reason)
+                                else (
+                                    max(0, int(config.mtpc.pullback.extra_execution_delay_minutes))
+                                    if MTPC_REASON_TOKEN in str(candidate.signal.reason)
+                                    else (
+                                        max(0, int(getattr(config.strategy, "mtf_extra_execution_delay_minutes", 0)))
+                                        if MTF_REASON_TOKEN in str(candidate.signal.reason)
+                                        else 0
+                                    )
+                                )
+                            )
                         )
                     ),
                 )
             )
+            if REVERSAL_V2_REASON_TOKEN in str(candidate.signal.reason):
+                event_id = str(candidate.metadata.get("event_id", ""))
+                if event_id:
+                    reversal_v2_consumed_events.add(event_id)
+                _count_stat(reversal_v2_stats, "pending_count")
             if cmipr_engine is not None and CMIPR_REASON_TOKEN in str(candidate.signal.reason):
                 cmipr_engine.mark_order_pending(candidate.symbol)
+            if mtper_engine is not None and MTPER_REASON_TOKEN in str(candidate.signal.reason):
+                mtper_engine.mark_order_pending(candidate.symbol)
+                _count_stat(mtper_stats, "pending_count")
+            if mtpc_engine is not None and MTPC_REASON_TOKEN in str(candidate.signal.reason):
+                mtpc_engine.mark_order_pending(candidate.symbol, timestamp)
+                _count_stat(mtpc_stats, "pending_count")
             if _is_mtf_candidate(candidate):
                 mtf_daily_entry_counts[timestamp.date()] = mtf_daily_entry_counts.get(timestamp.date(), 0) + 1
                 cooldown_hours = max(0, int(getattr(config.strategy, "mtf_symbol_cooldown_hours", 12)))
@@ -955,13 +1111,47 @@ def run_execution_backtest_config(
         payload["alpha_candidate_diagnostics"] = alpha_diagnostics.finalize(execution_candles_by_symbol, trades)
     if portfolio_control_stats:
         payload["portfolio_control_stats"] = dict(sorted(portfolio_control_stats.items()))
+    if reversal_v2_stats:
+        payload["reversal_v2_stats"] = dict(sorted(reversal_v2_stats.items()))
     if cmipr_engine is not None and cmipr_coverage is not None:
+        engine_report = cmipr_engine.report()
+        campaign_diagnostics = cmipr_engine.finalize_campaign_diagnostics(
+            execution_candles_by_symbol,
+            trades,
+            execution_config,
+            {symbol: client.symbol_rules(symbol) for symbol in execution_candles_by_symbol},
+        )
+        if campaign_diagnostics:
+            engine_report["convex_campaign_diagnostics"] = campaign_diagnostics
         payload["cmipr_report"] = _cmipr_report(
             config,
             trades,
-            cmipr_engine.report(),
+            engine_report,
             cmipr_coverage.as_dict(),
             cmipr_stats,
+            execution_config,
+            summary_first_candle.timestamp,
+            last_candle.timestamp,
+        )
+    if mtper_engine is not None:
+        payload["mtper_report"] = _mtper_report(
+            config,
+            trades,
+            mtper_engine.report(),
+            mtper_stats,
+            execution_config,
+            summary_first_candle.timestamp,
+            last_candle.timestamp,
+        )
+    if mtpc_engine is not None:
+        payload["mtpc_report"] = _mtpc_report(
+            config,
+            trades,
+            mtpc_engine.report(),
+            mtpc_stats,
+            execution_config,
+            summary_first_candle.timestamp,
+            last_candle.timestamp,
         )
     if getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False):
         mtf_payload = dict(payload)
@@ -970,12 +1160,284 @@ def run_execution_backtest_config(
     return payload
 
 
+def _mtpc_report(
+    config: Any,
+    trades: list[dict[str, Any]],
+    engine_report: dict[str, Any],
+    stats: dict[str, int],
+    execution_config: BacktestExecutionConfig,
+    data_start: Any,
+    data_end: Any,
+) -> dict[str, Any]:
+    legs = [trade for trade in trades if trade.get("strategy") == MTPC_REASON_TOKEN]
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for trade in legs:
+        metadata = trade.get("strategy_metadata") or {}
+        event_id = str(metadata.get("event_id") or _reason_tag(str(trade.get("entry_reason", "")), "event_id", ""))
+        if not event_id:
+            event_id = f"legacy:{trade.get('symbol')}:{trade.get('entry_time')}"
+        grouped.setdefault(event_id, []).append(trade)
+    campaigns: list[dict[str, Any]] = []
+    for event_id, rows in grouped.items():
+        ordered = sorted(rows, key=lambda item: str(item.get("exit_time", "")))
+        first = ordered[0]
+        last = ordered[-1]
+        metadata = dict(last.get("strategy_metadata") or first.get("strategy_metadata") or {})
+        risk_budget = max(float(item.get("campaign_risk_budget_usdt", 0.0) or 0.0) for item in ordered)
+        initial_risk = max(float(item.get("initial_leg_full_cost_risk_usdt", 0.0) or 0.0) for item in ordered)
+        net = sum(float(item.get("net_pnl", 0.0)) for item in ordered)
+        campaigns.append(
+            {
+                "campaign_id": event_id,
+                "event_id": event_id,
+                "setup_id": metadata.get("setup_id"),
+                "symbol": first.get("symbol"),
+                "side": first.get("side"),
+                "entry_time": first.get("entry_time"),
+                "exit_time": last.get("exit_time"),
+                "exit_reason": last.get("exit_reason"),
+                "net_pnl": net,
+                "gross_pnl": sum(float(item.get("gross_pnl", 0.0)) for item in ordered),
+                "fee": sum(float(item.get("fee", item.get("fees", 0.0))) for item in ordered),
+                "slippage": sum(float(item.get("slippage_cost", 0.0)) for item in ordered),
+                "funding": sum(float(item.get("funding", 0.0)) for item in ordered),
+                "campaign_risk_usdt": risk_budget,
+                "initial_leg_full_cost_risk_usdt": initial_risk,
+                "initial_leg_actual_risk_fraction": initial_risk / max(risk_budget, 1e-12),
+                "pnl_r": net / max(risk_budget, 1e-12),
+                "initial_leg_pnl_r": net / max(initial_risk, 1e-12),
+                "mfe_r": max(float(item.get("mtpc_max_executable_initial_leg_r", item.get("mtpc_max_executable_r", 0.0)) or 0.0) for item in ordered),
+                "mae_r": min(float(item.get("mtpc_min_executable_initial_leg_r", item.get("mtpc_min_executable_r", 0.0)) or 0.0) for item in ordered),
+                "campaign_mfe_r": max(float(item.get("mtpc_max_executable_campaign_r", 0.0) or 0.0) for item in ordered),
+                "campaign_mae_r": min(float(item.get("mtpc_min_executable_campaign_r", 0.0) or 0.0) for item in ordered),
+                "rank_percentile": metadata.get("rank_percentile"),
+                "impulse_quality": metadata.get("impulse_quality"),
+                "pullback_quality": metadata.get("pullback_quality"),
+                "confirmation_quality": metadata.get("confirmation_quality"),
+                "trigger_type": metadata.get("trigger_type"),
+                "target_to_cost_ratio": metadata.get("target_to_cost_ratio"),
+                "leg_count": len(ordered),
+            }
+        )
+    return {
+        **engine_report,
+        "cost_model_version": "full_cost_path_aware_conservative_v1",
+        "cost_model_hash": _cmipr_cost_model_hash(execution_config),
+        "data_range": {
+            "start": data_start.isoformat() if hasattr(data_start, "isoformat") else str(data_start),
+            "end": data_end.isoformat() if hasattr(data_end, "isoformat") else str(data_end),
+        },
+        "execution_stats": dict(sorted(stats.items())),
+        "strategy_summary": _mtper_campaign_metrics(campaigns),
+        "initial_leg_r_summary": _mtper_campaign_metrics(
+            [{**campaign, "pnl_r": campaign["initial_leg_pnl_r"]} for campaign in campaigns]
+        ),
+        "by_month": _mtper_group_campaigns(campaigns, "exit_time", month=True),
+        "by_symbol": _mtper_group_campaigns(campaigns, "symbol"),
+        "by_exit_reason": _mtper_group_campaigns(campaigns, "exit_reason"),
+        "by_trigger": _mtper_group_campaigns(campaigns, "trigger_type"),
+        "campaigns": campaigns,
+        "risk_policy": {
+            "configured_trade_risk_pct": float(config.mtpc.risk_control.trade_risk_pct),
+            "max_trade_risk_pct": float(config.mtpc.risk_control.max_trade_risk_pct),
+            "max_open_positions": int(config.mtpc.risk_control.max_open_positions),
+            "addon_enabled": False,
+            "exit_r_basis": str(config.mtpc.exit.r_basis),
+        },
+    }
+
+
+def _mtper_report(
+    config: Any,
+    trades: list[dict[str, Any]],
+    engine_report: dict[str, Any],
+    stats: dict[str, int],
+    execution_config: BacktestExecutionConfig,
+    data_start: Any,
+    data_end: Any,
+) -> dict[str, Any]:
+    legs = [trade for trade in trades if trade.get("strategy") == MTPER_REASON_TOKEN]
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for trade in legs:
+        metadata = trade.get("strategy_metadata") or {}
+        campaign_id = str(metadata.get("campaign_id") or _reason_tag(str(trade.get("entry_reason", "")), "campaign_id", ""))
+        if not campaign_id:
+            campaign_id = f"legacy:{trade.get('symbol')}:{trade.get('entry_time')}"
+        grouped.setdefault(campaign_id, []).append(trade)
+    campaigns: list[dict[str, Any]] = []
+    for campaign_id, rows in grouped.items():
+        ordered = sorted(rows, key=lambda item: str(item.get("exit_time", "")))
+        first = ordered[0]
+        last = ordered[-1]
+        metadata = dict(last.get("strategy_metadata") or first.get("strategy_metadata") or {})
+        risk_budget = max(float(item.get("campaign_risk_budget_usdt", 0.0) or 0.0) for item in ordered)
+        initial_risk = max(float(item.get("initial_leg_full_cost_risk_usdt", 0.0) or 0.0) for item in ordered)
+        net = sum(float(item.get("net_pnl", 0.0)) for item in ordered)
+        campaigns.append(
+            {
+                "campaign_id": campaign_id,
+                "setup_id": metadata.get("setup_id"),
+                "symbol": first.get("symbol"),
+                "side": first.get("side"),
+                "setup_time": metadata.get("setup_time"),
+                "initial_entry_time": first.get("entry_time"),
+                "second_entry_time": metadata.get("second_entry_time"),
+                "initial_entry_price": first.get("entry_price"),
+                "second_entry_price": metadata.get("second_entry_price"),
+                "average_entry_price": first.get("entry_price"),
+                "hard_stop": first.get("initial_stop_price", metadata.get("structural_stop_price")),
+                "total_quantity": sum(float(item.get("qty", 0.0)) for item in ordered),
+                "campaign_risk_usdt": risk_budget,
+                "actual_worst_case_loss": initial_risk,
+                "first_target_time": next((item.get("exit_time") for item in ordered if item.get("exit_reason") == "mtper_mean_target_1"), None),
+                "second_target_time": next((item.get("exit_time") for item in ordered if item.get("exit_reason") == "mtper_mean_target_2"), None),
+                "trend_conversion_time": metadata.get("trend_conversion_time"),
+                "final_exit_time": last.get("exit_time"),
+                "final_exit_reason": last.get("exit_reason"),
+                "gross_pnl": sum(float(item.get("gross_pnl", 0.0)) for item in ordered),
+                "fee": sum(float(item.get("fee", item.get("fees", 0.0))) for item in ordered),
+                "slippage": sum(float(item.get("slippage_cost", 0.0)) for item in ordered),
+                "funding": sum(float(item.get("funding", 0.0)) for item in ordered),
+                "net_pnl": net,
+                "pnl_r": net / max(risk_budget, 1e-12),
+                "initial_leg_pnl_r": net / max(initial_risk, 1e-12),
+                "mfe_r": max(float(item.get("mtper_max_executable_campaign_r", 0.0) or 0.0) for item in ordered),
+                "mae_r": min(float(item.get("mtper_min_executable_campaign_r", 0.0) or 0.0) for item in ordered),
+                "second_entry_mode": metadata.get("second_entry_mode", "none"),
+                "actual_4h_cross_confirmed": bool(metadata.get("trend_converted", False)),
+                "setup_invalidated": False,
+                "trigger_type": metadata.get("trigger_type"),
+                "extreme_score": metadata.get("extreme_score"),
+                "ema_gap_atr": metadata.get("ema_gap_atr"),
+                "target_to_cost_ratio": metadata.get("target_to_cost_ratio"),
+                "liquidation_price_estimate": metadata.get("liquidation_price_estimate"),
+                "liquidation_buffer_ok": metadata.get("liquidation_buffer_ok"),
+                "leg_count": len(ordered),
+            }
+        )
+    metrics = _mtper_campaign_metrics(campaigns)
+    return {
+        **engine_report,
+        "cost_model_version": "full_cost_path_aware_conservative_v1",
+        "cost_model_hash": _cmipr_cost_model_hash(execution_config),
+        "data_range": {
+            "start": data_start.isoformat() if hasattr(data_start, "isoformat") else str(data_start),
+            "end": data_end.isoformat() if hasattr(data_end, "isoformat") else str(data_end),
+        },
+        "execution_stats": dict(sorted(stats.items())),
+        "strategy_summary": metrics,
+        "campaign_risk_report": {
+            "configured_campaign_risk_pct": float(config.mtper.risk_control.campaign_risk_pct),
+            "max_campaign_risk_pct": float(config.mtper.risk_control.max_campaign_risk_pct),
+            "initial_risk_fraction": float(config.mtper.entry.initial_risk_fraction),
+            "actual_worst_case_within_budget_count": sum(
+                float(row["actual_worst_case_loss"]) <= float(row["campaign_risk_usdt"]) + 1e-9
+                for row in campaigns
+            ),
+        },
+        "liquidation_buffer_report": {
+            "checked_campaigns": len(campaigns),
+            "all_passed": all(row.get("liquidation_buffer_ok") is True for row in campaigns) if campaigns else True,
+        },
+        "four_hour_pre_cross_report": {
+            "setup_count": len(engine_report.get("setups", [])),
+            "formal_cross_setup_count": sum(bool(row.get("formal_cross")) for row in engine_report.get("setups", [])),
+        },
+        "extreme_score_report": _mtper_numeric_summary(
+            [row.get("extreme_score") for row in engine_report.get("pre_cross_candidates", [])]
+        ),
+        "two_hour_exhaustion_report": _mtper_setup_check_summary(engine_report.get("setups", []), "two_hour_checks"),
+        "one_hour_permission_report": _mtper_setup_check_summary(engine_report.get("setups", []), "one_hour_checks"),
+        "fifteen_minute_trigger_report": _mtper_group_campaigns(campaigns, "trigger_type"),
+        "no_second_entry_report": metrics if not bool(config.mtper.second_entry.enabled) else None,
+        "defensive_scale_in_report": None,
+        "winner_addon_report": None,
+        "target_ladder_report": _mtper_group_legs(legs, "exit_reason"),
+        "trend_conversion_report": {
+            "count": sum(bool(row.get("actual_4h_cross_confirmed")) for row in campaigns),
+            "metrics": _mtper_campaign_metrics([row for row in campaigns if row.get("actual_4h_cross_confirmed")]),
+        },
+        "long_short_comparison": _mtper_group_campaigns(campaigns, "side"),
+        "by_month": _mtper_group_campaigns(campaigns, "final_exit_time", month=True),
+        "by_symbol": _mtper_group_campaigns(campaigns, "symbol"),
+        "campaigns": campaigns,
+    }
+
+
+def _mtper_campaign_metrics(campaigns: list[dict[str, Any]]) -> dict[str, Any]:
+    wins = [row for row in campaigns if float(row.get("net_pnl", 0.0)) > 0.0]
+    losses = [row for row in campaigns if float(row.get("net_pnl", 0.0)) <= 0.0]
+    gross_profit = sum(float(row.get("net_pnl", 0.0)) for row in wins)
+    gross_loss = abs(sum(float(row.get("net_pnl", 0.0)) for row in losses))
+    total = sum(float(row.get("net_pnl", 0.0)) for row in campaigns)
+    return {
+        "campaign_count": len(campaigns),
+        "net_pnl": total,
+        "win_rate_pct": len(wins) / len(campaigns) * 100.0 if campaigns else 0.0,
+        "profit_factor": gross_profit / gross_loss if gross_loss > 0.0 else (None if gross_profit <= 0.0 else float("inf")),
+        "expectancy": total / len(campaigns) if campaigns else 0.0,
+        "average_winner": gross_profit / len(wins) if wins else 0.0,
+        "average_loser": -gross_loss / len(losses) if losses else 0.0,
+        "average_pnl_r": statistics.fmean(float(row.get("pnl_r", 0.0)) for row in campaigns) if campaigns else 0.0,
+        "fee": sum(float(row.get("fee", 0.0)) for row in campaigns),
+        "slippage": sum(float(row.get("slippage", 0.0)) for row in campaigns),
+        "funding": sum(float(row.get("funding", 0.0)) for row in campaigns),
+    }
+
+
+def _mtper_group_campaigns(
+    campaigns: list[dict[str, Any]],
+    key: str,
+    month: bool = False,
+) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in campaigns:
+        raw = row.get(key)
+        group = str(raw)[:7] if month and raw else str(raw or "unknown")
+        grouped.setdefault(group, []).append(row)
+    return {group: _mtper_campaign_metrics(rows) for group, rows in sorted(grouped.items())}
+
+
+def _mtper_group_legs(legs: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in legs:
+        grouped.setdefault(str(row.get(key, "unknown")), []).append(row)
+    return {
+        group: {
+            "count": len(rows),
+            "net_pnl": sum(float(row.get("net_pnl", 0.0)) for row in rows),
+        }
+        for group, rows in sorted(grouped.items())
+    }
+
+
+def _mtper_numeric_summary(values: list[Any]) -> dict[str, Any]:
+    finite = sorted(float(value) for value in values if value is not None and math.isfinite(float(value)))
+    if not finite:
+        return {"count": 0}
+    return {
+        "count": len(finite),
+        "min": finite[0],
+        "median": statistics.median(finite),
+        "mean": statistics.fmean(finite),
+        "max": finite[-1],
+    }
+
+
+def _mtper_setup_check_summary(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    values = [row.get(key) for row in rows if row.get(key) is not None]
+    return _mtper_numeric_summary(values)
+
+
 def _cmipr_report(
     config: Any,
     trades: list[dict[str, Any]],
     engine_report: dict[str, Any],
     coverage: dict[str, Any],
     stats: dict[str, int],
+    execution_config: BacktestExecutionConfig,
+    data_start: Any,
+    data_end: Any,
 ) -> dict[str, Any]:
     cmipr_trades = [trade for trade in trades if trade.get("strategy") == CMIPR_REASON_TOKEN]
     by_addons: dict[str, list[dict[str, Any]]] = {"no_addon": [], "one_addon": [], "two_addons": []}
@@ -985,6 +1447,15 @@ def _cmipr_report(
         by_addons[key].append(trade)
     return {
         **engine_report,
+        "r_definition_version": CMIPR_R_DEFINITION_VERSION,
+        "cost_model_version": "full_cost_path_aware_conservative_v1",
+        "cost_model_hash": _cmipr_cost_model_hash(execution_config),
+        "universe_version": _cmipr_universe_hash(),
+        "data_range": {
+            "start": data_start.isoformat() if hasattr(data_start, "isoformat") else str(data_start),
+            "end": data_end.isoformat() if hasattr(data_end, "isoformat") else str(data_end),
+        },
+        "random_seed": None,
         "derivatives_coverage": coverage,
         "execution_stats": dict(sorted(stats.items())),
         "historical_test_policy": {
@@ -997,6 +1468,126 @@ def _cmipr_report(
             key: _cmipr_trade_metrics(rows)
             for key, rows in by_addons.items()
         },
+        "r_basis_audit": _cmipr_r_basis_audit(config, cmipr_trades),
+    }
+
+
+def _cmipr_cost_model_hash(execution_config: BacktestExecutionConfig) -> str:
+    payload = {
+        "mode": execution_config.mode,
+        "market_slippage_bps": execution_config.market_slippage_bps,
+        "stop_slippage_bps": execution_config.stop_slippage_bps,
+        "take_profit_slippage_bps": execution_config.take_profit_slippage_bps,
+        "maker_fee_rate": execution_config.maker_fee_rate,
+        "taker_fee_rate": execution_config.taker_fee_rate,
+        "funding_enabled": execution_config.funding_enabled,
+        "funding_default_rate": execution_config.funding_default_rate,
+        "dynamic_slippage_enabled": execution_config.dynamic_slippage_enabled,
+        "impact_coefficient_bps": execution_config.impact_coefficient_bps,
+        "impact_exponent": execution_config.impact_exponent,
+        "max_bar_participation_rate": execution_config.max_bar_participation_rate,
+        "min_partial_fill_ratio": execution_config.min_partial_fill_ratio,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _cmipr_universe_hash() -> str:
+    payload = [
+        (day.isoformat() if hasattr(day, "isoformat") else str(day), sorted(symbols))
+        for day, symbols in sorted(_POINT_IN_TIME_UNIVERSE.items(), key=lambda item: str(item[0]))
+    ]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _cmipr_r_basis_audit(config: Any, trades: list[dict[str, Any]]) -> dict[str, Any]:
+    take_basis = normalize_r_basis(config.cmipr.exit.take_profit_r_basis)
+    fail_fast_basis = normalize_r_basis(config.cmipr.exit.fail_fast_r_basis)
+    take_threshold = float(config.cmipr.exit.fixed_take_profit_r)
+    fail_fast_threshold = float(config.cmipr.exit.fail_fast_min_mfe_r)
+    rows: list[dict[str, Any]] = []
+    for trade in trades:
+        campaign_risk = float(trade.get("campaign_risk_budget_usdt", trade.get("risk_budget_usdt", 0.0)) or 0.0)
+        initial_leg_risk_usdt = float(trade.get("initial_leg_full_cost_risk_usdt", 0.0) or 0.0)
+        actual_fraction = initial_leg_risk_usdt / campaign_risk if campaign_risk > 0.0 else 0.0
+        tp_initial_leg_r = take_threshold if take_basis == INITIAL_LEG_R_BASIS else take_threshold / max(actual_fraction, 1e-12)
+        fail_fast_initial_leg_r = fail_fast_threshold if fail_fast_basis == INITIAL_LEG_R_BASIS else fail_fast_threshold / max(actual_fraction, 1e-12)
+        rows.append(
+            {
+                "event_id": _reason_tag(str(trade.get("entry_reason", "")), "event_id", ""),
+                "symbol": str(trade.get("symbol", "")),
+                "entry_time": trade.get("entry_time"),
+                "exit_time": trade.get("exit_time"),
+                "campaign_risk_budget_usdt": campaign_risk,
+                "initial_leg_price_risk_usdt": float(trade.get("initial_leg_price_risk_usdt", 0.0) or 0.0),
+                "initial_leg_full_cost_risk_usdt": initial_leg_risk_usdt,
+                "initial_leg_actual_risk_fraction": actual_fraction,
+                "capacity_fill_ratio": float(trade.get("capacity_fill_ratio", 1.0) or 0.0),
+                "capacity_clipped_initial_risk_fraction": float(trade.get("capacity_clipped_initial_risk_fraction", 0.0) or 0.0),
+                "stop_execution_price_estimate": float(trade.get("stop_execution_price_estimate", 0.0) or 0.0),
+                "fixed_tp_initial_leg_r_equivalent": tp_initial_leg_r,
+                "fail_fast_initial_leg_r_equivalent": fail_fast_initial_leg_r,
+                "expected_stop_initial_leg_r": -1.0 if initial_leg_risk_usdt > 0.0 else None,
+                "max_executable_initial_leg_r": trade.get("max_executable_initial_leg_r"),
+                "max_executable_campaign_r": trade.get("max_executable_campaign_r"),
+                "net_initial_leg_r": trade.get("net_initial_leg_r"),
+                "net_campaign_r": trade.get("net_campaign_r"),
+                "max_executable_r_legacy_basis": trade.get("max_executable_r_basis"),
+            }
+        )
+    distribution_fields = (
+        "campaign_risk_budget_usdt",
+        "initial_leg_price_risk_usdt",
+        "initial_leg_full_cost_risk_usdt",
+        "initial_leg_actual_risk_fraction",
+        "capacity_clipped_initial_risk_fraction",
+        "fixed_tp_initial_leg_r_equivalent",
+        "fail_fast_initial_leg_r_equivalent",
+        "max_executable_initial_leg_r",
+        "max_executable_campaign_r",
+        "net_initial_leg_r",
+        "net_campaign_r",
+    )
+    return {
+        "trade_count": len(rows),
+        "take_profit_r_basis": take_basis,
+        "fail_fast_r_basis": fail_fast_basis,
+        "legacy_max_executable_r_basis": "campaign",
+        "capacity_clipped_trade_count": sum(float(row["capacity_fill_ratio"]) < 0.999 for row in rows),
+        "distributions": {
+            field: _numeric_distribution([row.get(field) for row in rows])
+            for field in distribution_fields
+        },
+        "rows": rows,
+    }
+
+
+def _numeric_distribution(values: list[Any]) -> dict[str, Any]:
+    ordered = sorted(float(value) for value in values if value is not None and math.isfinite(float(value)))
+    if not ordered:
+        return {"count": 0, "min": None, "p10": None, "p25": None, "median": None, "p75": None, "p90": None, "max": None}
+
+    def percentile(fraction: float) -> float:
+        if len(ordered) == 1:
+            return ordered[0]
+        position = fraction * (len(ordered) - 1)
+        lower = int(math.floor(position))
+        upper = int(math.ceil(position))
+        if lower == upper:
+            return ordered[lower]
+        weight = position - lower
+        return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+    return {
+        "count": len(ordered),
+        "min": ordered[0],
+        "p10": percentile(0.10),
+        "p25": percentile(0.25),
+        "median": statistics.median(ordered),
+        "p75": percentile(0.75),
+        "p90": percentile(0.90),
+        "max": ordered[-1],
     }
 
 
@@ -1047,6 +1638,111 @@ def _cmipr_sizing_account(config: Any, account: Any, signal: Signal) -> Any:
     )
 
 
+def _initialize_cmipr_risk_basis(
+    config: Any,
+    position: PortfolioPosition,
+    campaign_risk_budget_usdt: float,
+    planned_initial_risk_fraction: float,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> None:
+    audit = initial_leg_risk(
+        position,
+        campaign_risk_budget_usdt,
+        planned_initial_risk_fraction,
+        execution_config,
+        rules,
+    )
+    position.risk_budget_usdt = audit.campaign_risk_budget_usdt
+    position.campaign_risk_budget_usdt = audit.campaign_risk_budget_usdt
+    position.initial_leg_price_risk_usdt = audit.initial_leg_price_risk_usdt
+    position.initial_leg_full_cost_risk_usdt = audit.initial_leg_full_cost_risk_usdt
+    position.initial_leg_actual_risk_fraction = audit.initial_leg_actual_risk_fraction
+    position.capacity_clipped_initial_risk_fraction = audit.capacity_clipped_initial_risk_fraction
+    position.stop_execution_price_estimate = audit.stop_execution_price_estimate
+    position.estimated_stop_exit_fee_usdt = audit.estimated_stop_exit_fee_usdt
+    position.estimated_stop_exit_slippage_usdt = audit.estimated_stop_exit_slippage_usdt
+
+    immediate_net = executable_net_pnl(
+        position,
+        position.raw_entry_price or position.entry_price,
+        execution_config,
+        rules,
+    )
+    campaign_r = net_pnl_r(position, immediate_net, CAMPAIGN_R_BASIS)
+    initial_leg_r = net_pnl_r(position, immediate_net, INITIAL_LEG_R_BASIS)
+    position.cmipr_max_campaign_executable_r = campaign_r
+    position.cmipr_min_campaign_executable_r = campaign_r
+    position.cmipr_max_initial_leg_executable_r = initial_leg_r
+    position.cmipr_min_initial_leg_executable_r = initial_leg_r
+    position.cmipr_executable_mfe_usdt = immediate_net
+
+
+def _cmipr_initial_quantity_within_campaign_budget(
+    signal: Signal,
+    candle: Candle,
+    requested_quantity: float,
+    campaign_risk_budget_usdt: float,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+    exact_stop_price: float | None = None,
+) -> float:
+    """Cap initial quantity using the same full-cost stop path used by the R audit."""
+    budget = max(0.0, float(campaign_risk_budget_usdt))
+    quantity = max(0.0, float(requested_quantity))
+    if budget <= 0.0 or quantity <= 0.0:
+        return 0.0
+    raw_price = float(candle.open)
+    bar_quote_volume = abs(float(candle.volume) * raw_price)
+    for _ in range(12):
+        filled_quantity, _, _ = capacity_limited_quantity(
+            execution_config,
+            rules,
+            quantity,
+            raw_price,
+            bar_quote_volume,
+        )
+        if filled_quantity <= 0.0:
+            return 0.0
+        entry_fill = market_entry_fill(
+            execution_config,
+            rules,
+            signal.direction,
+            filled_quantity,
+            raw_price,
+            bar_quote_volume,
+        )
+        if exact_stop_price is not None:
+            raw_stop = float(exact_stop_price)
+        elif signal.direction == Direction.LONG:
+            raw_stop = entry_fill.price * (1.0 - signal.stop_loss_pct)
+        else:
+            raw_stop = entry_fill.price * (1.0 + signal.stop_loss_pct)
+        stop_fill = market_exit_fill(
+            execution_config,
+            rules,
+            signal.direction,
+            filled_quantity,
+            raw_stop,
+            "stop_market",
+            bar_quote_volume or None,
+        )
+        price_risk = max(
+            0.0,
+            signal.direction.value * filled_quantity * (entry_fill.price - stop_fill.price),
+        )
+        full_cost_risk = price_risk + entry_fill.fee + stop_fill.fee
+        if full_cost_risk <= budget + 1e-9:
+            return quantity
+        ratio = budget / max(full_cost_risk, 1e-12)
+        quantity = float(rules.round_quantity(quantity * max(0.0, min(0.995, ratio * 0.995))))
+        if quantity <= 0.0:
+            return 0.0
+    return 0.0
+    position.cmipr_executable_mae_usdt = immediate_net
+    position.cmipr_max_executable_r = campaign_r
+
+
 def _fill_pending_entries_1m(
     trader: BinanceAutoTrader,
     config: Any,
@@ -1065,28 +1761,64 @@ def _fill_pending_entries_1m(
     portfolio_runtime: PortfolioRuntimeControl | None = None,
     cmipr_engine: CmiprEngine | None = None,
     cmipr_stats: dict[str, int] | None = None,
+    mtper_engine: MtperEngine | None = None,
+    mtper_stats: dict[str, int] | None = None,
+    mtpc_engine: MtpcEngine | None = None,
+    mtpc_stats: dict[str, int] | None = None,
+    reversal_v2_stats: dict[str, int] | None = None,
+    mtf_reject_stats: dict[str, int] | None = None,
 ) -> float:
     if not pending_entries:
         return cash
     portfolio_symbol_cooldown_until = portfolio_symbol_cooldown_until or {}
     portfolio_control_stats = portfolio_control_stats if portfolio_control_stats is not None else {}
     portfolio_runtime = portfolio_runtime or PortfolioRuntimeControl()
+    reversal_v2_stats = reversal_v2_stats if reversal_v2_stats is not None else {}
+    mtper_stats = mtper_stats if mtper_stats is not None else {}
+    mtpc_stats = mtpc_stats if mtpc_stats is not None else {}
+    mtf_reject_stats = mtf_reject_stats if mtf_reject_stats is not None else {}
     remaining: list[PendingEntry] = []
     filled = 0
     max_fills = max(1, int(config.trading.max_new_entries_per_cycle))
     for pending in pending_entries:
         candidate = pending.candidate
+        mtper_pending = MTPER_REASON_TOKEN in str(candidate.signal.reason)
+        mtper_symbol = candidate.symbol
+        mtpc_pending = MTPC_REASON_TOKEN in str(candidate.signal.reason)
+        mtpc_symbol = candidate.symbol
         if not _point_in_time_symbol_allowed(config, candidate.symbol, timestamp):
             if CMIPR_REASON_TOKEN in str(candidate.signal.reason):
                 _count_stat(cmipr_stats if cmipr_stats is not None else {}, "initial_reject_point_in_time_universe")
+            if MTPER_REASON_TOKEN in str(candidate.signal.reason):
+                _count_stat(mtper_stats, "initial_reject_point_in_time_universe")
+                if mtper_engine is not None:
+                    mtper_engine.mark_cancelled(mtper_symbol, timestamp, "point_in_time_universe")
+            if mtpc_pending:
+                _count_stat(mtpc_stats, "initial_reject_point_in_time_universe")
+                if mtpc_engine is not None:
+                    mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, "point_in_time_universe")
             continue
         if pending.earliest_execution_index > execution_index:
             remaining.append(pending)
+            continue
+        if mtper_pending and pending.earliest_execution_index < execution_index:
+            _count_stat(mtper_stats, "initial_reject_missed_next_1m_open")
+            if mtper_engine is not None:
+                mtper_engine.mark_cancelled(mtper_symbol, timestamp, "missed_next_1m_open")
+            continue
+        if mtpc_pending and pending.earliest_execution_index < execution_index:
+            _count_stat(mtpc_stats, "initial_reject_missed_next_1m_open")
+            if mtpc_engine is not None:
+                mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, "missed_next_1m_open")
             continue
         if filled >= max_fills:
             remaining.append(pending)
             continue
         if candidate.symbol in positions:
+            if mtper_pending and mtper_engine is not None:
+                mtper_engine.mark_cancelled(mtper_symbol, timestamp, "symbol_already_open")
+            if mtpc_pending and mtpc_engine is not None:
+                mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, "symbol_already_open")
             continue
         if len(positions) >= _entry_position_limit(config):
             remaining.append(pending)
@@ -1110,9 +1842,21 @@ def _fill_pending_entries_1m(
             _portfolio_count(portfolio_control_stats, portfolio_reason)
             if CMIPR_REASON_TOKEN in str(candidate.signal.reason):
                 _count_stat(cmipr_stats if cmipr_stats is not None else {}, f"initial_reject_{portfolio_reason}")
+            if MTPER_REASON_TOKEN in str(candidate.signal.reason):
+                _count_stat(mtper_stats, f"initial_reject_{portfolio_reason}")
+                if mtper_engine is not None:
+                    mtper_engine.mark_cancelled(mtper_symbol, timestamp, portfolio_reason)
+            if mtpc_pending:
+                _count_stat(mtpc_stats, f"initial_reject_{portfolio_reason}")
+                if mtpc_engine is not None:
+                    mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, portfolio_reason)
             continue
         if portfolio_multiplier <= 0:
             _portfolio_count(portfolio_control_stats, "portfolio_zero_risk")
+            if mtper_pending and mtper_engine is not None:
+                mtper_engine.mark_cancelled(mtper_symbol, timestamp, "portfolio_zero_risk")
+            if mtpc_pending and mtpc_engine is not None:
+                mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, "portfolio_zero_risk")
             continue
         if portfolio_multiplier < 0.999:
             adjusted_signal = replace(
@@ -1121,6 +1865,48 @@ def _fill_pending_entries_1m(
             )
             candidate = replace(candidate, signal=adjusted_signal)
         candle = execution_candles_by_symbol[candidate.symbol][execution_index]
+        candidate = _reversal_v2_adjust_candidate_for_fill(
+            config,
+            candidate,
+            candle.open,
+            execution_config,
+            reversal_v2_stats,
+        )
+        if candidate is None:
+            continue
+        candidate = _mtf_adjust_candidate_for_fill(
+            config,
+            candidate,
+            candle.open,
+            execution_config,
+            mtf_reject_stats,
+        )
+        if candidate is None:
+            continue
+        adjusted_mtper_candidate = _mtper_adjust_candidate_for_fill(
+            config,
+            candidate,
+            candle.open,
+            execution_config,
+            mtper_stats,
+        )
+        if adjusted_mtper_candidate is None:
+            if mtper_pending and mtper_engine is not None:
+                mtper_engine.mark_cancelled(mtper_symbol, timestamp, "fill_revalidation")
+            continue
+        candidate = adjusted_mtper_candidate
+        adjusted_mtpc_candidate = _mtpc_adjust_candidate_for_fill(
+            config,
+            candidate,
+            candle.open,
+            execution_config,
+            mtpc_stats,
+        )
+        if adjusted_mtpc_candidate is None:
+            if mtpc_pending and mtpc_engine is not None:
+                mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, "fill_revalidation")
+            continue
+        candidate = adjusted_mtpc_candidate
         execution_candle = replace(
             candle,
             high=candle.open,
@@ -1135,14 +1921,107 @@ def _fill_pending_entries_1m(
             execution_index,
         )
         pre_entry_equity = account.equity
-        sizing_account = _cmipr_sizing_account(config, account, candidate.signal)
+        sizing_account = _mtpc_sizing_account(
+            config,
+            _mtper_sizing_account(config, _cmipr_sizing_account(config, account, candidate.signal), candidate.signal),
+            candidate.signal,
+        )
         quantity_text, reason = trader._size_order(candidate.symbol, execution_candle.close, candidate.signal, sizing_account)
         quantity = float(quantity_text)
         if reason != "ok" or quantity <= 0:
             if CMIPR_REASON_TOKEN in str(candidate.signal.reason):
                 _count_stat(cmipr_stats if cmipr_stats is not None else {}, f"initial_reject_size_{reason}")
+            if mtper_pending:
+                _count_stat(mtper_stats, f"initial_reject_size_{reason}")
+                if mtper_engine is not None:
+                    mtper_engine.mark_cancelled(mtper_symbol, timestamp, f"size_{reason}")
+            if mtpc_pending:
+                _count_stat(mtpc_stats, f"initial_reject_size_{reason}")
+                if mtpc_engine is not None:
+                    mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, f"size_{reason}")
             continue
         rules = client.symbol_rules(candidate.symbol)
+        campaign_risk_budget = None
+        if CMIPR_REASON_TOKEN in str(candidate.signal.reason):
+            side_multiplier = candidate.signal.risk_multiplier / max(float(config.cmipr.entry.initial_risk_fraction), 1e-12)
+            campaign_risk_budget = _cmipr_trade_risk_budget(config, pre_entry_equity) * min(1.0, max(0.0, side_multiplier))
+            capped_quantity = _cmipr_initial_quantity_within_campaign_budget(
+                candidate.signal,
+                execution_candle,
+                quantity,
+                campaign_risk_budget,
+                execution_config,
+                rules,
+            )
+            if capped_quantity <= 0.0:
+                _count_stat(cmipr_stats if cmipr_stats is not None else {}, "initial_reject_full_cost_campaign_risk_cap")
+                continue
+            if capped_quantity + 1e-12 < quantity:
+                _count_stat(cmipr_stats if cmipr_stats is not None else {}, "initial_quantity_capped_by_full_cost_campaign_risk")
+            quantity = capped_quantity
+        if MTPER_REASON_TOKEN in str(candidate.signal.reason):
+            initial_fraction = max(float(config.mtper.entry.initial_risk_fraction), 1e-12)
+            side_multiplier = candidate.signal.risk_multiplier / initial_fraction
+            campaign_risk_budget = _mtper_trade_risk_budget(config, pre_entry_equity) * min(1.0, max(0.0, side_multiplier))
+            initial_budget = campaign_risk_budget * initial_fraction
+            capped_quantity = _cmipr_initial_quantity_within_campaign_budget(
+                candidate.signal,
+                execution_candle,
+                quantity,
+                initial_budget,
+                execution_config,
+                rules,
+            )
+            if capped_quantity <= 0.0:
+                _count_stat(mtper_stats, "initial_reject_full_cost_campaign_risk_cap")
+                if mtper_engine is not None:
+                    mtper_engine.mark_cancelled(mtper_symbol, timestamp, "full_cost_risk_cap")
+                continue
+            if capped_quantity + 1e-12 < quantity:
+                _count_stat(mtper_stats, "initial_quantity_capped_by_full_cost_risk")
+            quantity = capped_quantity
+        if MTPC_REASON_TOKEN in str(candidate.signal.reason):
+            campaign_risk_budget = _mtpc_trade_risk_budget(config, pre_entry_equity)
+            if not _mtpc_total_open_risk_allows_entry(
+                config,
+                positions,
+                pre_entry_equity,
+                campaign_risk_budget,
+            ):
+                _count_stat(mtpc_stats, "initial_reject_max_total_open_risk")
+                if mtpc_engine is not None:
+                    mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, "max_total_open_risk")
+                continue
+            capacity_quantity, _, _ = capacity_limited_quantity(
+                execution_config,
+                rules,
+                quantity,
+                execution_candle.open,
+                abs(execution_candle.volume * execution_candle.open),
+            )
+            if capacity_quantity <= 0.0:
+                _count_stat(mtpc_stats, "initial_reject_execution_capacity")
+                if mtpc_engine is not None:
+                    mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, "execution_capacity")
+                continue
+            exact_stop = float(candidate.metadata.get("structural_stop_price", 0.0) or 0.0)
+            capped_quantity = _cmipr_initial_quantity_within_campaign_budget(
+                candidate.signal,
+                execution_candle,
+                quantity,
+                campaign_risk_budget,
+                execution_config,
+                rules,
+                exact_stop_price=exact_stop if exact_stop > 0.0 else None,
+            )
+            if capped_quantity <= 0.0:
+                _count_stat(mtpc_stats, "initial_reject_full_cost_risk_cap")
+                if mtpc_engine is not None:
+                    mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, "full_cost_risk_cap")
+                continue
+            if capped_quantity + 1e-12 < quantity:
+                _count_stat(mtpc_stats, "initial_quantity_capped_by_full_cost_risk")
+            quantity = capped_quantity
         before = candidate.symbol in positions
         cash = _open_position(
             config,
@@ -1162,27 +2041,609 @@ def _fill_pending_entries_1m(
         )
         if not before and candidate.symbol in positions:
             position = positions[candidate.symbol]
+            position.strategy_metadata = dict(candidate.metadata)
             if _is_cmipr_position(position):
-                side_multiplier = candidate.signal.risk_multiplier / max(float(config.cmipr.entry.initial_risk_fraction), 1e-12)
-                position.risk_budget_usdt = _cmipr_trade_risk_budget(config, pre_entry_equity) * min(1.0, max(0.0, side_multiplier))
+                assert campaign_risk_budget is not None
                 position.initial_stop_price = position.stop_price
+                _initialize_cmipr_risk_basis(
+                    config,
+                    position,
+                    campaign_risk_budget,
+                    candidate.signal.risk_multiplier,
+                    execution_config,
+                    rules,
+                )
                 if cmipr_engine is not None:
                     if position.capacity_fill_ratio < 0.999:
                         cmipr_engine.mark_partial_fill(candidate.symbol)
                     cmipr_engine.mark_protection_pending(candidate.symbol)
                     cmipr_engine.mark_protected(candidate.symbol)
                 _count_stat(cmipr_stats if cmipr_stats is not None else {}, "initial_fill_count")
+            if _is_mtper_position(position):
+                assert campaign_risk_budget is not None
+                _initialize_mtper_position(
+                    config,
+                    position,
+                    candidate,
+                    campaign_risk_budget,
+                    execution_config,
+                    rules,
+                )
+                if mtper_engine is not None:
+                    mtper_engine.mark_filled(
+                        candidate.symbol,
+                        position.quantity,
+                        position.quantity / max(position.capacity_fill_ratio, 1e-12),
+                    )
+                    mtper_engine.mark_protected(candidate.symbol)
+                _count_stat(mtper_stats, "initial_fill_count")
+            if _is_mtpc_position(position):
+                assert campaign_risk_budget is not None
+                _initialize_mtpc_position(
+                    config,
+                    position,
+                    candidate,
+                    campaign_risk_budget,
+                    execution_config,
+                    rules,
+                )
+                if mtpc_engine is not None:
+                    mtpc_engine.mark_filled(candidate.symbol, position.capacity_fill_ratio < 0.999, timestamp)
+                    mtpc_engine.mark_protected(candidate.symbol, timestamp)
+                _count_stat(mtpc_stats, "initial_fill_count")
+            if _is_reversal_v2_position(position):
+                _initialize_reversal_v2_position(position, candidate)
+                _count_stat(reversal_v2_stats, "entry_count")
+            if MTF_REASON_TOKEN in str(position.entry_reason):
+                _initialize_mtf_position(config, position, candidate)
             _record_monthly_open(monthly_stats, timestamp, candidate.signal.direction)
             filled += 1
         elif CMIPR_REASON_TOKEN in str(candidate.signal.reason):
             _count_stat(cmipr_stats if cmipr_stats is not None else {}, "initial_reject_execution_capacity_or_exchange_rules")
+        elif MTPER_REASON_TOKEN in str(candidate.signal.reason):
+            _count_stat(mtper_stats, "initial_reject_execution_capacity_or_exchange_rules")
+            if mtper_engine is not None:
+                mtper_engine.mark_cancelled(mtper_symbol, timestamp, "execution_capacity_or_exchange_rules")
+        elif MTPC_REASON_TOKEN in str(candidate.signal.reason):
+            _count_stat(mtpc_stats, "initial_reject_execution_capacity_or_exchange_rules")
+            if mtpc_engine is not None:
+                mtpc_engine.mark_cancelled(mtpc_symbol, timestamp, "execution_capacity_or_exchange_rules")
     pending_entries[:] = remaining
     return cash
 
 
+def _reversal_v2_adjust_candidate_for_fill(
+    config: Any,
+    candidate: EntryCandidate,
+    raw_entry_price: float,
+    execution_config: BacktestExecutionConfig,
+    stats: dict[str, int],
+) -> EntryCandidate | None:
+    if REVERSAL_V2_REASON_TOKEN not in str(candidate.signal.reason):
+        return candidate
+    alpha = config.reversal_alpha
+    side = candidate.signal.direction.value
+    setup_atr = max(float(candidate.metadata.get("setup_atr", 0.0)), 1e-12)
+    trigger_close = max(float(candidate.metadata.get("trigger_close", 0.0)), 1e-12)
+    structural_stop = float(candidate.metadata.get("structural_stop_price", 0.0))
+    chase_atr = side * (raw_entry_price - trigger_close) / setup_atr
+    if chase_atr > float(alpha.max_entry_chase_atr):
+        _count_stat(stats, "reject_entry_chase")
+        return None
+    stop_distance = side * (raw_entry_price - structural_stop)
+    if stop_distance <= 0:
+        _count_stat(stats, "reject_entry_beyond_stop")
+        return None
+    stop_atr = stop_distance / setup_atr
+    stop_pct = stop_distance / max(raw_entry_price, 1e-12)
+    if stop_atr < float(alpha.min_stop_atr) or stop_pct < float(alpha.min_stop_pct):
+        _count_stat(stats, "reject_fill_stop_too_tight")
+        return None
+    if stop_atr > float(alpha.max_stop_atr) or stop_pct > float(alpha.max_stop_pct):
+        _count_stat(stats, "reject_fill_stop_too_wide")
+        return None
+    take_profit_r = max(0.1, float(alpha.take_profit_r))
+    target_pct = stop_pct * take_profit_r
+    round_trip_cost_pct = (
+        2.0 * float(execution_config.taker_fee_rate)
+        + (
+            float(execution_config.market_slippage_bps)
+            + float(execution_config.take_profit_slippage_bps)
+        )
+        / 10_000.0
+    )
+    target_to_cost = target_pct / max(round_trip_cost_pct, 1e-12)
+    if target_to_cost < float(alpha.min_target_to_cost_ratio):
+        _count_stat(stats, "reject_cost_edge")
+        return None
+    signal = replace(
+        candidate.signal,
+        stop_loss_pct=stop_pct,
+        take_profit_pct=target_pct,
+    )
+    metadata = dict(candidate.metadata)
+    metadata.update(
+        {
+            "entry_chase_atr": chase_atr,
+            "fill_stop_atr": stop_atr,
+            "fill_stop_pct": stop_pct,
+            "target_to_cost_ratio": target_to_cost,
+        }
+    )
+    return replace(candidate, signal=signal, metadata=metadata)
+
+
+def _mtper_trade_risk_budget(config: Any, current_equity: float) -> float:
+    risk_pct = min(
+        max(0.0, float(config.mtper.risk_control.campaign_risk_pct)),
+        max(0.0, float(config.mtper.risk_control.max_campaign_risk_pct)),
+    )
+    return max(0.0, float(current_equity)) * risk_pct
+
+
+def _mtper_sizing_account(config: Any, account: Any, signal: Signal) -> Any:
+    if MTPER_REASON_TOKEN not in str(signal.reason):
+        return account
+    global_risk_pct = max(float(config.risk.risk_per_trade_pct), 1e-12)
+    campaign_risk_pct = min(
+        max(0.0, float(config.mtper.risk_control.campaign_risk_pct)),
+        max(0.0, float(config.mtper.risk_control.max_campaign_risk_pct)),
+    )
+    if abs(global_risk_pct - campaign_risk_pct) <= 1e-12:
+        return account
+    sizing_equity = max(0.0, float(account.equity) * campaign_risk_pct / global_risk_pct)
+    return replace(
+        account,
+        equity=sizing_equity,
+        wallet_balance=sizing_equity,
+        available_balance=max(0.0, min(account.available_balance, sizing_equity - account.initial_margin)),
+    )
+
+
+def _mtper_adjust_candidate_for_fill(
+    config: Any,
+    candidate: EntryCandidate,
+    raw_entry_price: float,
+    execution_config: BacktestExecutionConfig,
+    stats: dict[str, int],
+) -> EntryCandidate | None:
+    if MTPER_REASON_TOKEN not in str(candidate.signal.reason):
+        return candidate
+    side = candidate.signal.direction.value
+    metadata = dict(candidate.metadata)
+    trigger_atr = max(float(metadata.get("trigger_atr_15m", 0.0)), 1e-12)
+    trigger_close = max(float(metadata.get("trigger_close", 0.0)), 1e-12)
+    structural_stop = float(metadata.get("structural_stop_price", 0.0))
+    chase_atr = side * (raw_entry_price - trigger_close) / trigger_atr
+    if chase_atr > float(config.mtper.entry.max_entry_chase_atr):
+        _count_stat(stats, "reject_entry_chase")
+        return None
+    stop_distance = side * (raw_entry_price - structural_stop)
+    if stop_distance <= 0:
+        _count_stat(stats, "reject_entry_beyond_hard_stop")
+        return None
+    stop_atr = stop_distance / trigger_atr
+    stop_pct = stop_distance / max(raw_entry_price, 1e-12)
+    entry_cfg = config.mtper.entry
+    if stop_atr < float(entry_cfg.min_stop_atr_15m) or stop_pct < float(entry_cfg.min_stop_pct):
+        _count_stat(stats, "reject_fill_stop_too_tight")
+        return None
+    if stop_atr > float(entry_cfg.max_stop_atr_15m) or stop_pct > float(entry_cfg.max_stop_pct):
+        _count_stat(stats, "reject_fill_stop_too_wide")
+        return None
+    leverage = max(1, int(getattr(config.trading, "leverage", 1)))
+    maintenance_rate = max(0.0, float(getattr(config.risk, "estimated_maintenance_margin_rate", 0.005)))
+    buffer_pct = max(0.0, float(config.mtper.risk_control.liquidation_buffer_pct))
+    if candidate.signal.direction == Direction.LONG:
+        liquidation_estimate = raw_entry_price * (1.0 - 1.0 / leverage + maintenance_rate)
+        liquidation_safe = structural_stop > liquidation_estimate + raw_entry_price * buffer_pct
+    else:
+        liquidation_estimate = raw_entry_price * (1.0 + 1.0 / leverage - maintenance_rate)
+        liquidation_safe = structural_stop < liquidation_estimate - raw_entry_price * buffer_pct
+    if not liquidation_safe:
+        _count_stat(stats, "reject_liquidation_before_hard_stop")
+        return None
+    targets = []
+    for index, key in enumerate(("target_1_price", "target_2_price", "target_3_price"), start=1):
+        configured = float(metadata.get(key, raw_entry_price + side * stop_distance * 0.5 * index))
+        minimum = raw_entry_price + side * stop_distance * 0.5 * index
+        target = configured if side * (configured - minimum) >= 0 else minimum
+        targets.append(target)
+    if candidate.signal.direction == Direction.LONG:
+        targets.sort()
+    else:
+        targets.sort(reverse=True)
+    target_distance = side * (targets[1] - raw_entry_price)
+    round_trip_cost_pct = (
+        2.0 * float(execution_config.taker_fee_rate)
+        + (float(execution_config.market_slippage_bps) + float(execution_config.take_profit_slippage_bps)) / 10_000.0
+    )
+    target_to_cost = target_distance / max(raw_entry_price * round_trip_cost_pct, 1e-12)
+    if target_to_cost < float(entry_cfg.min_target_to_cost_ratio):
+        _count_stat(stats, "reject_fill_target_to_cost")
+        return None
+    signal = replace(
+        candidate.signal,
+        stop_loss_pct=stop_pct,
+        take_profit_pct=side * (targets[2] - raw_entry_price) / max(raw_entry_price, 1e-12),
+    )
+    metadata.update(
+        {
+            "entry_chase_atr": chase_atr,
+            "fill_stop_atr_15m": stop_atr,
+            "fill_stop_pct": stop_pct,
+            "target_1_price": targets[0],
+            "target_2_price": targets[1],
+            "target_3_price": targets[2],
+            "target_to_cost_ratio": target_to_cost,
+            "liquidation_price_estimate": liquidation_estimate,
+            "liquidation_buffer_ok": liquidation_safe,
+        }
+    )
+    return replace(candidate, signal=signal, metadata=metadata)
+
+
+def _initialize_mtper_position(
+    config: Any,
+    position: PortfolioPosition,
+    candidate: EntryCandidate,
+    campaign_risk_budget_usdt: float,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> None:
+    metadata = dict(candidate.metadata)
+    metadata["initial_quantity"] = position.quantity
+    metadata["target_1_done"] = False
+    metadata["target_2_done"] = False
+    metadata["trend_converted"] = False
+    structural_stop = float(metadata.get("structural_stop_price", position.stop_price))
+    position.stop_price = structural_stop
+    position.initial_stop_price = structural_stop
+    position.take_profit_price = float(metadata.get("target_3_price", position.take_profit_price))
+    position.strategy_metadata = metadata
+    audit = initial_leg_risk(
+        position,
+        campaign_risk_budget_usdt,
+        float(config.mtper.entry.initial_risk_fraction),
+        execution_config,
+        rules,
+    )
+    position.risk_budget_usdt = audit.campaign_risk_budget_usdt
+    position.campaign_risk_budget_usdt = audit.campaign_risk_budget_usdt
+    position.initial_leg_price_risk_usdt = audit.initial_leg_price_risk_usdt
+    position.initial_leg_full_cost_risk_usdt = audit.initial_leg_full_cost_risk_usdt
+    position.initial_leg_actual_risk_fraction = audit.initial_leg_actual_risk_fraction
+    position.capacity_clipped_initial_risk_fraction = audit.capacity_clipped_initial_risk_fraction
+    position.stop_execution_price_estimate = audit.stop_execution_price_estimate
+    position.estimated_stop_exit_fee_usdt = audit.estimated_stop_exit_fee_usdt
+    position.estimated_stop_exit_slippage_usdt = audit.estimated_stop_exit_slippage_usdt
+    immediate_net = executable_net_pnl(
+        position,
+        position.raw_entry_price or position.entry_price,
+        execution_config,
+        rules,
+    )
+    campaign_r = net_pnl_r(position, immediate_net, CAMPAIGN_R_BASIS)
+    initial_leg_r = net_pnl_r(position, immediate_net, INITIAL_LEG_R_BASIS)
+    position.mtper_max_campaign_executable_r = campaign_r
+    position.mtper_min_campaign_executable_r = campaign_r
+    position.mtper_max_initial_leg_executable_r = initial_leg_r
+    position.mtper_min_initial_leg_executable_r = initial_leg_r
+    position.mtper_executable_mfe_usdt = immediate_net
+    position.mtper_executable_mae_usdt = immediate_net
+
+
+def _mtpc_trade_risk_budget(config: Any, current_equity: float) -> float:
+    risk_pct = min(
+        max(0.0, float(config.mtpc.risk_control.trade_risk_pct)),
+        max(0.0, float(config.mtpc.risk_control.max_trade_risk_pct)),
+    )
+    return max(0.0, float(current_equity)) * risk_pct
+
+
+def _mtpc_open_campaign_risk_usdt(positions: dict[str, PortfolioPosition]) -> float:
+    return sum(
+        max(0.0, float(position.campaign_risk_budget_usdt or position.risk_budget_usdt))
+        for position in positions.values()
+        if _is_mtpc_position(position)
+    )
+
+
+def _mtpc_total_open_risk_allows_entry(
+    config: Any,
+    positions: dict[str, PortfolioPosition],
+    current_equity: float,
+    new_campaign_risk_usdt: float,
+) -> bool:
+    limit_pct = max(0.0, float(config.mtpc.risk_control.max_total_open_risk_pct))
+    if limit_pct <= 0.0:
+        return False
+    limit_usdt = max(0.0, float(current_equity)) * limit_pct
+    projected = _mtpc_open_campaign_risk_usdt(positions) + max(0.0, float(new_campaign_risk_usdt))
+    return projected <= limit_usdt + 1e-9
+
+
+def _mtpc_exit_uses_initial_leg_r(config: Any) -> bool:
+    basis = str(getattr(config.mtpc.exit, "r_basis", "initial_leg")).strip().lower()
+    if basis not in {"initial_leg", "campaign"}:
+        raise ValueError(f"unsupported MTPC exit R basis: {basis}")
+    return basis == "initial_leg"
+
+
+def _mtpc_sizing_account(config: Any, account: Any, signal: Signal) -> Any:
+    if MTPC_REASON_TOKEN not in str(signal.reason):
+        return account
+    global_risk_pct = max(float(config.risk.risk_per_trade_pct), 1e-12)
+    mtpc_risk_pct = min(
+        max(0.0, float(config.mtpc.risk_control.trade_risk_pct)),
+        max(0.0, float(config.mtpc.risk_control.max_trade_risk_pct)),
+    )
+    if abs(global_risk_pct - mtpc_risk_pct) <= 1e-12:
+        return account
+    sizing_equity = max(0.0, float(account.equity) * mtpc_risk_pct / global_risk_pct)
+    return replace(
+        account,
+        equity=sizing_equity,
+        wallet_balance=sizing_equity,
+        available_balance=max(0.0, min(account.available_balance, sizing_equity - account.initial_margin)),
+    )
+
+
+def _mtpc_adjust_candidate_for_fill(
+    config: Any,
+    candidate: EntryCandidate,
+    raw_entry_price: float,
+    execution_config: BacktestExecutionConfig,
+    stats: dict[str, int],
+) -> EntryCandidate | None:
+    if MTPC_REASON_TOKEN not in str(candidate.signal.reason):
+        return candidate
+    side = candidate.signal.direction.value
+    metadata = dict(candidate.metadata)
+    trigger_atr = max(float(metadata.get("trigger_atr_15m", 0.0)), 1e-12)
+    trigger_close = max(float(metadata.get("trigger_close", 0.0)), 1e-12)
+    structural_stop = float(metadata.get("structural_stop_price", 0.0))
+    chase_atr = side * (raw_entry_price - trigger_close) / trigger_atr
+    if chase_atr > float(config.mtpc.pullback.max_entry_chase_atr):
+        _count_stat(stats, "reject_entry_chase")
+        return None
+    stop_distance = side * (raw_entry_price - structural_stop)
+    if stop_distance <= 0:
+        _count_stat(stats, "reject_entry_beyond_structural_stop")
+        return None
+    stop_atr = stop_distance / trigger_atr
+    stop_pct = stop_distance / max(raw_entry_price, 1e-12)
+    entry_cfg = config.mtpc.pullback
+    if stop_atr < float(entry_cfg.min_stop_atr) or stop_pct < float(entry_cfg.min_stop_pct):
+        _count_stat(stats, "reject_fill_stop_too_tight")
+        return None
+    if stop_atr > float(entry_cfg.max_stop_atr) or stop_pct > float(entry_cfg.max_stop_pct):
+        _count_stat(stats, "reject_fill_stop_too_wide")
+        return None
+    leverage = max(1, int(getattr(config.trading, "leverage", 1)))
+    maintenance_rate = max(0.0, float(getattr(config.risk, "estimated_maintenance_margin_rate", 0.005)))
+    buffer_pct = max(0.0, float(config.mtpc.risk_control.liquidation_buffer_pct))
+    if candidate.signal.direction == Direction.LONG:
+        liquidation_estimate = raw_entry_price * (1.0 - 1.0 / leverage + maintenance_rate)
+        liquidation_safe = structural_stop > liquidation_estimate + raw_entry_price * buffer_pct
+    else:
+        liquidation_estimate = raw_entry_price * (1.0 + 1.0 / leverage - maintenance_rate)
+        liquidation_safe = structural_stop < liquidation_estimate - raw_entry_price * buffer_pct
+    if not liquidation_safe:
+        _count_stat(stats, "reject_liquidation_before_stop")
+        return None
+    target_1_r = max(0.1, float(config.mtpc.exit.take_profit_1_r))
+    target_2_r = max(target_1_r, float(config.mtpc.exit.take_profit_2_r))
+    target_1 = raw_entry_price + side * stop_distance * target_1_r
+    target_2 = raw_entry_price + side * stop_distance * target_2_r
+    round_trip_cost_pct = (
+        2.0 * float(execution_config.taker_fee_rate)
+        + (
+            float(execution_config.market_slippage_bps)
+            + float(execution_config.take_profit_slippage_bps)
+        )
+        / 10_000.0
+    )
+    target_to_cost = side * (target_1 - raw_entry_price) / max(
+        raw_entry_price * round_trip_cost_pct, 1e-12
+    )
+    if target_to_cost < float(entry_cfg.min_target_to_cost_ratio):
+        _count_stat(stats, "reject_fill_target_to_cost")
+        return None
+    signal = replace(
+        candidate.signal,
+        stop_loss_pct=stop_pct,
+        take_profit_pct=side * (target_2 - raw_entry_price) / max(raw_entry_price, 1e-12),
+    )
+    metadata.update(
+        {
+            "entry_chase_atr": chase_atr,
+            "fill_stop_atr_15m": stop_atr,
+            "fill_stop_pct": stop_pct,
+            "target_1_price": target_1,
+            "target_2_price": target_2,
+            "target_to_cost_ratio": target_to_cost,
+            "liquidation_price_estimate": liquidation_estimate,
+            "liquidation_buffer_ok": True,
+        }
+    )
+    return replace(candidate, signal=signal, metadata=metadata)
+
+
+def _initialize_mtpc_position(
+    config: Any,
+    position: PortfolioPosition,
+    candidate: EntryCandidate,
+    campaign_risk_budget_usdt: float,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> None:
+    metadata = dict(candidate.metadata)
+    metadata["initial_quantity"] = position.quantity
+    metadata["target_1_done"] = False
+    structural_stop = float(metadata.get("structural_stop_price", position.stop_price))
+    position.stop_price = structural_stop
+    position.initial_stop_price = structural_stop
+    position.take_profit_price = float(metadata.get("target_2_price", position.take_profit_price))
+    position.strategy_metadata = metadata
+    audit = initial_leg_risk(
+        position,
+        campaign_risk_budget_usdt,
+        1.0,
+        execution_config,
+        rules,
+    )
+    position.risk_budget_usdt = audit.campaign_risk_budget_usdt
+    position.campaign_risk_budget_usdt = audit.campaign_risk_budget_usdt
+    position.initial_leg_price_risk_usdt = audit.initial_leg_price_risk_usdt
+    position.initial_leg_full_cost_risk_usdt = audit.initial_leg_full_cost_risk_usdt
+    position.initial_leg_actual_risk_fraction = audit.initial_leg_actual_risk_fraction
+    position.capacity_clipped_initial_risk_fraction = audit.capacity_clipped_initial_risk_fraction
+    position.stop_execution_price_estimate = audit.stop_execution_price_estimate
+    position.estimated_stop_exit_fee_usdt = audit.estimated_stop_exit_fee_usdt
+    position.estimated_stop_exit_slippage_usdt = audit.estimated_stop_exit_slippage_usdt
+    immediate_net = executable_net_pnl(
+        position,
+        position.raw_entry_price or position.entry_price,
+        execution_config,
+        rules,
+    )
+    campaign_r = net_pnl_r(position, immediate_net, CAMPAIGN_R_BASIS)
+    initial_leg_r = net_pnl_r(position, immediate_net, INITIAL_LEG_R_BASIS)
+    position.mtpc_max_campaign_executable_r = campaign_r
+    position.mtpc_min_campaign_executable_r = campaign_r
+    position.mtpc_max_initial_leg_executable_r = initial_leg_r
+    position.mtpc_min_initial_leg_executable_r = initial_leg_r
+    selected_r = initial_leg_r if _mtpc_exit_uses_initial_leg_r(config) else campaign_r
+    position.mtpc_max_executable_r = selected_r
+    position.mtpc_min_executable_r = selected_r
+    position.mtpc_executable_mfe_usdt = immediate_net
+    position.mtpc_executable_mae_usdt = immediate_net
+
+
+def _mtf_adjust_candidate_for_fill(
+    config: Any,
+    candidate: EntryCandidate,
+    raw_entry_price: float,
+    execution_config: BacktestExecutionConfig,
+    stats: dict[str, int],
+) -> EntryCandidate | None:
+    if MTF_REASON_TOKEN not in str(candidate.signal.reason):
+        return candidate
+    strategy = config.strategy
+    side = candidate.signal.direction.value
+    trigger_atr = max(float(candidate.metadata.get("trigger_atr", 0.0)), 1e-12)
+    trigger_close = max(float(candidate.metadata.get("trigger_close", 0.0)), 1e-12)
+    structural_stop = float(candidate.metadata.get("structural_stop_price", 0.0))
+    chase_atr = side * (raw_entry_price - trigger_close) / trigger_atr
+    if chase_atr > float(getattr(strategy, "mtf_max_entry_chase_atr", 999.0)):
+        _count_mtf_reject(stats, "mtf_entry_chase")
+        return None
+    stop_distance = side * (raw_entry_price - structural_stop)
+    if stop_distance <= 0:
+        _count_mtf_reject(stats, "mtf_entry_beyond_stop")
+        return None
+    stop_pct = stop_distance / max(raw_entry_price, 1e-12)
+    min_stop = max(0.0, float(getattr(strategy, "mtf_min_stop_pct", 0.0)))
+    max_stop = max(0.0, float(getattr(strategy, "mtf_max_stop_pct", 0.0)))
+    if min_stop > 0 and stop_pct < min_stop:
+        _count_mtf_reject(stats, "mtf_fill_stop_too_tight")
+        return None
+    if max_stop > 0 and stop_pct > max_stop:
+        _count_mtf_reject(stats, "mtf_fill_stop_too_wide")
+        return None
+    take_profit_r = max(0.1, float(getattr(strategy, "mtf_take_profit_r", 2.0)))
+    target_pct = stop_pct * take_profit_r
+    conservative_cost_pct = (
+        2.0 * float(execution_config.taker_fee_rate)
+        + (
+            float(execution_config.market_slippage_bps)
+            + max(
+                float(execution_config.stop_slippage_bps),
+                float(execution_config.take_profit_slippage_bps),
+            )
+        )
+        / 10_000.0
+    )
+    target_to_cost = target_pct / max(conservative_cost_pct, 1e-12)
+    if target_to_cost < float(getattr(strategy, "mtf_min_target_to_cost_ratio", 0.0)):
+        _count_mtf_reject(stats, "mtf_cost_edge")
+        return None
+    signal = replace(
+        candidate.signal,
+        stop_loss_pct=stop_pct,
+        take_profit_pct=target_pct,
+    )
+    metadata = dict(candidate.metadata)
+    metadata.update(
+        {
+            "entry_chase_atr": chase_atr,
+            "fill_stop_pct": stop_pct,
+            "target_to_cost_ratio": target_to_cost,
+        }
+    )
+    return replace(candidate, signal=signal, metadata=metadata)
+
+
+def _initialize_mtf_position(config: Any, position: PortfolioPosition, candidate: EntryCandidate) -> None:
+    side = position.direction.value
+    structural_stop = float(candidate.metadata.get("structural_stop_price", position.stop_price))
+    risk_distance = side * (position.entry_price - structural_stop)
+    if risk_distance <= 0:
+        return
+    take_profit_r = max(0.1, float(candidate.metadata.get("take_profit_r", 2.0)))
+    exit_mode = _mtf_exit_mode(config)
+    if exit_mode == "partial_runner":
+        take_profit_r = max(
+            0.1,
+            float(getattr(config.strategy, "mtf_partial_take_profit_r", take_profit_r)),
+        )
+    position.stop_price = structural_stop
+    position.initial_stop_price = structural_stop
+    position.take_profit_price = position.entry_price + side * risk_distance * take_profit_r
+    position.risk_budget_usdt = risk_distance * position.quantity
+    metadata = dict(candidate.metadata)
+    metadata.update(
+        {
+            "mtf_exit_mode": exit_mode,
+            "mtf_initial_quantity": position.quantity,
+            "mtf_partial_take_profit_r": take_profit_r,
+            "mtf_partial_take_profit_done": False,
+        }
+    )
+    position.strategy_metadata = metadata
+
+
+def _initialize_reversal_v2_position(position: PortfolioPosition, candidate: EntryCandidate) -> None:
+    side = position.direction.value
+    structural_stop = float(candidate.metadata.get("structural_stop_price", position.stop_price))
+    risk_distance = side * (position.entry_price - structural_stop)
+    if risk_distance <= 0:
+        return
+    position.stop_price = structural_stop
+    position.initial_stop_price = structural_stop
+    position.take_profit_price = position.entry_price + side * risk_distance * max(
+        0.1,
+        float(candidate.metadata.get("take_profit_r", 1.5)),
+    )
+    position.risk_budget_usdt = risk_distance * position.quantity
+    position.strategy_metadata = dict(candidate.metadata)
+
+
 def _candidate_signal_times(config: Any, candidate: Any, fallback_signal_time: Any) -> tuple[Any, Any]:
+    if REVERSAL_V2_REASON_TOKEN in str(candidate.signal.reason):
+        signal_time = candidate.candle.timestamp
+        return signal_time, signal_time + timedelta(milliseconds=interval_to_milliseconds("5m"))
     if CMIPR_REASON_TOKEN in str(candidate.signal.reason):
         trigger_timeframe = _reason_tag(candidate.signal.reason, "trigger_tf", "15m")
+        signal_time = candidate.candle.timestamp
+        return signal_time, signal_time + timedelta(milliseconds=interval_to_milliseconds(trigger_timeframe))
+    if MTPER_REASON_TOKEN in str(candidate.signal.reason):
+        trigger_timeframe = str(candidate.metadata.get("trigger_timeframe", _reason_tag(candidate.signal.reason, "trigger_tf", "15m")))
+        signal_time = candidate.candle.timestamp
+        return signal_time, signal_time + timedelta(milliseconds=interval_to_milliseconds(trigger_timeframe))
+    if MTPC_REASON_TOKEN in str(candidate.signal.reason):
+        trigger_timeframe = str(candidate.metadata.get("trigger_timeframe", "5m"))
         signal_time = candidate.candle.timestamp
         return signal_time, signal_time + timedelta(milliseconds=interval_to_milliseconds(trigger_timeframe))
     if _is_mtf_candidate(candidate):
@@ -1216,6 +2677,12 @@ def _mtf_required_timeframes(config: Any) -> tuple[str, ...]:
         timeframes.add("2h")
     if bool(getattr(getattr(config, "cmipr", None), "enabled", False)):
         timeframes.update(("5m", "15m", "30m", "1h", "4h"))
+    if bool(getattr(getattr(config, "mtper", None), "enabled", False)):
+        timeframes.update(("15m", "30m", "1h", "2h", "4h"))
+    if bool(getattr(getattr(config, "mtpc", None), "enabled", False)):
+        timeframes.update(("5m", "15m", "1h", "4h"))
+    if bool(getattr(getattr(config, "reversal_alpha", None), "enabled", False)):
+        timeframes.update(("5m", "15m", "30m", "1h"))
     return tuple(sorted(timeframes, key=interval_to_milliseconds))
 
 
@@ -1262,15 +2729,20 @@ def _entry_candidates_for_scan(
     mtf_reject_stats: dict[str, int],
     mtf_daily_entry_counts: dict[Any, int],
     mtf_symbol_cooldown_until: dict[str, Any],
-    mtf_candidate_cache: dict[tuple[str, Any], EntryCandidate | None],
+    mtf_candidate_cache: dict[tuple[Any, ...], EntryCandidate | None],
     positions: dict[str, PortfolioPosition],
     reentry_block_until: dict[str, Any],
     signal_index: int,
     timestamp: Any,
     indicator_reversal_pause_until_time: dict[Direction, Any],
     alpha_diagnostics: AlphaCandidateDiagnostics,
+    reversal_alpha_engine: ReversalAlphaEngine | None = None,
+    reversal_v2_consumed_events: set[str] | None = None,
+    reversal_v2_stats: dict[str, int] | None = None,
 ) -> list[Any]:
     candidates = []
+    reversal_v2_consumed_events = reversal_v2_consumed_events if reversal_v2_consumed_events is not None else set()
+    reversal_v2_stats = reversal_v2_stats if reversal_v2_stats is not None else {}
     entry_symbols = set(config.trading.entry_symbols or config.trading.symbols)
     legacy_disabled = bool(getattr(config.strategy, "mtf_disable_legacy_strategies", False)) and bool(getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False))
     low_base_only = bool(getattr(config.strategy, "low_base_volume_ignition_enabled", False)) and bool(getattr(config.strategy, "low_base_volume_ignition_disable_legacy", False))
@@ -1280,6 +2752,18 @@ def _entry_candidates_for_scan(
         if reentry_block_until.get(symbol) and timestamp < reentry_block_until[symbol]:
             continue
         candidate = None
+        if reversal_alpha_engine is not None and reversal_alpha_engine.execution_enabled:
+            candidate = _reversal_v2_candidate(
+                reversal_alpha_engine,
+                config,
+                symbol,
+                timestamp,
+                reversal_v2_consumed_events,
+                reversal_v2_stats,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+            continue
         if not legacy_disabled:
             main_signal = signal_cache[symbol][signal_index]
             reversal_signal = reversal_cache[symbol][signal_index]
@@ -1363,8 +2847,88 @@ def _entry_candidates_for_scan(
                     candidate.filter_reason,
                 )
             candidates.append(candidate)
-    candidates.sort(key=lambda item: item.rank_score, reverse=True)
+    if bool(getattr(config.strategy, "mtf_quality_sleeve_enabled", False)):
+        candidates.sort(
+            key=lambda item: (
+                not bool(item.metadata.get("mtf_quality_sleeve", False)),
+                item.rank_score,
+            ),
+            reverse=True,
+        )
+    else:
+        candidates.sort(key=lambda item: item.rank_score, reverse=True)
     return candidates
+
+
+def _merge_candidate_sleeves(
+    primary: list[EntryCandidate],
+    secondary: list[EntryCandidate],
+) -> list[EntryCandidate]:
+    """Keep sleeve priority deterministic and prevent same-symbol competition."""
+    merged: list[EntryCandidate] = []
+    seen_symbols: set[str] = set()
+    for candidate in (*primary, *secondary):
+        if candidate.symbol in seen_symbols:
+            continue
+        seen_symbols.add(candidate.symbol)
+        merged.append(candidate)
+    return merged
+
+
+def _reversal_v2_candidate(
+    engine: ReversalAlphaEngine,
+    config: Any,
+    symbol: str,
+    timestamp: Any,
+    consumed_events: set[str],
+    stats: dict[str, int],
+) -> EntryCandidate | None:
+    best: EntryCandidate | None = None
+    for direction in engine.allowed_directions():
+        snapshot = engine.evaluate(symbol, timestamp, direction)
+        if snapshot is None:
+            _count_stat(stats, "reject_warmup_or_missing_data")
+            continue
+        _count_stat(stats, "evaluated_count")
+        if snapshot.event_id in consumed_events:
+            _count_stat(stats, "reject_event_consumed")
+            continue
+        if not snapshot.eligible:
+            reason = snapshot.reject_reasons[0] if snapshot.reject_reasons else "not_eligible"
+            _count_stat(stats, f"reject_{reason}")
+            continue
+        decision = engine.decision_from_snapshot(snapshot, direction)
+        if decision is None:
+            continue
+        _count_stat(stats, "eligible_count")
+        signal = decision.signal
+        momentum_pct = (
+            direction.value
+            * (decision.candle.close / max(decision.candle.open, 1e-12) - 1.0)
+            * 100.0
+        )
+        volume_ratio = float(snapshot.features.get("trigger_volume_ratio", 0.0))
+        candidate = EntryCandidate(
+            symbol,
+            signal,
+            decision.candle,
+            snapshot.quality_score * 100.0,
+            momentum_pct,
+            volume_ratio,
+            "reversal_v2_closed_30m_setup_closed_5m_trigger",
+            metadata={
+                **snapshot.features,
+                "event_id": snapshot.event_id,
+                "structural_stop_price": snapshot.structural_stop_price,
+                "setup_atr": snapshot.setup_atr,
+                "trigger_close": decision.candle.close,
+                "take_profit_r": float(getattr(config.reversal_alpha, "take_profit_r", 1.5)),
+                "quality_score": snapshot.quality_score,
+            },
+        )
+        if best is None or candidate.rank_score > best.rank_score:
+            best = candidate
+    return best
 
 
 def _cached_mtf_4h_rsi_candidate(
@@ -1378,7 +2942,7 @@ def _cached_mtf_4h_rsi_candidate(
     mtf_reject_stats: dict[str, int],
     mtf_daily_entry_counts: dict[Any, int],
     mtf_symbol_cooldown_until: dict[str, Any],
-    mtf_candidate_cache: dict[tuple[str, Any], EntryCandidate | None],
+    mtf_candidate_cache: dict[tuple[Any, ...], EntryCandidate | None],
     positions: dict[str, PortfolioPosition],
 ) -> EntryCandidate | None:
     if not getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False):
@@ -1386,19 +2950,56 @@ def _cached_mtf_4h_rsi_candidate(
     if not _mtf_symbol_allowed(config, symbol):
         _count_mtf_reject(mtf_reject_stats, "mtf_symbol_mode_filtered")
         return None
-    if _mtf_open_positions(positions) >= max(1, int(getattr(config.strategy, "mtf_max_open_positions", 1))):
-        _count_mtf_reject(mtf_reject_stats, "mtf_max_open_positions")
-        return None
-    if mtf_symbol_cooldown_until.get(symbol) and timestamp < mtf_symbol_cooldown_until[symbol]:
-        _count_mtf_reject(mtf_reject_stats, "mtf_symbol_cooldown")
-        return None
+    open_positions = _mtf_open_positions(positions)
+    base_schedule_block = ""
+    if open_positions >= max(1, int(getattr(config.strategy, "mtf_max_open_positions", 1))):
+        base_schedule_block = "mtf_max_open_positions"
+    elif mtf_symbol_cooldown_until.get(symbol) and timestamp < mtf_symbol_cooldown_until[symbol]:
+        base_schedule_block = "mtf_symbol_cooldown"
     max_daily = max(1, int(getattr(config.strategy, "mtf_max_daily_trades", 2)))
-    if mtf_daily_entry_counts.get(timestamp.date(), 0) >= max_daily:
-        _count_mtf_reject(mtf_reject_stats, "mtf_daily_trade_limit")
+    if not base_schedule_block and mtf_daily_entry_counts.get(timestamp.date(), 0) >= max_daily:
+        base_schedule_block = "mtf_daily_trade_limit"
+    quality_sleeve_enabled = bool(getattr(config.strategy, "mtf_quality_sleeve_enabled", False))
+    if base_schedule_block and not quality_sleeve_enabled:
+        _count_mtf_reject(mtf_reject_stats, base_schedule_block)
         return None
 
     trigger_timeframe = _mtf_trigger_timeframe(config)
     regime_timeframe = _mtf_regime_timeframe(config)
+    try:
+        trigger_timestamps = mtf_timestamps_by_timeframe[trigger_timeframe][symbol]
+    except KeyError:
+        _count_mtf_reject(mtf_reject_stats, "mtf_missing_timeframe_data")
+        return None
+    trigger_end = bisect.bisect_right(
+        trigger_timestamps,
+        timestamp - timedelta(milliseconds=interval_to_milliseconds(trigger_timeframe)),
+    )
+    if trigger_end <= 0:
+        _count_mtf_reject(mtf_reject_stats, "mtf_warmup")
+        return None
+    cache_key = (
+        _mtf_signal_config_hash(config.strategy),
+        symbol,
+        trigger_timeframe,
+        trigger_timestamps[trigger_end - 1],
+    )
+    if cache_key in mtf_candidate_cache:
+        cached_candidate = mtf_candidate_cache[cache_key]
+        if not quality_sleeve_enabled or cached_candidate is None:
+            return cached_candidate
+        return _mtf_apply_quality_sleeve(
+            config,
+            cached_candidate,
+            base_schedule_block,
+            timestamp,
+            symbol,
+            open_positions,
+            mtf_daily_entry_counts,
+            mtf_symbol_cooldown_until,
+            mtf_reject_stats,
+        )
+
     try:
         candles_trigger = _mtf_closed(mtf_candles_by_timeframe, mtf_timestamps_by_timeframe, trigger_timeframe, symbol, timestamp, 180)
         candles_30m = _mtf_closed(mtf_candles_by_timeframe, mtf_timestamps_by_timeframe, "30m", symbol, timestamp, 140)
@@ -1412,9 +3013,6 @@ def _cached_mtf_4h_rsi_candidate(
     if not candles_trigger or not candles_30m or not candles_1h or not candles_regime or not btc_1h or not btc_4h:
         _count_mtf_reject(mtf_reject_stats, "mtf_warmup")
         return None
-    cache_key = (symbol, trigger_timeframe, candles_trigger[-1].timestamp)
-    if cache_key in mtf_candidate_cache:
-        return mtf_candidate_cache[cache_key]
 
     features = mtf_aux_features.get(symbol, {})
     strategy = Mtf4hRsiRegimePullbackStrategy(config)
@@ -1426,7 +3024,11 @@ def _cached_mtf_4h_rsi_candidate(
         candles_regime,
         btc_1h,
         btc_4h,
-        oi_change_at(features, timestamp),
+        oi_change_at(
+            features,
+            timestamp,
+            int(getattr(config.strategy, "mtf_oi_max_age_minutes", 15)),
+        ),
         funding_at(features, timestamp, float(getattr(config.risk, "funding_default_rate", 0.0))),
         candles_regime=candles_regime,
         candles_trigger=candles_trigger,
@@ -1451,7 +3053,11 @@ def _cached_mtf_4h_rsi_candidate(
                 candles_secondary_regime,
                 btc_1h,
                 btc_4h,
-                oi_change_at(features, timestamp),
+                oi_change_at(
+                    features,
+                    timestamp,
+                    int(getattr(config.strategy, "mtf_oi_max_age_minutes", 15)),
+                ),
                 funding_at(features, timestamp, float(getattr(config.risk, "funding_default_rate", 0.0))),
                 candles_regime=candles_secondary_regime,
                 candles_trigger=candles_trigger,
@@ -1463,9 +3069,165 @@ def _cached_mtf_4h_rsi_candidate(
         mtf_candidate_cache[cache_key] = None
         return None
     rank_score, momentum_pct, volume_ratio = trader._entry_rank_metrics(decision.signal, decision.rank_candles)
-    candidate = EntryCandidate(symbol, decision.signal, decision.candle, rank_score, momentum_pct, volume_ratio, "mtf_4h_rsi_regime")
-    mtf_candidate_cache[cache_key] = candidate
-    return candidate
+    metadata = dict(decision.metadata)
+    metadata.update(
+        {
+            "rank_score": rank_score,
+            "directional_momentum_pct": momentum_pct,
+            "entry_rank_volume_ratio": volume_ratio,
+        }
+    )
+    raw_candidate = EntryCandidate(
+        symbol,
+        decision.signal,
+        decision.candle,
+        rank_score,
+        momentum_pct,
+        volume_ratio,
+        "mtf_4h_rsi_regime",
+        metadata=metadata,
+    )
+    if quality_sleeve_enabled:
+        mtf_candidate_cache[cache_key] = raw_candidate
+        return _mtf_apply_quality_sleeve(
+            config,
+            raw_candidate,
+            base_schedule_block,
+            timestamp,
+            symbol,
+            open_positions,
+            mtf_daily_entry_counts,
+            mtf_symbol_cooldown_until,
+            mtf_reject_stats,
+        )
+    if rank_score < mtf_min_rank_score_for_direction(config.strategy, decision.signal.direction):
+        _count_mtf_reject(mtf_reject_stats, "mtf_rank_low")
+        mtf_candidate_cache[cache_key] = None
+        return None
+    mtf_candidate_cache[cache_key] = raw_candidate
+    return raw_candidate
+
+
+def _mtf_apply_quality_sleeve(
+    config: Any,
+    candidate: EntryCandidate,
+    base_schedule_block: str,
+    timestamp: Any,
+    symbol: str,
+    open_positions: int,
+    daily_entry_counts: dict[Any, int],
+    symbol_cooldown_until: dict[str, Any],
+    reject_stats: dict[str, int],
+) -> EntryCandidate | None:
+    rank_score = float(candidate.rank_score)
+    base_rank_pass = rank_score >= mtf_min_rank_score_for_direction(config.strategy, candidate.signal.direction)
+    base_reject_reason = base_schedule_block or ("mtf_rank_low" if not base_rank_pass else "")
+    if not base_reject_reason:
+        return candidate
+    metadata = dict(candidate.metadata)
+    conservative_cost_pct = (
+        2.0 * float(getattr(config.risk, "taker_fee_rate", float(getattr(config.risk, "estimated_fee_bps", 5.0)) / 10_000.0))
+        + (
+            float(getattr(config.risk, "market_slippage_bps", getattr(config.risk, "estimated_slippage_bps", 2.0)))
+            + max(
+                float(getattr(config.risk, "stop_slippage_bps", 5.0)),
+                float(getattr(config.risk, "take_profit_slippage_bps", 2.0)),
+            )
+        )
+        / 10_000.0
+    )
+    metadata["target_to_cost_ratio"] = candidate.signal.take_profit_pct / max(conservative_cost_pct, 1e-12)
+    quality = mtf_candidate_quality(metadata, candidate.signal.direction)
+    metadata.update(quality.as_dict())
+    trigger_timeframe = str(metadata.get("trigger_timeframe", _mtf_trigger_timeframe(config)))
+    signal_available_time = candidate.candle.timestamp + timedelta(
+        milliseconds=interval_to_milliseconds(trigger_timeframe)
+    )
+    signal_age_minutes = max(0.0, (timestamp - signal_available_time).total_seconds() / 60.0)
+    sleeve_allowed, sleeve_reject = _mtf_quality_sleeve_allows(
+        config,
+        candidate.signal.direction,
+        rank_score,
+        quality.score,
+        timestamp,
+        symbol,
+        open_positions,
+        daily_entry_counts,
+        symbol_cooldown_until,
+        signal_age_minutes,
+    )
+    if not sleeve_allowed:
+        _count_mtf_reject(reject_stats, base_reject_reason)
+        if sleeve_reject:
+            _count_mtf_reject(reject_stats, sleeve_reject)
+        return None
+    mode = str(getattr(config.strategy, "mtf_quality_sleeve_ranking_mode", "rank")).lower()
+    metadata.update(
+        {
+            "mtf_quality_sleeve": True,
+            "mtf_quality_sleeve_base_reject_reason": base_reject_reason,
+            "mtf_quality_sleeve_selected_score": rank_score if mode == "rank" else quality.score,
+        }
+    )
+    signal = replace(
+        candidate.signal,
+        reason=(
+            f"{candidate.signal.reason} quality_sleeve=1 "
+            f"quality_score={quality.score:.3f} base_reject={base_reject_reason}"
+        ),
+        risk_multiplier=(
+            candidate.signal.risk_multiplier
+            * max(0.0, float(getattr(config.strategy, "mtf_quality_sleeve_risk_multiplier", 1.0)))
+        ),
+    )
+    _count_mtf_reject(reject_stats, "mtf_quality_sleeve_candidate")
+    return replace(candidate, signal=signal, metadata=metadata)
+
+
+def _mtf_quality_sleeve_allows(
+    config: Any,
+    direction: Direction,
+    rank_score: float,
+    quality_score: float,
+    timestamp: Any,
+    symbol: str,
+    open_positions: int,
+    daily_entry_counts: dict[Any, int],
+    symbol_cooldown_until: dict[str, Any],
+    signal_age_minutes: float = 0.0,
+) -> tuple[bool, str]:
+    strategy = config.strategy
+    if not bool(getattr(strategy, "mtf_quality_sleeve_enabled", False)):
+        return False, ""
+    if direction is Direction.LONG and not bool(getattr(strategy, "mtf_quality_sleeve_allow_long", False)):
+        return False, "mtf_quality_sleeve_side_filtered"
+    if direction is Direction.SHORT and not bool(getattr(strategy, "mtf_quality_sleeve_allow_short", True)):
+        return False, "mtf_quality_sleeve_side_filtered"
+    if open_positions >= max(1, int(getattr(strategy, "mtf_quality_sleeve_max_open_positions", 1))):
+        return False, "mtf_quality_sleeve_max_open_positions"
+    sleeve_daily = max(1, int(getattr(strategy, "mtf_quality_sleeve_max_daily_trades", 4)))
+    if daily_entry_counts.get(timestamp.date(), 0) >= sleeve_daily:
+        return False, "mtf_quality_sleeve_daily_trade_limit"
+    max_signal_age = max(0, int(getattr(strategy, "mtf_quality_sleeve_max_signal_age_minutes", 0)))
+    if signal_age_minutes > max_signal_age + 1e-9:
+        return False, "mtf_quality_sleeve_stale_signal"
+    base_cooldown_hours = max(0, int(getattr(strategy, "mtf_symbol_cooldown_hours", 12)))
+    sleeve_cooldown_hours = max(0, int(getattr(strategy, "mtf_quality_sleeve_symbol_cooldown_hours", 0)))
+    base_cooldown_until = symbol_cooldown_until.get(symbol)
+    if base_cooldown_until is not None and base_cooldown_hours > 0 and sleeve_cooldown_hours > 0:
+        last_entry_time = base_cooldown_until - timedelta(hours=base_cooldown_hours)
+        if timestamp < last_entry_time + timedelta(hours=sleeve_cooldown_hours):
+            return False, "mtf_quality_sleeve_symbol_cooldown"
+    mode = str(getattr(strategy, "mtf_quality_sleeve_ranking_mode", "rank")).strip().lower()
+    selected_score = rank_score if mode == "rank" else quality_score
+    threshold_field = (
+        "mtf_quality_sleeve_long_min_score"
+        if direction is Direction.LONG
+        else "mtf_quality_sleeve_short_min_score"
+    )
+    if selected_score < float(getattr(strategy, threshold_field, 999.0)):
+        return False, "mtf_quality_sleeve_score_low"
+    return True, ""
 
 
 def _mtf_closed(
@@ -1485,10 +3247,39 @@ def _mtf_closed(
     )
 
 
+@lru_cache(maxsize=128)
+def _mtf_signal_config_hash(strategy: Any) -> int:
+    normalized = replace(
+        strategy,
+        mtf_profit_protection_enabled=False,
+        mtf_move_stop_to_breakeven_r=0.0,
+        mtf_breakeven_extra_bps=0.0,
+        mtf_trailing_start_r=0.0,
+        mtf_trailing_mode="none",
+        mtf_profit_giveback_r=0.0,
+        mtf_trailing_atr15m_mult=0.0,
+        mtf_exit_mode="fixed_tp",
+        mtf_partial_take_profit_r=0.0,
+        mtf_partial_take_profit_fraction=0.0,
+        mtf_fail_fast_minutes=0,
+        mtf_fail_fast_min_r=0.0,
+        mtf_exit_on_30m_confirm_lost=False,
+        mtf_30m_exit_confirm_bars=0,
+        mtf_30m_exit_require_macd_adverse=False,
+        mtf_exit_on_1h_confirm_lost=False,
+        mtf_extra_execution_delay_minutes=0,
+        mtf_max_open_positions=1,
+        mtf_max_daily_trades=1,
+        mtf_symbol_cooldown_hours=0,
+    )
+    return hash(normalized)
+
+
 def _count_mtf_reject(stats: dict[str, int], reason: str) -> None:
     if not reason:
         return
-    stats[reason] = stats.get(reason, 0) + 1
+    normalized = str(reason).split()[0]
+    stats[normalized] = stats.get(normalized, 0) + 1
 
 
 def _mtf_open_positions(positions: dict[str, PortfolioPosition]) -> int:
@@ -1523,12 +3314,28 @@ def _manage_positions_1m(
     vbp_stats: dict[str, int] | None = None,
     cmipr_engine: CmiprEngine | None = None,
     cmipr_stats: dict[str, int] | None = None,
+    mtper_engine: MtperEngine | None = None,
+    mtper_stats: dict[str, int] | None = None,
+    mtpc_engine: MtpcEngine | None = None,
+    mtpc_stats: dict[str, int] | None = None,
+    reversal_v2_stats: dict[str, int] | None = None,
 ) -> float:
     for symbol in list(positions):
         position = positions[symbol]
         candle = execution_candles_by_symbol[symbol][execution_index]
         position.bars_held = max(0, signal_index - position.entry_index)
+        previous_mfe = position.mfe
         _update_position_excursion(position, candle)
+        if MTF_REASON_TOKEN in str(position.entry_reason):
+            _update_mtf_profit_protection(
+                config,
+                position,
+                previous_mfe,
+                execution_config,
+                candle,
+                mtf_candles_by_timeframe or {},
+                mtf_timestamps_by_timeframe or {},
+            )
         if _is_cmipr_position(position):
             cash, closed = _manage_cmipr_position_1m(
                 trader,
@@ -1549,6 +3356,65 @@ def _manage_positions_1m(
                 _mark_reentry_cooldown_time(config, reentry_block_until, symbol, candle.timestamp)
                 if cmipr_engine is not None:
                     cmipr_engine.mark_closed(symbol, candle.timestamp)
+            continue
+        if _is_mtper_position(position):
+            cash, closed = _manage_mtper_position_1m(
+                trader,
+                config,
+                cash,
+                positions,
+                trades,
+                position,
+                candle,
+                signal_index,
+                execution_config,
+                execution_stats,
+                mtf_candles_by_timeframe or {},
+                mtf_timestamps_by_timeframe or {},
+                mtper_stats if mtper_stats is not None else {},
+            )
+            if closed:
+                _mark_reentry_cooldown_time(config, reentry_block_until, symbol, candle.timestamp)
+                if mtper_engine is not None:
+                    mtper_engine.mark_closed(symbol, candle.timestamp, str(trades[-1].get("exit_reason", "closed")))
+            continue
+        if _is_mtpc_position(position):
+            cash, closed = _manage_mtpc_position_1m(
+                trader,
+                config,
+                cash,
+                positions,
+                trades,
+                position,
+                candle,
+                signal_index,
+                execution_config,
+                execution_stats,
+                mtf_candles_by_timeframe or {},
+                mtf_timestamps_by_timeframe or {},
+                mtpc_stats if mtpc_stats is not None else {},
+            )
+            if closed:
+                _mark_reentry_cooldown_time(config, reentry_block_until, symbol, candle.timestamp)
+                if mtpc_engine is not None:
+                    mtpc_engine.mark_closed(symbol, candle.timestamp, str(trades[-1].get("exit_reason", "closed")))
+            continue
+        if _is_reversal_v2_position(position):
+            cash, closed = _manage_reversal_v2_position_1m(
+                config,
+                cash,
+                positions,
+                trades,
+                position,
+                candle,
+                signal_index,
+                execution_config,
+                execution_stats,
+                trader.client.symbol_rules(symbol),
+                reversal_v2_stats if reversal_v2_stats is not None else {},
+            )
+            if closed:
+                _mark_reentry_cooldown_time(config, reentry_block_until, symbol, candle.timestamp)
             continue
         if _is_vbp_position(position) and position.direction == Direction.LONG:
             position.best_price = max(position.best_price, candle.close)
@@ -1593,33 +3459,64 @@ def _manage_positions_1m(
             _is_vbp_position(position)
             and bool(getattr(config.vbp_strategy.exit, "runner_after_tp1_enabled", False))
         )
+        mtf_take_profit_action = _mtf_take_profit_action(config, position)
+        take_profit_enabled = (
+            not vbp_runner_after_tp1
+            and mtf_take_profit_action != "disabled"
+        )
         if position.direction == Direction.LONG:
             if _is_vbp_position(position):
                 position.best_price = max(position.best_price, candle.close)
             else:
                 position.best_price = max(position.best_price, candle.high)
             stop_hit = candle.low <= position.stop_price
-            take_profit_hit = (not vbp_runner_after_tp1) and candle.high >= position.take_profit_price
+            take_profit_hit = take_profit_enabled and candle.high >= position.take_profit_price
             if stop_hit and take_profit_hit:
                 execution_stats.same_bar_tp_sl_conflict_count += 1
             if stop_hit and (not take_profit_hit or execution_config.mode != "optimistic"):
                 exit_price = position.stop_price
-                reason = "stop_loss_1m"
+                reason = _mtf_stop_exit_reason(position) or "stop_loss_1m"
             elif take_profit_hit:
-                exit_price = position.take_profit_price
-                reason = "take_profit_1m"
+                if mtf_take_profit_action == "partial":
+                    cash = _close_mtf_partial_take_profit(
+                        config,
+                        cash,
+                        position,
+                        trades,
+                        position.take_profit_price,
+                        signal_index,
+                        candle.timestamp,
+                        execution_config,
+                        trader.client.symbol_rules(symbol),
+                    )
+                else:
+                    exit_price = position.take_profit_price
+                    reason = "take_profit_1m"
         else:
             position.best_price = min(position.best_price, candle.low)
             stop_hit = candle.high >= position.stop_price
-            take_profit_hit = (not vbp_runner_after_tp1) and candle.low <= position.take_profit_price
+            take_profit_hit = take_profit_enabled and candle.low <= position.take_profit_price
             if stop_hit and take_profit_hit:
                 execution_stats.same_bar_tp_sl_conflict_count += 1
             if stop_hit and (not take_profit_hit or execution_config.mode != "optimistic"):
                 exit_price = position.stop_price
-                reason = "stop_loss_1m"
+                reason = _mtf_stop_exit_reason(position) or "stop_loss_1m"
             elif take_profit_hit:
-                exit_price = position.take_profit_price
-                reason = "take_profit_1m"
+                if mtf_take_profit_action == "partial":
+                    cash = _close_mtf_partial_take_profit(
+                        config,
+                        cash,
+                        position,
+                        trades,
+                        position.take_profit_price,
+                        signal_index,
+                        candle.timestamp,
+                        execution_config,
+                        trader.client.symbol_rules(symbol),
+                    )
+                else:
+                    exit_price = position.take_profit_price
+                    reason = "take_profit_1m"
 
         if exit_price is None and _is_low_base_position(position) and position.direction == Direction.LONG:
             low_base_reason = _low_base_exit_reason(
@@ -1728,6 +3625,1117 @@ def _is_cmipr_position(position: PortfolioPosition) -> bool:
     return CMIPR_REASON_TOKEN in str(position.entry_reason)
 
 
+def _is_mtper_position(position: PortfolioPosition) -> bool:
+    return MTPER_REASON_TOKEN in str(position.entry_reason)
+
+
+def _is_mtpc_position(position: PortfolioPosition) -> bool:
+    return MTPC_REASON_TOKEN in str(position.entry_reason)
+
+
+def _mtf_exit_mode(config: Any) -> str:
+    mode = str(getattr(config.strategy, "mtf_exit_mode", "fixed_tp")).strip().lower()
+    aliases = {
+        "fixed": "fixed_tp",
+        "partial": "partial_runner",
+        "runner_only": "runner",
+        "pure_runner": "runner",
+    }
+    mode = aliases.get(mode, mode)
+    return mode if mode in {"fixed_tp", "partial_runner", "runner"} else "fixed_tp"
+
+
+def _mtf_take_profit_action(config: Any, position: PortfolioPosition) -> str:
+    if MTF_REASON_TOKEN not in str(position.entry_reason):
+        return "fixed"
+    mode = _mtf_exit_mode(config)
+    if mode == "runner":
+        return "disabled"
+    if mode == "partial_runner":
+        if bool((position.strategy_metadata or {}).get("mtf_partial_take_profit_done", False)):
+            return "disabled"
+        return "partial"
+    return "fixed"
+
+
+def _close_mtf_partial_take_profit(
+    config: Any,
+    cash: float,
+    position: PortfolioPosition,
+    trades: list[dict[str, Any]],
+    exit_price: float,
+    index: int,
+    exit_time: Any,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> float:
+    metadata = dict(position.strategy_metadata or {})
+    initial_quantity = max(float(metadata.get("mtf_initial_quantity", position.quantity)), position.quantity)
+    fraction = min(
+        0.95,
+        max(0.05, float(getattr(config.strategy, "mtf_partial_take_profit_fraction", 0.25))),
+    )
+    close_quantity = min(position.quantity * 0.95, initial_quantity * fraction)
+    if close_quantity <= 0.0 or close_quantity >= position.quantity:
+        return cash
+
+    original_quantity = position.quantity
+    close_ratio = close_quantity / original_quantity
+    fill = market_exit_fill(
+        execution_config,
+        rules,
+        position.direction,
+        close_quantity,
+        exit_price,
+        "take_profit_market",
+        position.liquidity_reference_quote_volume or None,
+    )
+    raw_entry = position.raw_entry_price or position.entry_price
+    raw_gross = position.direction.value * close_quantity * (exit_price - raw_entry)
+    execution_gross = position.direction.value * close_quantity * (fill.price - position.entry_price)
+    allocated_entry_fee = position.entry_fee * close_ratio
+    allocated_entry_slippage = position.entry_slippage_cost * close_ratio
+    funding = _funding_for_position(execution_config, position, exit_time) * close_ratio
+    fee = allocated_entry_fee + fill.fee
+    slippage = allocated_entry_slippage + fill.slippage_cost
+    net_pnl = raw_gross - fee - slippage + funding
+    cash += execution_gross - fill.fee + funding
+
+    partial_mfe = position.mfe * close_ratio
+    partial_mae = position.mae * close_ratio
+    remaining_ratio = 1.0 - close_ratio
+    position.quantity -= close_quantity
+    position.entry_fee -= allocated_entry_fee
+    position.entry_slippage_cost -= allocated_entry_slippage
+    position.mfe *= remaining_ratio
+    position.mae *= remaining_ratio
+    metadata.update(
+        {
+            "mtf_partial_take_profit_done": True,
+            "mtf_partial_take_profit_time": (
+                exit_time.isoformat() if hasattr(exit_time, "isoformat") else exit_time
+            ),
+            "mtf_partial_take_profit_quantity": close_quantity,
+            "mtf_partial_take_profit_net_pnl": net_pnl,
+        }
+    )
+    position.strategy_metadata = metadata
+
+    notional = abs(close_quantity * position.entry_price)
+    strategy_bucket = _strategy_bucket(position.entry_reason)
+    trades.append(
+        {
+            "symbol": position.symbol,
+            "strategy": strategy_bucket,
+            "strategy_bucket": strategy_bucket,
+            "side": position.direction.name,
+            "direction": position.direction.name,
+            "entry_time": position.entry_time.isoformat() if hasattr(position.entry_time, "isoformat") else position.entry_time,
+            "exit_time": exit_time.isoformat() if hasattr(exit_time, "isoformat") else exit_time,
+            "entry_price": position.entry_price,
+            "exit_price": fill.price,
+            "raw_entry_price": raw_entry,
+            "raw_exit_price": exit_price,
+            "qty": close_quantity,
+            "quantity": close_quantity,
+            "notional": notional,
+            "entry_fee": allocated_entry_fee,
+            "exit_fee": fill.fee,
+            "fee": fee,
+            "fees": fee,
+            "gross_pnl": raw_gross,
+            "execution_gross_pnl": execution_gross,
+            "slippage_cost": slippage,
+            "funding": funding,
+            "net_pnl": net_pnl,
+            "return_pct": net_pnl / max(notional, 1e-12),
+            "net_bps": net_pnl / max(notional, 1e-12) * 10_000.0,
+            "entry_reason": position.entry_reason,
+            "reason": "mtf_partial_take_profit",
+            "exit_reason": "mtf_partial_take_profit",
+            "bars": index - position.entry_index,
+            "scale_ins": position.scale_ins,
+            "mfe": partial_mfe,
+            "mae": partial_mae,
+            "hold_minutes": _hold_minutes(position.entry_time, exit_time),
+            "avg_hold_minutes": _hold_minutes(position.entry_time, exit_time),
+            "entry_order_type": position.entry_order_type,
+            "exit_order_type": fill.order_type,
+            "entry_liquidity": position.entry_liquidity,
+            "exit_liquidity": fill.liquidity,
+            "signal_time": position.signal_time.isoformat() if hasattr(position.signal_time, "isoformat") else position.signal_time,
+            "signal_available_time": position.signal_available_time.isoformat() if hasattr(position.signal_available_time, "isoformat") else position.signal_available_time,
+            "entry_participation_rate": position.entry_participation_rate,
+            "exit_participation_rate": fill.participation_rate,
+            "capacity_fill_ratio": position.capacity_fill_ratio,
+            "risk_budget_usdt": position.risk_budget_usdt,
+            "initial_stop_price": position.initial_stop_price,
+            "strategy_metadata": dict(metadata),
+            "skip_reason": "",
+        }
+    )
+    return cash
+
+
+def _manage_mtpc_position_1m(
+    trader: BinanceAutoTrader,
+    config: Any,
+    cash: float,
+    positions: dict[str, PortfolioPosition],
+    trades: list[dict[str, Any]],
+    position: PortfolioPosition,
+    candle: Candle,
+    signal_index: int,
+    execution_config: BacktestExecutionConfig,
+    execution_stats: BacktestExecutionStats,
+    mtf_candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    mtf_timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+    stats: dict[str, int],
+) -> tuple[float, bool]:
+    symbol = position.symbol
+    rules = trader.client.symbol_rules(symbol)
+    metadata = dict(position.strategy_metadata or {})
+    target_1 = float(metadata.get("target_1_price", position.take_profit_price))
+    target_2 = float(metadata.get("target_2_price", position.take_profit_price))
+    is_long = position.direction == Direction.LONG
+    stop_hit = candle.low <= position.stop_price if is_long else candle.high >= position.stop_price
+    first_target_hit = (
+        candle.high >= target_1 if is_long else candle.low <= target_1
+    ) and not bool(metadata.get("target_1_done", False))
+    if stop_hit and first_target_hit:
+        execution_stats.same_bar_tp_sl_conflict_count += 1
+    # The protective stop that existed before this bar has priority.
+    if stop_hit:
+        cash = _close_position(
+            config,
+            cash,
+            positions,
+            trades,
+            symbol,
+            position.stop_price,
+            "mtpc_stop_loss_1m",
+            signal_index,
+            candle.timestamp,
+            execution_config=execution_config,
+            rules=rules,
+        )
+        _count_stat(stats, "stop_loss_count")
+        return cash, True
+
+    favorable_price = candle.high if is_long else candle.low
+    favorable_net = executable_net_pnl(position, favorable_price, execution_config, rules)
+    current_net = executable_net_pnl(position, candle.close, execution_config, rules)
+    favorable_campaign_r = net_pnl_r(position, favorable_net, CAMPAIGN_R_BASIS)
+    current_campaign_r = net_pnl_r(position, current_net, CAMPAIGN_R_BASIS)
+    favorable_initial_leg_r = net_pnl_r(position, favorable_net, INITIAL_LEG_R_BASIS)
+    current_initial_leg_r = net_pnl_r(position, current_net, INITIAL_LEG_R_BASIS)
+    position.mtpc_max_campaign_executable_r = max(
+        position.mtpc_max_campaign_executable_r, favorable_campaign_r
+    )
+    position.mtpc_min_campaign_executable_r = min(
+        position.mtpc_min_campaign_executable_r, current_campaign_r
+    )
+    position.mtpc_max_initial_leg_executable_r = max(
+        position.mtpc_max_initial_leg_executable_r, favorable_initial_leg_r
+    )
+    position.mtpc_min_initial_leg_executable_r = min(
+        position.mtpc_min_initial_leg_executable_r, current_initial_leg_r
+    )
+    if _mtpc_exit_uses_initial_leg_r(config):
+        favorable_r = favorable_initial_leg_r
+        current_r = current_initial_leg_r
+    else:
+        favorable_r = favorable_campaign_r
+        current_r = current_campaign_r
+    position.mtpc_max_executable_r = max(position.mtpc_max_executable_r, favorable_r)
+    position.mtpc_min_executable_r = min(position.mtpc_min_executable_r, current_r)
+    position.mtpc_executable_mfe_usdt = max(position.mtpc_executable_mfe_usdt, favorable_net)
+    position.mtpc_executable_mae_usdt = min(position.mtpc_executable_mae_usdt, current_net)
+    exit_cfg = config.mtpc.exit
+
+    if first_target_hit:
+        fraction = max(0.0, min(1.0, float(exit_cfg.take_profit_1_fraction)))
+        initial_quantity = max(float(metadata.get("initial_quantity", position.quantity)), position.quantity)
+        close_quantity = min(position.quantity, initial_quantity * fraction)
+        if close_quantity >= position.quantity - 1e-12:
+            cash = _close_position(
+                config,
+                cash,
+                positions,
+                trades,
+                symbol,
+                target_1,
+                "mtpc_take_profit_1_full",
+                signal_index,
+                candle.timestamp,
+                execution_config=execution_config,
+                rules=rules,
+            )
+            _count_stat(stats, "take_profit_1_full_count")
+            return cash, True
+        if close_quantity > 0.0:
+            cash = _close_mtpc_partial_position(
+                cash,
+                position,
+                trades,
+                target_1,
+                close_quantity,
+                "mtpc_take_profit_1_partial",
+                signal_index,
+                candle.timestamp,
+                execution_config,
+                rules,
+            )
+            metadata["target_1_done"] = True
+            metadata["target_1_time"] = candle.timestamp.isoformat()
+            _count_stat(stats, "take_profit_1_partial_count")
+
+    reason = ""
+    if bool(metadata.get("target_1_done", False)):
+        if bool(exit_cfg.runner_enabled):
+            runner = _mtf_closed(
+                mtf_candles_by_timeframe,
+                mtf_timestamps_by_timeframe,
+                str(exit_cfg.runner_timeframe),
+                symbol,
+                candle.timestamp,
+                max(40, int(exit_cfg.runner_ema_period) + 10),
+            )
+            if len(runner) >= int(exit_cfg.runner_ema_period) + 3:
+                trailing = ema([item.close for item in runner], int(exit_cfg.runner_ema_period))[-1]
+                if (is_long and runner[-1].close < trailing) or (
+                    not is_long and runner[-1].close > trailing
+                ):
+                    reason = "mtpc_runner_ema_exit"
+        elif (is_long and candle.high >= target_2) or (not is_long and candle.low <= target_2):
+            cash = _close_position(
+                config,
+                cash,
+                positions,
+                trades,
+                symbol,
+                target_2,
+                "mtpc_take_profit_2",
+                signal_index,
+                candle.timestamp,
+                execution_config=execution_config,
+                rules=rules,
+            )
+            _count_stat(stats, "take_profit_2_count")
+            return cash, True
+
+    if not reason and bool(exit_cfg.structural_fail_fast_enabled):
+        reason = _mtpc_structural_exit_reason(
+            position,
+            candle.timestamp,
+            mtf_candles_by_timeframe,
+            mtf_timestamps_by_timeframe,
+        )
+    hold_minutes = _hold_minutes(position.entry_time, candle.timestamp)
+    if not reason and hold_minutes >= max(1, int(exit_cfg.time_nonresponse_minutes)):
+        failed_checks = _mtpc_nonresponse_failed_checks(
+            position,
+            candle,
+            mtf_candles_by_timeframe,
+            mtf_timestamps_by_timeframe,
+        )
+        if (
+            position.mtpc_max_executable_r < float(exit_cfg.time_nonresponse_min_mfe_r)
+            and failed_checks >= max(1, int(exit_cfg.time_nonresponse_min_failed_checks))
+        ):
+            reason = "mtpc_time_nonresponse"
+            _count_stat(stats, f"nonresponse_failed_checks_{failed_checks}")
+    if not reason and hold_minutes >= max(1, int(exit_cfg.max_holding_minutes)):
+        reason = "mtpc_max_holding_time"
+    if (
+        not reason
+        and bool(exit_cfg.giveback_enabled)
+        and position.mtpc_max_executable_r >= float(exit_cfg.giveback_activation_r)
+        and current_r < position.mtpc_max_executable_r - float(exit_cfg.allowed_giveback_r)
+    ):
+        reason = "mtpc_profit_giveback"
+    if reason:
+        cash = _close_position(
+            config,
+            cash,
+            positions,
+            trades,
+            symbol,
+            candle.close,
+            reason,
+            signal_index,
+            candle.timestamp,
+            execution_config=execution_config,
+            rules=rules,
+        )
+        _count_stat(stats, reason)
+        return cash, True
+
+    if bool(exit_cfg.breakeven_enabled) and position.mtpc_max_executable_r >= float(exit_cfg.breakeven_trigger_r):
+        cost_buffer = max(0.0, float(exit_cfg.breakeven_cost_buffer_pct))
+        if is_long:
+            proposed = max(position.stop_price, position.entry_price * (1.0 + cost_buffer))
+            crossed_proposed = proposed >= candle.close
+            improves_stop = proposed > position.stop_price
+        else:
+            proposed = min(position.stop_price, position.entry_price * (1.0 - cost_buffer))
+            crossed_proposed = proposed <= candle.close
+            improves_stop = proposed < position.stop_price
+        if crossed_proposed:
+            cash = _close_position(
+                config,
+                cash,
+                positions,
+                trades,
+                symbol,
+                candle.close,
+                "mtpc_breakeven_reversal",
+                signal_index,
+                candle.timestamp,
+                execution_config=execution_config,
+                rules=rules,
+            )
+            _count_stat(stats, "breakeven_reversal_count")
+            return cash, True
+        if improves_stop:
+            position.stop_price = proposed
+            metadata["breakeven_armed"] = True
+            _count_stat(stats, "breakeven_armed_count")
+    position.strategy_metadata = metadata
+    return cash, False
+
+
+def _mtpc_structural_exit_reason(
+    position: PortfolioPosition,
+    timestamp: Any,
+    candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+) -> str:
+    metadata = position.strategy_metadata or {}
+    is_long = position.direction == Direction.LONG
+    pullback_extreme = float(
+        metadata.get("pullback_low" if is_long else "pullback_high")
+        or metadata.get("pullback_extreme")
+        or position.initial_stop_price
+    )
+    breakout_level = float(metadata.get("breakout_level") or position.entry_price)
+    c5 = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "5m", position.symbol, timestamp, 40)
+    c15 = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "15m", position.symbol, timestamp, 50)
+    if len(c5) >= 3:
+        if is_long and c5[-1].close < pullback_extreme:
+            return "mtpc_structural_fail_pullback_low"
+        if not is_long and c5[-1].close > pullback_extreme:
+            return "mtpc_structural_fail_pullback_high"
+    if len(c15) >= 25:
+        ema21 = ema([item.close for item in c15], 21)[-1]
+        if is_long and c15[-1].close < breakout_level and c15[-1].close < ema21:
+            return "mtpc_structural_fail_breakout_and_ema21"
+        if not is_long and c15[-1].close > breakout_level and c15[-1].close > ema21:
+            return "mtpc_structural_fail_breakout_and_ema21"
+    return ""
+
+
+def _mtpc_nonresponse_failed_checks(
+    position: PortfolioPosition,
+    candle: Candle,
+    candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+) -> int:
+    is_long = position.direction == Direction.LONG
+    checks = int(
+        candle.close <= position.entry_price if is_long else candle.close >= position.entry_price
+    )
+    c5 = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "5m", position.symbol, candle.timestamp, 40)
+    c15 = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "15m", position.symbol, candle.timestamp, 50)
+    c1 = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "1h", position.symbol, candle.timestamp, 60)
+    if len(c5) >= 25:
+        e9 = ema([item.close for item in c5], 9)[-1]
+        _, _, hist5 = macd([item.close for item in c5])
+        checks += int(c5[-1].close <= e9 if is_long else c5[-1].close >= e9)
+        checks += int(hist5[-1] <= hist5[-2] if is_long else hist5[-1] >= hist5[-2])
+    if len(c15) >= 25:
+        e21 = ema([item.close for item in c15], 21)[-1]
+        checks += int(c15[-1].close <= e21 if is_long else c15[-1].close >= e21)
+        checks += int(
+            c15[-1].close <= c15[-2].close if is_long else c15[-1].close >= c15[-2].close
+        )
+    if len(c1) >= 30:
+        _, _, hist1 = macd([item.close for item in c1])
+        checks += int(hist1[-1] <= hist1[-2] if is_long else hist1[-1] >= hist1[-2])
+    return checks
+
+
+def _manage_mtper_position_1m(
+    trader: BinanceAutoTrader,
+    config: Any,
+    cash: float,
+    positions: dict[str, PortfolioPosition],
+    trades: list[dict[str, Any]],
+    position: PortfolioPosition,
+    candle: Candle,
+    signal_index: int,
+    execution_config: BacktestExecutionConfig,
+    execution_stats: BacktestExecutionStats,
+    mtf_candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    mtf_timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+    stats: dict[str, int],
+) -> tuple[float, bool]:
+    symbol = position.symbol
+    rules = trader.client.symbol_rules(symbol)
+    stop_hit = candle.low <= position.stop_price if position.direction == Direction.LONG else candle.high >= position.stop_price
+    metadata = position.strategy_metadata if position.strategy_metadata is not None else {}
+    target_1 = float(metadata.get("target_1_price", position.take_profit_price))
+    target_2 = float(metadata.get("target_2_price", position.take_profit_price))
+    target_3 = float(metadata.get("target_3_price", position.take_profit_price))
+    target_hit = (
+        candle.high >= target_1 if position.direction == Direction.LONG else candle.low <= target_1
+    ) and not bool(metadata.get("target_1_done", False))
+    if stop_hit and target_hit:
+        execution_stats.same_bar_tp_sl_conflict_count += 1
+    # The old protective stop is always evaluated before same-bar targets.
+    if stop_hit:
+        cash = _close_position(
+            config,
+            cash,
+            positions,
+            trades,
+            symbol,
+            position.stop_price,
+            "mtper_hard_stop_1m",
+            signal_index,
+            candle.timestamp,
+            execution_config=execution_config,
+            rules=rules,
+        )
+        _count_stat(stats, "hard_stop_count")
+        return cash, True
+
+    executable_net = executable_net_pnl(position, candle.close, execution_config, rules)
+    campaign_r = net_pnl_r(position, executable_net, CAMPAIGN_R_BASIS)
+    initial_leg_r = net_pnl_r(position, executable_net, INITIAL_LEG_R_BASIS)
+    position.mtper_max_campaign_executable_r = max(position.mtper_max_campaign_executable_r, campaign_r)
+    position.mtper_min_campaign_executable_r = min(position.mtper_min_campaign_executable_r, campaign_r)
+    position.mtper_max_initial_leg_executable_r = max(position.mtper_max_initial_leg_executable_r, initial_leg_r)
+    position.mtper_min_initial_leg_executable_r = min(position.mtper_min_initial_leg_executable_r, initial_leg_r)
+    position.mtper_executable_mfe_usdt = max(position.mtper_executable_mfe_usdt, executable_net)
+    position.mtper_executable_mae_usdt = min(position.mtper_executable_mae_usdt, executable_net)
+
+    exit_cfg = config.mtper.exit
+    initial_quantity = max(float(metadata.get("initial_quantity", position.quantity)), position.quantity)
+    if not bool(metadata.get("target_1_done", False)):
+        hit = candle.high >= target_1 if position.direction == Direction.LONG else candle.low <= target_1
+        if hit:
+            close_quantity = min(position.quantity, initial_quantity * max(0.0, float(exit_cfg.target_1_fraction)))
+            if 0.0 < close_quantity < position.quantity:
+                cash = _close_mtper_partial_position(
+                    config,
+                    cash,
+                    position,
+                    trades,
+                    target_1,
+                    close_quantity,
+                    "mtper_mean_target_1",
+                    signal_index,
+                    candle.timestamp,
+                    execution_config,
+                    rules,
+                )
+                metadata["target_1_done"] = True
+                metadata["target_1_time"] = candle.timestamp.isoformat()
+                _count_stat(stats, "target_1_count")
+            elif close_quantity >= position.quantity:
+                cash = _close_position(
+                    config,
+                    cash,
+                    positions,
+                    trades,
+                    symbol,
+                    target_1,
+                    "mtper_mean_target_1_full",
+                    signal_index,
+                    candle.timestamp,
+                    execution_config=execution_config,
+                    rules=rules,
+                )
+                _count_stat(stats, "target_1_full_count")
+                return cash, True
+
+    if bool(metadata.get("target_1_done", False)) and not bool(metadata.get("target_2_done", False)):
+        hit = candle.high >= target_2 if position.direction == Direction.LONG else candle.low <= target_2
+        if hit:
+            close_quantity = min(position.quantity, initial_quantity * max(0.0, float(exit_cfg.target_2_fraction)))
+            if 0.0 < close_quantity < position.quantity:
+                cash = _close_mtper_partial_position(
+                    config,
+                    cash,
+                    position,
+                    trades,
+                    target_2,
+                    close_quantity,
+                    "mtper_mean_target_2",
+                    signal_index,
+                    candle.timestamp,
+                    execution_config,
+                    rules,
+                )
+                metadata["target_2_done"] = True
+                metadata["target_2_time"] = candle.timestamp.isoformat()
+                _count_stat(stats, "target_2_count")
+            elif close_quantity >= position.quantity:
+                cash = _close_position(
+                    config,
+                    cash,
+                    positions,
+                    trades,
+                    symbol,
+                    target_2,
+                    "mtper_mean_target_2_full",
+                    signal_index,
+                    candle.timestamp,
+                    execution_config=execution_config,
+                    rules=rules,
+                )
+                _count_stat(stats, "target_2_full_count")
+                return cash, True
+
+    if bool(exit_cfg.trend_conversion_enabled) and not bool(metadata.get("trend_converted", False)):
+        if _mtper_trend_conversion_confirmed(
+            config,
+            position,
+            candle.timestamp,
+            mtf_candles_by_timeframe,
+            mtf_timestamps_by_timeframe,
+        ):
+            metadata["trend_converted"] = True
+            metadata["trend_conversion_time"] = candle.timestamp.isoformat()
+            _count_stat(stats, "trend_conversion_count")
+
+    reason = _mtper_structural_exit_reason(
+        config,
+        position,
+        candle.timestamp,
+        mtf_candles_by_timeframe,
+        mtf_timestamps_by_timeframe,
+    )
+    hold_hours = _hold_minutes(position.entry_time, candle.timestamp) / 60.0
+    if not reason and hold_hours >= max(1, int(exit_cfg.time_nonresponse_hours)):
+        failed_checks = _mtper_nonresponse_failed_checks(
+            position,
+            candle,
+            mtf_candles_by_timeframe,
+            mtf_timestamps_by_timeframe,
+        )
+        if (
+            position.mtper_max_initial_leg_executable_r < float(exit_cfg.time_nonresponse_min_mfe_r)
+            and failed_checks >= max(1, int(exit_cfg.time_nonresponse_min_failed_checks))
+        ):
+            reason = "mtper_time_nonresponse"
+            _count_stat(stats, f"nonresponse_failed_checks_{failed_checks}")
+    if not reason and hold_hours >= max(1, int(exit_cfg.max_holding_hours)):
+        reason = "mtper_max_holding_time"
+
+    if not reason and bool(metadata.get("trend_converted", False)):
+        reason = _mtper_runner_exit_reason(
+            config,
+            position,
+            candle.timestamp,
+            mtf_candles_by_timeframe,
+            mtf_timestamps_by_timeframe,
+        )
+    elif not reason:
+        hit_target_3 = candle.high >= target_3 if position.direction == Direction.LONG else candle.low <= target_3
+        if hit_target_3:
+            reason = "mtper_mean_target_3"
+
+    if not reason and position.mtper_max_campaign_executable_r >= float(exit_cfg.giveback_trigger_r):
+        giveback = _mtper_allowed_giveback(exit_cfg, position.mtper_max_campaign_executable_r)
+        if campaign_r < position.mtper_max_campaign_executable_r - giveback:
+            reason = "mtper_max_profit_giveback"
+
+    if reason:
+        exit_price = target_3 if reason == "mtper_mean_target_3" else candle.close
+        cash = _close_position(
+            config,
+            cash,
+            positions,
+            trades,
+            symbol,
+            exit_price,
+            reason,
+            signal_index,
+            candle.timestamp,
+            execution_config=execution_config,
+            rules=rules,
+        )
+        _count_stat(stats, reason)
+        return cash, True
+
+    # Profit protection becomes active on the next 1m bar because the old stop
+    # was checked before this update.
+    if position.mtper_max_initial_leg_executable_r >= float(exit_cfg.breakeven_trigger_r):
+        buffer = max(0.0, float(exit_cfg.breakeven_cost_buffer_pct))
+        if position.direction == Direction.LONG:
+            position.stop_price = max(position.stop_price, position.entry_price * (1.0 + buffer))
+        else:
+            position.stop_price = min(position.stop_price, position.entry_price * (1.0 - buffer))
+        metadata["breakeven_armed"] = True
+    position.strategy_metadata = metadata
+    return cash, False
+
+
+def _close_mtpc_partial_position(
+    cash: float,
+    position: PortfolioPosition,
+    trades: list[dict[str, Any]],
+    exit_price: float,
+    close_quantity: float,
+    reason: str,
+    index: int,
+    exit_time: Any,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> float:
+    if close_quantity <= 0.0 or close_quantity >= position.quantity:
+        return cash
+    original_quantity = position.quantity
+    ratio = close_quantity / original_quantity
+    fill = market_exit_fill(
+        execution_config,
+        rules,
+        position.direction,
+        close_quantity,
+        exit_price,
+        "take_profit_market",
+        position.liquidity_reference_quote_volume or None,
+    )
+    raw_entry = position.raw_entry_price or position.entry_price
+    raw_gross = position.direction.value * close_quantity * (exit_price - raw_entry)
+    execution_gross = position.direction.value * close_quantity * (fill.price - position.entry_price)
+    entry_fee = position.entry_fee * ratio
+    entry_slippage = position.entry_slippage_cost * ratio
+    funding = _funding_for_position(execution_config, position, exit_time) * ratio
+    fee = entry_fee + fill.fee
+    slippage = entry_slippage + fill.slippage_cost
+    net_pnl = raw_gross - fee - slippage + funding
+    cash += execution_gross - fill.fee + funding
+    position.quantity -= close_quantity
+    position.entry_fee -= entry_fee
+    position.entry_slippage_cost -= entry_slippage
+    notional = abs(close_quantity * position.entry_price)
+    trades.append(
+        {
+            "symbol": position.symbol,
+            "strategy": MTPC_REASON_TOKEN,
+            "strategy_bucket": MTPC_REASON_TOKEN,
+            "side": position.direction.name,
+            "direction": position.direction.name,
+            "entry_time": position.entry_time.isoformat() if hasattr(position.entry_time, "isoformat") else position.entry_time,
+            "exit_time": exit_time.isoformat() if hasattr(exit_time, "isoformat") else exit_time,
+            "entry_price": position.entry_price,
+            "exit_price": fill.price,
+            "raw_entry_price": raw_entry,
+            "raw_exit_price": exit_price,
+            "qty": close_quantity,
+            "quantity": close_quantity,
+            "notional": notional,
+            "entry_fee": entry_fee,
+            "exit_fee": fill.fee,
+            "fee": fee,
+            "fees": fee,
+            "gross_pnl": raw_gross,
+            "execution_gross_pnl": execution_gross,
+            "slippage_cost": slippage,
+            "funding": funding,
+            "net_pnl": net_pnl,
+            "return_pct": net_pnl / max(notional, 1e-12),
+            "net_bps": net_pnl / max(notional, 1e-12) * 10_000.0,
+            "entry_reason": position.entry_reason,
+            "reason": reason,
+            "exit_reason": reason,
+            "bars": index - position.entry_index,
+            "scale_ins": position.scale_ins,
+            "mfe": position.mfe * ratio,
+            "mae": position.mae * ratio,
+            "hold_minutes": _hold_minutes(position.entry_time, exit_time),
+            "avg_hold_minutes": _hold_minutes(position.entry_time, exit_time),
+            "entry_order_type": position.entry_order_type,
+            "exit_order_type": fill.order_type,
+            "entry_liquidity": position.entry_liquidity,
+            "exit_liquidity": fill.liquidity,
+            "signal_time": position.signal_time.isoformat() if hasattr(position.signal_time, "isoformat") else position.signal_time,
+            "signal_available_time": position.signal_available_time.isoformat() if hasattr(position.signal_available_time, "isoformat") else position.signal_available_time,
+            "campaign_risk_budget_usdt": position.campaign_risk_budget_usdt,
+            "initial_leg_full_cost_risk_usdt": position.initial_leg_full_cost_risk_usdt,
+            "net_campaign_r": net_pnl / max(position.campaign_risk_budget_usdt, 1e-12),
+            "net_initial_leg_r": net_pnl / max(position.initial_leg_full_cost_risk_usdt, 1e-12),
+            "mtpc_max_executable_r": position.mtpc_max_executable_r,
+            "mtpc_min_executable_r": position.mtpc_min_executable_r,
+            "mtpc_max_executable_campaign_r": position.mtpc_max_campaign_executable_r,
+            "mtpc_min_executable_campaign_r": position.mtpc_min_campaign_executable_r,
+            "mtpc_max_executable_initial_leg_r": position.mtpc_max_initial_leg_executable_r,
+            "mtpc_min_executable_initial_leg_r": position.mtpc_min_initial_leg_executable_r,
+            "strategy_metadata": dict(position.strategy_metadata or {}),
+            "skip_reason": "",
+        }
+    )
+    return cash
+
+
+def _close_mtper_partial_position(
+    config: Any,
+    cash: float,
+    position: PortfolioPosition,
+    trades: list[dict[str, Any]],
+    exit_price: float,
+    close_quantity: float,
+    reason: str,
+    index: int,
+    exit_time: Any,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> float:
+    if close_quantity <= 0.0 or close_quantity >= position.quantity:
+        return cash
+    original_quantity = position.quantity
+    ratio = close_quantity / original_quantity
+    fill = market_exit_fill(
+        execution_config,
+        rules,
+        position.direction,
+        close_quantity,
+        exit_price,
+        "take_profit_market",
+        position.liquidity_reference_quote_volume or None,
+    )
+    raw_entry = position.raw_entry_price or position.entry_price
+    raw_gross = position.direction.value * close_quantity * (exit_price - raw_entry)
+    execution_gross = position.direction.value * close_quantity * (fill.price - position.entry_price)
+    entry_fee = position.entry_fee * ratio
+    entry_slippage = position.entry_slippage_cost * ratio
+    funding = _funding_for_position(execution_config, position, exit_time) * ratio
+    fee = entry_fee + fill.fee
+    slippage = entry_slippage + fill.slippage_cost
+    net_pnl = raw_gross - fee - slippage + funding
+    cash += execution_gross - fill.fee + funding
+    position.quantity -= close_quantity
+    position.entry_fee -= entry_fee
+    position.entry_slippage_cost -= entry_slippage
+    notional = abs(close_quantity * position.entry_price)
+    metadata = dict(position.strategy_metadata or {})
+    trades.append(
+        {
+            "symbol": position.symbol,
+            "strategy": MTPER_REASON_TOKEN,
+            "strategy_bucket": MTPER_REASON_TOKEN,
+            "side": position.direction.name,
+            "direction": position.direction.name,
+            "entry_time": position.entry_time.isoformat() if hasattr(position.entry_time, "isoformat") else position.entry_time,
+            "exit_time": exit_time.isoformat() if hasattr(exit_time, "isoformat") else exit_time,
+            "entry_price": position.entry_price,
+            "exit_price": fill.price,
+            "raw_entry_price": raw_entry,
+            "raw_exit_price": exit_price,
+            "qty": close_quantity,
+            "quantity": close_quantity,
+            "notional": notional,
+            "entry_fee": entry_fee,
+            "exit_fee": fill.fee,
+            "fee": fee,
+            "fees": fee,
+            "gross_pnl": raw_gross,
+            "execution_gross_pnl": execution_gross,
+            "slippage_cost": slippage,
+            "funding": funding,
+            "net_pnl": net_pnl,
+            "return_pct": net_pnl / max(notional, 1e-12),
+            "net_bps": net_pnl / max(notional, 1e-12) * 10_000.0,
+            "entry_reason": position.entry_reason,
+            "reason": reason,
+            "exit_reason": reason,
+            "bars": index - position.entry_index,
+            "scale_ins": position.scale_ins,
+            "mfe": position.mfe * ratio,
+            "mae": position.mae * ratio,
+            "hold_minutes": _hold_minutes(position.entry_time, exit_time),
+            "avg_hold_minutes": _hold_minutes(position.entry_time, exit_time),
+            "entry_order_type": position.entry_order_type,
+            "exit_order_type": fill.order_type,
+            "entry_liquidity": position.entry_liquidity,
+            "exit_liquidity": fill.liquidity,
+            "signal_time": position.signal_time.isoformat() if hasattr(position.signal_time, "isoformat") else position.signal_time,
+            "signal_available_time": position.signal_available_time.isoformat() if hasattr(position.signal_available_time, "isoformat") else position.signal_available_time,
+            "campaign_risk_budget_usdt": position.campaign_risk_budget_usdt,
+            "initial_leg_full_cost_risk_usdt": position.initial_leg_full_cost_risk_usdt,
+            "net_campaign_r": net_pnl / max(position.campaign_risk_budget_usdt, 1e-12),
+            "net_initial_leg_r": net_pnl / max(position.initial_leg_full_cost_risk_usdt, 1e-12),
+            "strategy_metadata": metadata,
+            "skip_reason": "",
+        }
+    )
+    return cash
+
+
+def _mtper_trend_conversion_confirmed(
+    config: Any,
+    position: PortfolioPosition,
+    timestamp: Any,
+    candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+) -> bool:
+    symbol = position.symbol
+    c4h = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "4h", symbol, timestamp, 80)
+    c2h = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "2h", symbol, timestamp, 50)
+    c1h = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "1h", symbol, timestamp, 50)
+    if min(len(c4h), len(c2h), len(c1h)) < 30:
+        return False
+    fast = ema([item.close for item in c4h], int(config.mtper.pre_cross.ema_fast_period))
+    slow = ema([item.close for item in c4h], int(config.mtper.pre_cross.ema_slow_period))
+    side = position.direction.value
+    cross_confirmed = side * (fast[-1] - slow[-1]) > 0
+    ema2 = ema([item.close for item in c2h], 21)[-1]
+    ema1 = ema([item.close for item in c1h], 21)
+    _, _, hist1 = macd([item.close for item in c1h])
+    return (
+        cross_confirmed
+        and side * (c2h[-1].close - ema2) > 0
+        and side * (ema1[-1] - ema1[-3]) > 0
+        and side * (hist1[-1] - hist1[-2]) >= 0
+    )
+
+
+def _mtper_structural_exit_reason(
+    config: Any,
+    position: PortfolioPosition,
+    timestamp: Any,
+    candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+) -> str:
+    if not bool(config.mtper.exit.structural_fail_fast_enabled):
+        return ""
+    symbol = position.symbol
+    side = position.direction.value
+    c15 = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "15m", symbol, timestamp, 40)
+    c1h = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "1h", symbol, timestamp, 40)
+    c2h = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "2h", symbol, timestamp, 40)
+    if len(c15) >= 22:
+        ema9 = ema([item.close for item in c15], 9)[-1]
+        trigger_level = float((position.strategy_metadata or {}).get("trigger_close", position.entry_price))
+        if side * (c15[-1].close - trigger_level) < 0 and side * (c15[-1].close - ema9) < 0:
+            return "mtper_structural_fail_fast_15m_reclaim_lost"
+    if len(c1h) >= 30:
+        _, _, hist1 = macd([item.close for item in c1h])
+        if side * (hist1[-1] - hist1[-2]) < 0 and side * (c1h[-1].close - c1h[-2].close) < 0:
+            return "mtper_structural_fail_fast_1h_momentum"
+    if len(c2h) >= 30:
+        _, _, hist2 = macd([item.close for item in c2h])
+        adverse_new_extreme = c2h[-1].low < min(item.low for item in c2h[-4:-1]) if position.direction == Direction.LONG else c2h[-1].high > max(item.high for item in c2h[-4:-1])
+        if adverse_new_extreme and side * (hist2[-1] - hist2[-2]) < 0:
+            return "mtper_structural_fail_fast_2h_reacceleration"
+    return ""
+
+
+def _mtper_nonresponse_failed_checks(
+    position: PortfolioPosition,
+    candle: Candle,
+    candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+) -> int:
+    symbol = position.symbol
+    side = position.direction.value
+    checks = int(side * (candle.close - position.entry_price) <= 0)
+    c15 = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "15m", symbol, candle.timestamp, 40)
+    c1h = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, "1h", symbol, candle.timestamp, 40)
+    if len(c15) >= 22:
+        ema9 = ema([item.close for item in c15], 9)[-1]
+        checks += int(side * (c15[-1].close - ema9) <= 0)
+        checks += int(side * (c15[-1].close - c15[-2].close) <= 0)
+    if len(c1h) >= 30:
+        _, _, hist = macd([item.close for item in c1h])
+        checks += int(side * (hist[-1] - hist[-2]) <= 0)
+        checks += int(side * (c1h[-1].close - c1h[-2].close) <= 0)
+    return checks
+
+
+def _mtper_runner_exit_reason(
+    config: Any,
+    position: PortfolioPosition,
+    timestamp: Any,
+    candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+) -> str:
+    mode = str(config.mtper.exit.trend_trailing_mode).strip().lower()
+    symbol = position.symbol
+    side = position.direction.value
+    if mode == "1h_ema21":
+        timeframe = "1h"
+    else:
+        timeframe = "2h"
+    candles = _mtf_closed(candles_by_timeframe, timestamps_by_timeframe, timeframe, symbol, timestamp, 60)
+    if len(candles) < 30:
+        return ""
+    ema21 = ema([item.close for item in candles], 21)[-1]
+    if side * (candles[-1].close - ema21) < 0:
+        return f"mtper_trend_runner_{timeframe}_ema21_exit"
+    _, _, hist = macd([item.close for item in candles])
+    if side * (hist[-1] - hist[-2]) < 0 and side * (hist[-2] - hist[-3]) < 0:
+        return f"mtper_trend_runner_{timeframe}_macd_fade"
+    return ""
+
+
+def _mtper_allowed_giveback(exit_cfg: Any, max_mfe_r: float) -> float:
+    if max_mfe_r >= float(exit_cfg.giveback_high_mfe_r):
+        return max(0.0, float(exit_cfg.giveback_high_r))
+    if max_mfe_r >= float(exit_cfg.giveback_mid_mfe_r):
+        return max(0.0, float(exit_cfg.giveback_mid_r))
+    return max(0.0, float(exit_cfg.giveback_low_r))
+
+
+def _is_reversal_v2_position(position: PortfolioPosition) -> bool:
+    return REVERSAL_V2_REASON_TOKEN in str(position.entry_reason)
+
+
+def _manage_reversal_v2_position_1m(
+    config: Any,
+    cash: float,
+    positions: dict[str, PortfolioPosition],
+    trades: list[dict[str, Any]],
+    position: PortfolioPosition,
+    candle: Candle,
+    signal_index: int,
+    execution_config: BacktestExecutionConfig,
+    execution_stats: BacktestExecutionStats,
+    rules: Any,
+    stats: dict[str, int],
+) -> tuple[float, bool]:
+    side = position.direction.value
+    stop_hit = candle.low <= position.stop_price if position.direction == Direction.LONG else candle.high >= position.stop_price
+    take_profit_hit = candle.high >= position.take_profit_price if position.direction == Direction.LONG else candle.low <= position.take_profit_price
+    if stop_hit and take_profit_hit:
+        execution_stats.same_bar_tp_sl_conflict_count += 1
+    if stop_hit and (not take_profit_hit or execution_config.mode != "optimistic"):
+        cash = _close_position(
+            config,
+            cash,
+            positions,
+            trades,
+            position.symbol,
+            position.stop_price,
+            "reversal_v2_stop_loss_1m",
+            signal_index,
+            candle.timestamp,
+            execution_config=execution_config,
+            rules=rules,
+        )
+        _count_stat(stats, "exit_stop_loss")
+        return cash, True
+    if take_profit_hit:
+        cash = _close_position(
+            config,
+            cash,
+            positions,
+            trades,
+            position.symbol,
+            position.take_profit_price,
+            "reversal_v2_take_profit_1m",
+            signal_index,
+            candle.timestamp,
+            execution_config=execution_config,
+            rules=rules,
+        )
+        _count_stat(stats, "exit_take_profit")
+        return cash, True
+
+    favorable_price = candle.high if position.direction == Direction.LONG else candle.low
+    favorable_r = _reversal_v2_executable_r(position, favorable_price, execution_config, rules)
+    current_r = _reversal_v2_executable_r(position, candle.close, execution_config, rules)
+    position.reversal_v2_max_executable_r = max(position.reversal_v2_max_executable_r, favorable_r)
+    max_r = position.reversal_v2_max_executable_r
+    alpha = config.reversal_alpha
+    hold_minutes = _hold_minutes(position.entry_time, candle.timestamp)
+
+    exit_reason = ""
+    fail_fast_minutes = max(0, int(alpha.fail_fast_minutes))
+    if fail_fast_minutes > 0 and hold_minutes >= fail_fast_minutes and max_r < float(alpha.fail_fast_min_mfe_r):
+        exit_reason = "reversal_v2_fail_fast"
+    elif max(0, int(alpha.time_stop_minutes)) > 0 and hold_minutes >= int(alpha.time_stop_minutes):
+        exit_reason = "reversal_v2_time_stop"
+    elif (
+        bool(alpha.giveback_enabled)
+        and max_r >= float(alpha.giveback_activation_r)
+        and current_r < max_r - float(alpha.allowed_giveback_r)
+    ):
+        exit_reason = "reversal_v2_profit_giveback"
+
+    if exit_reason:
+        cash = _close_position(
+            config,
+            cash,
+            positions,
+            trades,
+            position.symbol,
+            candle.close,
+            exit_reason,
+            signal_index,
+            candle.timestamp,
+            execution_config=execution_config,
+            rules=rules,
+        )
+        _count_stat(stats, f"exit_{exit_reason.replace('reversal_v2_', '', 1)}")
+        return cash, True
+
+    if max_r >= float(alpha.breakeven_trigger_r):
+        cost_buffer = max(0.0, float(alpha.breakeven_cost_buffer_pct))
+        breakeven_stop = position.entry_price * (1.0 + side * cost_buffer)
+        if position.direction == Direction.LONG:
+            proposed_stop = max(position.stop_price, breakeven_stop)
+            stop_is_beyond_close = proposed_stop >= candle.close
+        else:
+            proposed_stop = min(position.stop_price, breakeven_stop)
+            stop_is_beyond_close = proposed_stop <= candle.close
+        if stop_is_beyond_close:
+            cash = _close_position(
+                config,
+                cash,
+                positions,
+                trades,
+                position.symbol,
+                candle.close,
+                "reversal_v2_breakeven_reversal",
+                signal_index,
+                candle.timestamp,
+                execution_config=execution_config,
+                rules=rules,
+            )
+            _count_stat(stats, "exit_breakeven_reversal")
+            return cash, True
+        if proposed_stop != position.stop_price:
+            position.stop_price = proposed_stop
+            _count_stat(stats, "breakeven_armed")
+    return cash, False
+
+
+def _reversal_v2_executable_r(
+    position: PortfolioPosition,
+    raw_exit_price: float,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> float:
+    fill = market_exit_fill(
+        execution_config,
+        rules,
+        position.direction,
+        position.quantity,
+        raw_exit_price,
+        "market",
+        position.liquidity_reference_quote_volume or None,
+    )
+    raw_entry = position.raw_entry_price or position.entry_price
+    raw_gross = position.direction.value * position.quantity * (raw_exit_price - raw_entry)
+    net = raw_gross - position.entry_fee - position.entry_slippage_cost - fill.fee - fill.slippage_cost
+    risk_cash = max(abs(position.entry_price - position.initial_stop_price) * position.quantity, 1e-12)
+    return net / risk_cash
+
+
 def _manage_cmipr_position_1m(
     trader: BinanceAutoTrader,
     config: Any,
@@ -1762,7 +4770,7 @@ def _manage_cmipr_position_1m(
         _count_stat(stats, "stop_loss_count")
         return cash, True
 
-    current_r = _cmipr_executable_current_r(
+    current_net_pnl, current_campaign_r, current_initial_leg_r = _cmipr_executable_r_values(
         config,
         position,
         candle.close,
@@ -1770,43 +4778,111 @@ def _manage_cmipr_position_1m(
         execution_config,
         trader.client.symbol_rules(symbol),
     )
-    position.cmipr_max_executable_r = max(position.cmipr_max_executable_r, current_r)
+    position.cmipr_max_campaign_executable_r = max(position.cmipr_max_campaign_executable_r, current_campaign_r)
+    position.cmipr_min_campaign_executable_r = min(position.cmipr_min_campaign_executable_r, current_campaign_r)
+    position.cmipr_max_initial_leg_executable_r = max(position.cmipr_max_initial_leg_executable_r, current_initial_leg_r)
+    position.cmipr_min_initial_leg_executable_r = min(position.cmipr_min_initial_leg_executable_r, current_initial_leg_r)
+    position.cmipr_executable_mfe_usdt = max(position.cmipr_executable_mfe_usdt, current_net_pnl)
+    position.cmipr_executable_mae_usdt = min(position.cmipr_executable_mae_usdt, current_net_pnl)
+    position.cmipr_max_executable_r = position.cmipr_max_campaign_executable_r
     hold_minutes = _hold_minutes(position.entry_time, candle.timestamp)
     exit_cfg = config.cmipr.exit
+    fail_fast_basis = normalize_r_basis(exit_cfg.fail_fast_r_basis)
+    take_profit_basis = normalize_r_basis(exit_cfg.take_profit_r_basis)
+    breakeven_basis = normalize_r_basis(exit_cfg.breakeven_r_basis)
+    runner_basis = normalize_r_basis(exit_cfg.runner_activation_r_basis)
+    giveback_basis = normalize_r_basis(exit_cfg.giveback_r_basis)
+    max_by_basis = {
+        CAMPAIGN_R_BASIS: position.cmipr_max_campaign_executable_r,
+        INITIAL_LEG_R_BASIS: position.cmipr_max_initial_leg_executable_r,
+    }
+    current_by_basis = {
+        CAMPAIGN_R_BASIS: current_campaign_r,
+        INITIAL_LEG_R_BASIS: current_initial_leg_r,
+    }
     breakout_level = _reason_float(position.entry_reason, "breakout_level", position.entry_price)
     lost_level = candle.close < breakout_level if position.direction == Direction.LONG else candle.close > breakout_level
     fail_fast_minutes = max(1, int(exit_cfg.fail_fast_bars_5m)) * 5
     reason = ""
-    if hold_minutes >= fail_fast_minutes and position.cmipr_max_executable_r < float(exit_cfg.fail_fast_min_mfe_r):
-        reason = "cmipr_fail_fast_no_extension"
-    elif lost_level and hold_minutes >= 5:
-        reason = "cmipr_fail_fast_lost_breakout"
-    elif hold_minutes >= max(1, int(exit_cfg.max_holding_minutes)):
-        reason = "cmipr_time_stop"
-    elif not bool(exit_cfg.runner_enabled) and current_r >= float(exit_cfg.fixed_take_profit_r):
-        reason = "cmipr_fixed_r_take_profit"
+    fail_fast_mode = str(exit_cfg.fail_fast_mode or "current").strip().lower()
+    if fail_fast_mode == "current":
+        if hold_minutes >= fail_fast_minutes and max_by_basis[fail_fast_basis] < float(exit_cfg.fail_fast_min_mfe_r):
+            reason = "cmipr_fail_fast_no_extension"
+        elif lost_level and hold_minutes >= 5:
+            reason = "cmipr_fail_fast_lost_breakout"
     else:
-        giveback = _cmipr_allowed_giveback_r(exit_cfg, position.cmipr_max_executable_r)
-        if position.cmipr_max_executable_r >= float(exit_cfg.runner_activation_r) and current_r < position.cmipr_max_executable_r - giveback:
-            reason = "cmipr_max_profit_giveback"
-
-    if not reason and bool(exit_cfg.runner_enabled) and position.cmipr_max_executable_r >= float(exit_cfg.runner_activation_r):
-        candles_15m = _mtf_closed(
+        hard_invalidated = _cmipr_hard_invalidation_reason(
+            position,
+            candle,
+            breakout_level,
             mtf_candles_by_timeframe,
             mtf_timestamps_by_timeframe,
-            "15m",
+        )
+        if hard_invalidated:
+            reason = hard_invalidated
+        elif fail_fast_mode.startswith("conditional"):
+            conditional_minutes = max(1, int(exit_cfg.conditional_fail_fast_minutes))
+            conditional_min_mfe = float(exit_cfg.conditional_fail_fast_min_mfe_r)
+            if hold_minutes >= conditional_minutes and max_by_basis[fail_fast_basis] < conditional_min_mfe:
+                failed_checks = _cmipr_conditional_fail_fast_failed_checks(
+                    position,
+                    candle,
+                    mtf_candles_by_timeframe,
+                    mtf_timestamps_by_timeframe,
+                )
+                if failed_checks >= max(1, int(exit_cfg.conditional_min_failed_checks)):
+                    reason = "cmipr_fail_fast_conditional_no_extension"
+                    _count_stat(stats, f"conditional_fail_fast_failed_checks_{failed_checks}")
+        elif fail_fast_mode not in {"structural_only", "hard_invalidation_only", "no_time"}:
+            raise ValueError(f"unsupported CMIPR fail_fast_mode: {exit_cfg.fail_fast_mode}")
+    if not reason and hold_minutes >= max(1, int(exit_cfg.max_holding_minutes)):
+        reason = "cmipr_time_stop"
+    elif not reason and not bool(exit_cfg.runner_enabled) and current_by_basis[take_profit_basis] >= float(exit_cfg.fixed_take_profit_r):
+        reason = "cmipr_fixed_r_take_profit"
+    elif not reason:
+        max_giveback_r = max_by_basis[giveback_basis]
+        giveback = _cmipr_allowed_giveback_r(exit_cfg, max_giveback_r)
+        if max_by_basis[runner_basis] >= float(exit_cfg.runner_activation_r) and current_by_basis[giveback_basis] < max_giveback_r - giveback:
+            reason = "cmipr_max_profit_giveback"
+
+    if not reason and bool(exit_cfg.runner_enabled) and max_by_basis[runner_basis] >= float(exit_cfg.runner_activation_r):
+        trailing_type = str(exit_cfg.trailing_type).lower()
+        if trailing_type not in {
+            "ema9_5m",
+            "ema21_5m",
+            "ema9_15m",
+            "ema21_15m",
+            "chandelier_5m",
+            "chandelier_15m",
+        }:
+            trailing_type = "ema21_15m"
+        trailing_timeframe = "5m" if trailing_type.endswith("_5m") else "15m"
+        trailing_candles = _mtf_closed(
+            mtf_candles_by_timeframe,
+            mtf_timestamps_by_timeframe,
+            trailing_timeframe,
             symbol,
             candle.timestamp,
             80,
         )
-        if len(candles_15m) >= 24:
-            closes = [item.close for item in candles_15m]
-            ema_period = 9 if str(exit_cfg.trailing_type).lower() == "ema9_15m" else 21
+        if trailing_type.startswith("ema") and len(trailing_candles) >= 24:
+            closes = [item.close for item in trailing_candles]
+            ema_period = 9 if trailing_type.startswith("ema9_") else 21
             trailing_ema = ema(closes, ema_period)[-1]
-            if position.direction == Direction.LONG and candles_15m[-1].close < trailing_ema:
+            if position.direction == Direction.LONG and trailing_candles[-1].close < trailing_ema:
                 reason = "cmipr_runner_ema_exit"
-            elif position.direction == Direction.SHORT and candles_15m[-1].close > trailing_ema:
+            elif position.direction == Direction.SHORT and trailing_candles[-1].close > trailing_ema:
                 reason = "cmipr_runner_ema_exit"
+        elif trailing_type.startswith("chandelier_") and len(trailing_candles) >= 24:
+            atr_value = atr(trailing_candles, 14)[-1]
+            peak_price = position.entry_price + position.direction.value * position.mfe / max(position.quantity, 1e-12)
+            multiple = max(0.25, float(exit_cfg.chandelier_atr_mult))
+            proposed_stop = peak_price - position.direction.value * atr_value * multiple
+            if position.direction == Direction.LONG:
+                position.stop_price = max(position.stop_price, proposed_stop)
+            else:
+                position.stop_price = min(position.stop_price, proposed_stop)
+            _count_stat(stats, "cmipr_runner_chandelier_armed")
 
     if reason:
         cash = _close_position(
@@ -1827,13 +4903,144 @@ def _manage_cmipr_position_1m(
 
     # Stop changes become effective only for the next 1m bar. The old stop was
     # checked first, preserving adverse same-bar ordering.
-    if position.cmipr_max_executable_r >= float(exit_cfg.breakeven_trigger_r):
+    if max_by_basis[breakeven_basis] >= float(exit_cfg.breakeven_trigger_r):
         buffer_pct = max(0.0, float(exit_cfg.breakeven_cost_buffer_pct))
         if position.direction == Direction.LONG:
             position.stop_price = max(position.stop_price, position.entry_price * (1.0 + buffer_pct))
         else:
             position.stop_price = min(position.stop_price, position.entry_price * (1.0 - buffer_pct))
     return cash, False
+
+
+def _cmipr_hard_invalidation_reason(
+    position: PortfolioPosition,
+    candle: Candle,
+    breakout_level: float,
+    mtf_candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    mtf_timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+) -> str:
+    closed_5m = _mtf_closed(
+        mtf_candles_by_timeframe,
+        mtf_timestamps_by_timeframe,
+        "5m",
+        position.symbol,
+        candle.timestamp,
+        3,
+    )
+    if not closed_5m:
+        return ""
+    latest = closed_5m[-1]
+    lost = latest.close < breakout_level if position.direction == Direction.LONG else latest.close > breakout_level
+    return "cmipr_hard_invalidation_lost_breakout" if lost else ""
+
+
+def _cmipr_conditional_fail_fast_failed_checks(
+    position: PortfolioPosition,
+    candle: Candle,
+    mtf_candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    mtf_timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+) -> int:
+    symbol_5m = _mtf_closed(
+        mtf_candles_by_timeframe,
+        mtf_timestamps_by_timeframe,
+        "5m",
+        position.symbol,
+        candle.timestamp,
+        24,
+    )
+    if len(symbol_5m) < 10:
+        return 5
+    latest = symbol_5m[-1]
+    previous = symbol_5m[-4:-1]
+    closes = [item.close for item in symbol_5m]
+    _, _, histogram = macd(closes)
+    if position.direction == Direction.LONG:
+        higher_structure = latest.low > min(item.low for item in previous)
+        momentum_improving = histogram[-1] > histogram[-2]
+        ema_held = latest.close >= ema(closes, 9)[-1]
+    else:
+        higher_structure = latest.high < max(item.high for item in previous)
+        momentum_improving = histogram[-1] < histogram[-2]
+        ema_held = latest.close <= ema(closes, 9)[-1]
+    average_volume = sum(item.volume for item in previous) / len(previous)
+    volume_reexpanded = latest.volume >= average_volume * 1.05
+
+    btc_5m = _mtf_closed(
+        mtf_candles_by_timeframe,
+        mtf_timestamps_by_timeframe,
+        "5m",
+        "BTCUSDT",
+        candle.timestamp,
+        3,
+    )
+    relative_strength_improving = False
+    if len(btc_5m) >= 2 and len(symbol_5m) >= 2:
+        symbol_return = symbol_5m[-1].close / max(symbol_5m[-2].close, 1e-12) - 1.0
+        btc_return = btc_5m[-1].close / max(btc_5m[-2].close, 1e-12) - 1.0
+        relative_strength_improving = (
+            symbol_return >= btc_return if position.direction == Direction.LONG else symbol_return <= btc_return
+        )
+    checks = (
+        higher_structure,
+        volume_reexpanded,
+        momentum_improving,
+        relative_strength_improving,
+        ema_held,
+    )
+    return sum(not passed for passed in checks)
+
+
+def _cmipr_executable_r_values(
+    config: Any,
+    position: PortfolioPosition,
+    raw_exit_price: float,
+    exit_time: Any,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> tuple[float, float, float]:
+    funding = _funding_for_position(execution_config, position, exit_time)
+    net = executable_net_pnl(position, raw_exit_price, execution_config, rules, funding)
+    return (
+        net,
+        net_pnl_r(position, net, CAMPAIGN_R_BASIS),
+        net_pnl_r(position, net, INITIAL_LEG_R_BASIS),
+    )
+
+
+def _cmipr_executable_campaign_r(
+    config: Any,
+    position: PortfolioPosition,
+    raw_exit_price: float,
+    exit_time: Any,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> float:
+    return _cmipr_executable_r_values(
+        config,
+        position,
+        raw_exit_price,
+        exit_time,
+        execution_config,
+        rules,
+    )[1]
+
+
+def _cmipr_executable_initial_leg_r(
+    config: Any,
+    position: PortfolioPosition,
+    raw_exit_price: float,
+    exit_time: Any,
+    execution_config: BacktestExecutionConfig,
+    rules: Any,
+) -> float:
+    return _cmipr_executable_r_values(
+        config,
+        position,
+        raw_exit_price,
+        exit_time,
+        execution_config,
+        rules,
+    )[2]
 
 
 def _cmipr_executable_current_r(
@@ -1844,23 +5051,15 @@ def _cmipr_executable_current_r(
     execution_config: BacktestExecutionConfig,
     rules: Any,
 ) -> float:
-    fill = market_exit_fill(
+    """Backward-compatible alias. CMIPR callers must use explicit basis helpers."""
+    return _cmipr_executable_campaign_r(
+        config,
+        position,
+        raw_exit_price,
+        exit_time,
         execution_config,
         rules,
-        position.direction,
-        position.quantity,
-        raw_exit_price,
-        "market",
-        position.liquidity_reference_quote_volume or None,
     )
-    raw_entry = position.raw_entry_price or position.entry_price
-    gross = position.direction.value * position.quantity * (raw_exit_price - raw_entry)
-    funding = _funding_for_position(execution_config, position, exit_time)
-    net = gross - position.entry_fee - position.entry_slippage_cost - fill.fee - fill.slippage_cost + funding
-    risk_budget = position.risk_budget_usdt
-    if risk_budget <= 0:
-        risk_budget = max(abs(position.entry_price - position.initial_stop_price) * position.quantity, 1e-12)
-    return net / max(risk_budget, 1e-12)
 
 
 def _cmipr_allowed_giveback_r(exit_config: Any, max_r: float) -> float:
@@ -1924,13 +5123,15 @@ def _build_point_in_time_universe(config: Any, candles_by_symbol: dict[str, list
             bucket = daily.setdefault(day, {})
             bucket[symbol] = bucket.get(symbol, 0.0) + max(0.0, candle.volume * candle.close)
     days = sorted(daily)
+    data_start_day = days[0] if days else None
     result: dict[Any, frozenset[str]] = {}
     for index, day in enumerate(days):
         prior_days = days[max(0, index - lookback_days):index]
         scores: dict[str, float] = {}
         for prior_day in prior_days:
             for symbol, quote_volume in daily[prior_day].items():
-                if (day - first_day[symbol]).days < warmup_days:
+                first_seen = first_day[symbol]
+                if first_seen != data_start_day and (day - first_seen).days < warmup_days:
                     continue
                 scores[symbol] = scores.get(symbol, 0.0) + quote_volume
         ranked = sorted(scores, key=lambda symbol: (-scores[symbol], symbol))[:top_n]
@@ -3823,13 +7024,39 @@ def _mtf_exit_reason_for_position(
     strategy = config.strategy
 
     try:
+        thirty_m = _mtf_closed(
+            mtf_candles_by_timeframe,
+            mtf_timestamps_by_timeframe,
+            "30m",
+            position.symbol,
+            candle.timestamp,
+            80,
+        )
+    except KeyError:
+        thirty_m = []
+    if (
+        bool(getattr(strategy, "mtf_exit_on_30m_confirm_lost", False))
+        and thirty_m
+        and Mtf4hRsiRegimePullbackStrategy(config).thirty_minute_confirm_lost(
+            position.direction,
+            thirty_m,
+        )
+    ):
+        return "mtf_30m_confirm_lost"
+
+    try:
         one_h = _mtf_closed(mtf_candles_by_timeframe, mtf_timestamps_by_timeframe, "1h", position.symbol, candle.timestamp, 80)
     except KeyError:
         one_h = []
-    if one_h and Mtf4hRsiRegimePullbackStrategy(config).one_h_confirm_lost(position.direction, one_h):
+    if (
+        bool(getattr(strategy, "mtf_exit_on_1h_confirm_lost", True))
+        and one_h
+        and Mtf4hRsiRegimePullbackStrategy(config).one_h_confirm_lost(position.direction, one_h)
+    ):
         return "mtf_1h_confirm_lost"
 
-    risk_cash = abs(position.entry_price - position.stop_price) * position.quantity
+    initial_stop = position.initial_stop_price or position.stop_price
+    risk_cash = abs(position.entry_price - initial_stop) * position.quantity
     fail_fast_minutes = max(1, int(getattr(strategy, "mtf_fail_fast_minutes", 90)))
     if hold_minutes >= fail_fast_minutes and risk_cash > 0:
         min_mfe = risk_cash * max(0.0, float(getattr(strategy, "mtf_fail_fast_min_r", 0.5)))
@@ -3839,6 +7066,118 @@ def _mtf_exit_reason_for_position(
     max_holding_minutes = max(1, int(getattr(strategy, "mtf_max_holding_minutes", 720)))
     if hold_minutes >= max_holding_minutes:
         return "mtf_time_stop"
+    return None
+
+
+def _update_mtf_profit_protection(
+    config: Any,
+    position: PortfolioPosition,
+    previous_mfe: float,
+    execution_config: BacktestExecutionConfig,
+    candle: Candle,
+    mtf_candles_by_timeframe: dict[str, dict[str, list[Candle]]],
+    mtf_timestamps_by_timeframe: dict[str, dict[str, list[Any]]],
+) -> None:
+    strategy = config.strategy
+    if not bool(getattr(strategy, "mtf_profit_protection_enabled", False)):
+        return
+    initial_stop = position.initial_stop_price or position.stop_price
+    risk_distance = abs(position.entry_price - initial_stop)
+    risk_cash = risk_distance * position.quantity
+    if risk_cash <= 0 or position.quantity <= 0:
+        return
+    previous_mfe_r = previous_mfe / risk_cash
+    side = position.direction.value
+    protected_stop = position.stop_price
+    stop_mode = ""
+
+    breakeven_r = max(0.0, float(getattr(strategy, "mtf_move_stop_to_breakeven_r", 1.0)))
+    if previous_mfe_r >= breakeven_r:
+        projected_exit_fee = abs(position.quantity * position.entry_price) * float(execution_config.taker_fee_rate)
+        projected_stop_slippage = (
+            abs(position.quantity * position.entry_price)
+            * float(execution_config.stop_slippage_bps)
+            / 10_000.0
+        )
+        extra_cost = (
+            abs(position.quantity * position.entry_price)
+            * max(0.0, float(getattr(strategy, "mtf_breakeven_extra_bps", 0.0)))
+            / 10_000.0
+        )
+        full_cost_cash = (
+            position.entry_fee
+            + position.entry_slippage_cost
+            + projected_exit_fee
+            + projected_stop_slippage
+            + extra_cost
+        )
+        breakeven_stop = _mtf_favorable_stop(
+            position,
+            protected_stop,
+            position.entry_price + side * full_cost_cash / position.quantity,
+        )
+        if breakeven_stop != protected_stop:
+            protected_stop = breakeven_stop
+            stop_mode = "breakeven"
+
+    trailing_start_r = max(0.0, float(getattr(strategy, "mtf_trailing_start_r", 1.5)))
+    trailing_mode = str(getattr(strategy, "mtf_trailing_mode", "none")).strip().lower()
+    if previous_mfe_r >= trailing_start_r and trailing_mode in {"giveback", "atr", "hybrid"}:
+        if trailing_mode in {"giveback", "hybrid"}:
+            giveback_r = max(0.05, float(getattr(strategy, "mtf_profit_giveback_r", 0.75)))
+            locked_r = max(0.0, previous_mfe_r - giveback_r)
+            giveback_stop = _mtf_favorable_stop(
+                position,
+                protected_stop,
+                position.entry_price + side * locked_r * risk_distance,
+            )
+            if giveback_stop != protected_stop:
+                protected_stop = giveback_stop
+                stop_mode = "giveback"
+        if trailing_mode in {"atr", "hybrid"}:
+            try:
+                candles_15m = _mtf_closed(
+                    mtf_candles_by_timeframe,
+                    mtf_timestamps_by_timeframe,
+                    "15m",
+                    position.symbol,
+                    candle.timestamp,
+                    80,
+                )
+            except KeyError:
+                candles_15m = []
+            if len(candles_15m) >= 20:
+                atr_value = max(atr(candles_15m, 14)[-1], 1e-12)
+                multiple = max(0.1, float(getattr(strategy, "mtf_trailing_atr15m_mult", 1.0)))
+                reference = candles_15m[-1].close - side * atr_value * multiple
+                atr_stop = _mtf_favorable_stop(position, protected_stop, reference)
+                if atr_stop != protected_stop:
+                    protected_stop = atr_stop
+                    stop_mode = "atr"
+
+    if position.direction == Direction.LONG and protected_stop > candle.open:
+        protected_stop = candle.open
+    elif position.direction == Direction.SHORT and protected_stop < candle.open:
+        protected_stop = candle.open
+    position.stop_price = protected_stop
+    if stop_mode:
+        metadata = dict(position.strategy_metadata or {})
+        metadata["mtf_stop_mode"] = stop_mode
+        position.strategy_metadata = metadata
+
+
+def _mtf_favorable_stop(position: PortfolioPosition, current: float, candidate: float) -> float:
+    if position.direction == Direction.LONG:
+        return max(current, candidate)
+    return min(current, candidate)
+
+
+def _mtf_stop_exit_reason(position: PortfolioPosition) -> str | None:
+    if MTF_REASON_TOKEN not in str(position.entry_reason):
+        return None
+    mode = str((position.strategy_metadata or {}).get("mtf_stop_mode", ""))
+    if mode in {"breakeven", "giveback", "atr"}:
+        return f"mtf_{mode}_stop"
     return None
 
 
@@ -3870,7 +7209,7 @@ def _queue_cmipr_addons_1m(
         if execution_index - reference_index < bars_between:
             continue
         candle = execution_candles_by_symbol[symbol][execution_index]
-        current_r = _cmipr_executable_current_r(
+        _, current_campaign_r, current_initial_leg_r = _cmipr_executable_r_values(
             config,
             position,
             candle.close,
@@ -3878,6 +7217,8 @@ def _queue_cmipr_addons_1m(
             execution_config,
             client.symbol_rules(symbol),
         )
+        addon_basis = normalize_r_basis(pyramid.addon_trigger_r_basis)
+        current_r = current_initial_leg_r if addon_basis == INITIAL_LEG_R_BASIS else current_campaign_r
         trigger = float(pyramid.addon_1_trigger_r if position.scale_ins == 0 else pyramid.addon_2_trigger_r)
         if current_r < trigger or current_r <= 0:
             continue
@@ -3950,7 +7291,7 @@ def _fill_cmipr_pending_addons_1m(
             continue
         candle = execution_candles_by_symbol[addon.symbol][execution_index]
         execution_candle = replace(candle, high=candle.open, low=candle.open, close=candle.open)
-        current_r = _cmipr_executable_current_r(
+        _, current_campaign_r, current_initial_leg_r = _cmipr_executable_r_values(
             config,
             position,
             candle.open,
@@ -3958,6 +7299,8 @@ def _fill_cmipr_pending_addons_1m(
             execution_config,
             trader.client.symbol_rules(addon.symbol),
         )
+        addon_basis = normalize_r_basis(config.cmipr.pyramid.addon_trigger_r_basis)
+        current_r = current_initial_leg_r if addon_basis == INITIAL_LEG_R_BASIS else current_campaign_r
         trigger = float(config.cmipr.pyramid.addon_1_trigger_r if addon.addon_number == 1 else config.cmipr.pyramid.addon_2_trigger_r)
         if current_r < trigger or current_r <= 0:
             _count_stat(stats, "addon_cancel_current_r_lost")

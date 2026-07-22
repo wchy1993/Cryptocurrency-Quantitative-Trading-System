@@ -1,0 +1,77 @@
+{
+  "base_config": "config.mtf-htf.optimized-structure-only-v3.json",
+  "experiment_budget": 3,
+  "research_name": "mtf_core_v3_aggressive_risk_ladder",
+  "risk_definition": "approximately 2/3/4 percent initial stop risk after the fixed 0.62 signal-confidence weight",
+  "experiments": [
+    {
+      "name": "aggressive_a_2pct",
+      "trading": {
+        "initial_entry_fraction": 1.0
+      },
+      "strategy": {
+        "mtf_risk_multiplier": 1.0
+      },
+      "risk": {
+        "starting_capital_usdt": 200.0,
+        "risk_per_trade_pct": 0.0183908046,
+        "max_account_margin_usage_pct": 0.30,
+        "max_symbol_margin_pct": 0.30,
+        "max_maintenance_margin_ratio_pct": 0.05,
+        "estimated_maintenance_margin_rate": 0.005,
+        "max_drawdown_pct": 0.40,
+        "starting_capital_drawdown_stop_pct": 0.40,
+        "weekly_profit_drawdown_stop_pct": 0.40,
+        "soft_drawdown_reduce_pct": 0.20,
+        "soft_drawdown_stop_pct": 0.35,
+        "soft_drawdown_min_size_multiplier": 0.50
+      }
+    },
+    {
+      "name": "aggressive_b_3pct",
+      "trading": {
+        "initial_entry_fraction": 1.0
+      },
+      "strategy": {
+        "mtf_risk_multiplier": 1.0
+      },
+      "risk": {
+        "starting_capital_usdt": 200.0,
+        "risk_per_trade_pct": 0.0275862069,
+        "max_account_margin_usage_pct": 0.30,
+        "max_symbol_margin_pct": 0.30,
+        "max_maintenance_margin_ratio_pct": 0.05,
+        "estimated_maintenance_margin_rate": 0.005,
+        "max_drawdown_pct": 0.40,
+        "starting_capital_drawdown_stop_pct": 0.40,
+        "weekly_profit_drawdown_stop_pct": 0.40,
+        "soft_drawdown_reduce_pct": 0.20,
+        "soft_drawdown_stop_pct": 0.35,
+        "soft_drawdown_min_size_multiplier": 0.50
+      }
+    },
+    {
+      "name": "aggressive_c_4pct",
+      "trading": {
+        "initial_entry_fraction": 1.0
+      },
+      "strategy": {
+        "mtf_risk_multiplier": 1.0
+      },
+      "risk": {
+        "starting_capital_usdt": 200.0,
+        "risk_per_trade_pct": 0.0367816092,
+        "max_account_margin_usage_pct": 0.30,
+        "max_symbol_margin_pct": 0.30,
+        "max_maintenance_margin_ratio_pct": 0.05,
+        "estimated_maintenance_margin_rate": 0.005,
+        "max_drawdown_pct": 0.40,
+        "starting_capital_drawdown_stop_pct": 0.40,
+        "weekly_profit_drawdown_stop_pct": 0.40,
+        "soft_drawdown_reduce_pct": 0.20,
+        "soft_drawdown_stop_pct": 0.35,
+        "soft_drawdown_min_size_multiplier": 0.50
+      }
+    }
+  ]
+}

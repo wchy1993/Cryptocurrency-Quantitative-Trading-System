@@ -4,8 +4,8 @@ import json
 import re
 import threading
 import time
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,7 +21,16 @@ from .mtf_4h_rsi_regime import (
     Mtf4hRsiRegimePullbackStrategy,
     funding_at,
     load_auxiliary_features,
+    mtf_min_rank_score_for_direction,
     oi_change_at,
+)
+from .mtf_momentum_reset import (
+    MTF_MOMENTUM_RESET_SETUP_TOKEN,
+    MTF_MOMENTUM_RESET_VERSION,
+    build_release_signal,
+    detect_momentum_reset_release,
+    momentum_reset_config_from_strategy,
+    mtf_momentum_reset_event_id,
 )
 from .risk import signal_risk_weight
 from .strategy import VolatilityBreakoutScalper
@@ -92,6 +101,7 @@ class SimPosition:
     bars_held: int = 0
     scale_ins: int = 0
     entry_reason: str = ""
+    initial_stop_price: float | None = None
 
 
 @dataclass
@@ -126,6 +136,7 @@ class EntryCandidate:
     directional_momentum_pct: float
     volume_ratio: float
     filter_reason: str
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -274,6 +285,16 @@ class BinanceAutoTrader:
         }
         self._accounted_trade_ids: set[str] = set()
         self._mtf_aux_feature_cache: tuple[float, dict[str, dict[str, object]]] | None = None
+        self._mtf_live_funding_cache: tuple[float, dict[str, float]] | None = None
+        self._mtf_live_funding_error_logged_at = 0.0
+        self._mtf_momentum_reset_state_path = Path("logs/mtf_momentum_reset_runtime_state.json")
+        reset_state = self._load_mtf_momentum_reset_runtime_state()
+        self._mtf_momentum_reset_seen_events: dict[str, datetime] = reset_state["seen_events"]
+        self._mtf_momentum_reset_last_cluster_event: dict[tuple[str, Direction], datetime] = reset_state[
+            "cluster_events"
+        ]
+        self._mtf_momentum_reset_breadth_cache: tuple[float, float, int] | None = None
+        self._mtf_momentum_reset_entries_by_day: dict[date, int] = reset_state["daily_entries"]
         self.short_guard_stats: dict[str, int] = {}
         self.low_base_ignition_stats: dict[str, int] = {}
         self.stats = SessionStats(datetime.now(), config.risk.starting_capital_usdt)
@@ -401,7 +422,16 @@ class BinanceAutoTrader:
                 if vbp_candidate:
                     candidates.append(vbp_candidate)
 
-            candidates.sort(key=lambda item: item.rank_score, reverse=True)
+            if getattr(self.config.strategy, "mtf_momentum_reset_enabled", False):
+                candidates.sort(
+                    key=lambda item: (
+                        float(item.metadata.get("target_to_cost_ratio", 0.0)),
+                        item.rank_score,
+                    ),
+                    reverse=True,
+                )
+            else:
+                candidates.sort(key=lambda item: item.rank_score, reverse=True)
             deduped_candidates: list[EntryCandidate] = []
             seen_candidate_symbols: set[str] = set()
             for candidate in candidates:
@@ -838,7 +868,10 @@ class BinanceAutoTrader:
             margin = notional / max(leverage, 1)
             total_unrealized += unrealized
             initial_margin += margin
-            maintenance_margin += notional * 0.005
+            maintenance_margin += notional * max(
+                0.0,
+                float(getattr(self.config.risk, "estimated_maintenance_margin_rate", 0.005)),
+            )
             live = LivePosition(
                 symbol=sim.symbol,
                 position_side="SIM",
@@ -876,6 +909,11 @@ class BinanceAutoTrader:
         if getattr(self.config.strategy, "low_base_volume_ignition_enabled", False):
             candidate = self._low_base_volume_ignition_entry_candidate(symbol)
             if candidate is not None or getattr(self.config.strategy, "low_base_volume_ignition_disable_legacy", False):
+                return candidate
+
+        if getattr(self.config.strategy, "mtf_momentum_reset_enabled", False):
+            candidate = self._mtf_momentum_reset_entry_candidate(symbol)
+            if candidate is not None or getattr(self.config.strategy, "mtf_disable_legacy_strategies", False):
                 return candidate
 
         if getattr(self.config.strategy, "mtf_4h_rsi_regime_enabled", False):
@@ -963,6 +1001,211 @@ class BinanceAutoTrader:
             return None
         return candidate
 
+    def _mtf_momentum_reset_entry_candidate(self, symbol: str) -> EntryCandidate | None:
+        strategy_config = self.config.strategy
+        if not bool(getattr(strategy_config, "mtf_momentum_reset_enabled", False)):
+            return None
+        if not _mtf_symbol_allowed(self.config, symbol):
+            return None
+        today = datetime.now(timezone.utc).date()
+        maximum_daily = max(0, int(getattr(strategy_config, "mtf_max_daily_trades", 2)))
+        if maximum_daily and self._mtf_momentum_reset_entries_by_day.get(today, 0) >= maximum_daily:
+            return None
+
+        try:
+            candles_30m = self._closed_candles_for_timeframe(symbol, "30m", 180)
+            candles_1h = self._closed_candles_for_timeframe(symbol, "1h", 180)
+            candles_4h = self._closed_candles_for_timeframe(symbol, "4h", 180)
+            btc_1h = self._closed_candles_for_timeframe("BTCUSDT", "1h", 80)
+            btc_4h = self._closed_candles_for_timeframe("BTCUSDT", "4h", 80)
+        except Exception as exc:
+            self.log(f"{symbol}: MTF动量重置数据不可用 ({exc})")
+            return None
+        if not all((candles_30m, candles_1h, candles_4h, btc_1h, btc_4h)):
+            return None
+
+        regime = Mtf4hRsiRegimePullbackStrategy(self.config).regime(candles_4h, "4h")
+        if regime.regime != "LONG_BIAS" or not bool(getattr(strategy_config, "mtf_allow_long", True)):
+            return None
+
+        funding_rate = self._current_mtf_funding_rate(symbol)
+        if bool(getattr(strategy_config, "mtf_use_funding_filter", True)) and funding_rate is None:
+            self.log(f"{symbol}: MTF动量重置实时 funding 不可用，安全拒绝新开仓")
+            return None
+        if funding_rate is None:
+            funding_rate = float(getattr(self.config.risk, "funding_default_rate", 0.0))
+        btc_1h_return = btc_1h[-1].close / max(btc_1h[-2].close, 1e-12) - 1.0 if len(btc_1h) >= 2 else 0.0
+        btc_4h_return = btc_4h[-1].close / max(btc_4h[-2].close, 1e-12) - 1.0 if len(btc_4h) >= 2 else 0.0
+        futures_reject = Mtf4hRsiRegimePullbackStrategy(self.config)._futures_filter_reject_reason(
+            Direction.LONG,
+            None,
+            funding_rate,
+            btc_1h_return,
+            btc_4h_return,
+        )
+        if futures_reject:
+            return None
+
+        event = detect_momentum_reset_release(
+            Direction.LONG,
+            candles_1h,
+            candles_30m,
+            momentum_reset_config_from_strategy(strategy_config),
+        )
+        if event is None:
+            return None
+        available_time = event.candle.timestamp + timedelta(minutes=30)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        signal_age_minutes = (now - available_time).total_seconds() / 60.0
+        max_signal_age = max(0, int(getattr(strategy_config, "mtf_momentum_reset_max_signal_age_minutes", 6)))
+        if signal_age_minutes < 0.0 or signal_age_minutes > max_signal_age:
+            return None
+
+        event_id = mtf_momentum_reset_event_id(symbol, Direction.LONG, event.candle.timestamp)
+        cutoff = now - timedelta(hours=48)
+        self._mtf_momentum_reset_seen_events = {
+            key: timestamp
+            for key, timestamp in self._mtf_momentum_reset_seen_events.items()
+            if timestamp >= cutoff
+        }
+        if event_id in self._mtf_momentum_reset_seen_events:
+            return None
+        self._mtf_momentum_reset_seen_events[event_id] = event.candle.timestamp
+        self._persist_mtf_momentum_reset_runtime_state()
+
+        built = build_release_signal(self.config, event)
+        if built is None:
+            return None
+        signal, metadata = built
+        metadata.update(
+            {
+                "event_id": event_id,
+                "signal_available_time": available_time.isoformat(),
+                "signal_age_minutes": signal_age_minutes,
+                "4h_regime": regime.regime,
+                "4h_rsi": regime.rsi,
+                "regime_reason": regime.reason,
+                "btc_1h_return": btc_1h_return,
+                "btc_4h_return": btc_4h_return,
+                "funding_rate": funding_rate,
+            }
+        )
+        rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(signal, candles_30m[-80:])
+        minimum_rank = mtf_min_rank_score_for_direction(strategy_config, Direction.LONG)
+        if rank_score < minimum_rank:
+            return None
+        candidate = EntryCandidate(
+            symbol,
+            signal,
+            event.candle,
+            rank_score,
+            momentum_pct,
+            volume_ratio,
+            "mtf_momentum_reset_contraction_release",
+            metadata=metadata,
+        )
+        candidate = self._mtf_momentum_reset_adjust_for_execution(candidate, self._entry_execution_reference_price(candidate))
+        if candidate is None:
+            return None
+
+        cluster_key = (symbol, Direction.LONG)
+        cluster_hours = max(0, int(getattr(strategy_config, "mtf_momentum_reset_event_cluster_hours", 4)))
+        previous_cluster = self._mtf_momentum_reset_last_cluster_event.get(cluster_key)
+        if previous_cluster is not None and event.candle.timestamp - previous_cluster < timedelta(hours=cluster_hours):
+            return None
+        self._mtf_momentum_reset_last_cluster_event[cluster_key] = event.candle.timestamp
+        self._persist_mtf_momentum_reset_runtime_state()
+
+        breadth, breadth_symbols = self._mtf_momentum_reset_breadth()
+        minimum_symbols = max(1, int(getattr(strategy_config, "mtf_momentum_reset_min_breadth_symbols", 20)))
+        minimum_breadth = float(getattr(strategy_config, "mtf_momentum_reset_min_breadth_ema21", 0.55))
+        if breadth_symbols < minimum_symbols or breadth < minimum_breadth:
+            return None
+        metadata = dict(candidate.metadata)
+        metadata.update(
+            {
+                "directional_breadth_ema21": breadth,
+                "breadth_symbol_count": breadth_symbols,
+            }
+        )
+        candidate = replace(candidate, metadata=metadata)
+        self.log(
+            f"{symbol}: MTF动量重置LONG候选 rank={rank_score:.2f} "
+            f"目标/成本={float(metadata.get('target_to_cost_ratio', 0.0)):.1f}x "
+            f"广度={breadth * 100:.1f}% age={signal_age_minutes:.1f}m"
+        )
+        return candidate
+
+    def _mtf_momentum_reset_breadth(self) -> tuple[float, int]:
+        now = time.time()
+        cache_seconds = max(
+            1,
+            int(getattr(self.config.strategy, "mtf_momentum_reset_breadth_cache_seconds", 60)),
+        )
+        cached = self._mtf_momentum_reset_breadth_cache
+        if cached and now - cached[0] < cache_seconds:
+            return cached[1], cached[2]
+        above = 0
+        checked = 0
+        for breadth_symbol in self.config.trading.symbols:
+            try:
+                # Use the same history depth as the setup scan so this shared
+                # timeframe cache cannot truncate a later detector request.
+                candles = self._closed_candles_for_timeframe(breadth_symbol, "30m", 180)
+            except Exception:
+                continue
+            if len(candles) < 22:
+                continue
+            ema21 = ema([item.close for item in candles], 21)[-1]
+            checked += 1
+            if candles[-1].close > ema21:
+                above += 1
+        breadth = above / checked if checked else 0.0
+        self._mtf_momentum_reset_breadth_cache = (now, breadth, checked)
+        return breadth, checked
+
+    def _mtf_momentum_reset_adjust_for_execution(
+        self,
+        candidate: EntryCandidate,
+        raw_entry_price: float,
+    ) -> EntryCandidate | None:
+        if MTF_MOMENTUM_RESET_SETUP_TOKEN not in str(candidate.signal.reason):
+            return candidate
+        strategy = self.config.strategy
+        side = candidate.signal.direction.value
+        trigger_atr = max(float(candidate.metadata.get("trigger_atr", 0.0)), 1e-12)
+        trigger_close = max(float(candidate.metadata.get("trigger_close", 0.0)), 1e-12)
+        structural_stop = float(candidate.metadata.get("structural_stop_price", 0.0))
+        chase_atr = side * (raw_entry_price - trigger_close) / trigger_atr
+        if chase_atr > float(getattr(strategy, "mtf_max_entry_chase_atr", 999.0)):
+            return None
+        stop_distance = side * (raw_entry_price - structural_stop)
+        if stop_distance <= 0.0:
+            return None
+        stop_pct = stop_distance / max(raw_entry_price, 1e-12)
+        minimum_stop = max(0.0, float(getattr(strategy, "mtf_min_stop_pct", 0.0)))
+        maximum_stop = max(0.0, float(getattr(strategy, "mtf_max_stop_pct", 0.0)))
+        if minimum_stop > 0.0 and stop_pct < minimum_stop:
+            return None
+        if maximum_stop > 0.0 and stop_pct > maximum_stop:
+            return None
+        take_profit_r = max(0.1, float(getattr(strategy, "mtf_take_profit_r", 2.0)))
+        target_pct = stop_pct * take_profit_r
+        conservative_cost_pct = _mtf_momentum_reset_round_trip_cost_pct(self.config)
+        target_to_cost = target_pct / max(conservative_cost_pct, 1e-12)
+        if target_to_cost < float(getattr(strategy, "mtf_min_target_to_cost_ratio", 0.0)):
+            return None
+        signal = replace(candidate.signal, stop_loss_pct=stop_pct, take_profit_pct=target_pct)
+        metadata = dict(candidate.metadata)
+        metadata.update(
+            {
+                "entry_chase_atr": chase_atr,
+                "fill_stop_pct": stop_pct,
+                "target_to_cost_ratio": target_to_cost,
+            }
+        )
+        return replace(candidate, signal=signal, metadata=metadata)
+
     def _mtf_4h_rsi_regime_entry_candidate(self, symbol: str) -> EntryCandidate | None:
         strategy_config = self.config.strategy
         if not getattr(strategy_config, "mtf_4h_rsi_regime_enabled", False):
@@ -985,7 +1228,19 @@ class BinanceAutoTrader:
             return None
 
         timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
-        aux = self._mtf_aux_features().get(symbol, {})
+        use_oi_filter = bool(getattr(strategy_config, "mtf_use_oi_filter", False))
+        aux = self._mtf_aux_features().get(symbol, {}) if use_oi_filter else {}
+        funding_rate = self._current_mtf_funding_rate(symbol)
+        if bool(getattr(strategy_config, "mtf_use_funding_filter", True)) and funding_rate is None:
+            self.log(f"{symbol}: MTF实时 funding 不可用，安全拒绝新开仓")
+            return None
+        if funding_rate is None:
+            funding_rate = float(getattr(self.config.risk, "funding_default_rate", 0.0))
+        oi_change = oi_change_at(
+            aux,
+            timestamp,
+            int(getattr(strategy_config, "mtf_oi_max_age_minutes", 15)),
+        ) if use_oi_filter else None
         mtf_strategy = Mtf4hRsiRegimePullbackStrategy(self.config)
         decision = mtf_strategy.build_signal(
             symbol,
@@ -995,8 +1250,8 @@ class BinanceAutoTrader:
             candles_regime,
             btc_1h,
             btc_4h,
-            oi_change_at(aux, timestamp),
-            funding_at(aux, timestamp, float(getattr(self.config.risk, "funding_default_rate", 0.0))),
+            oi_change,
+            funding_rate,
             candles_regime=candles_regime,
             candles_trigger=candles_trigger,
             regime_timeframe=regime_timeframe,
@@ -1020,8 +1275,8 @@ class BinanceAutoTrader:
                     candles_secondary_regime,
                     btc_1h,
                     btc_4h,
-                    oi_change_at(aux, timestamp),
-                    funding_at(aux, timestamp, float(getattr(self.config.risk, "funding_default_rate", 0.0))),
+                    oi_change,
+                    funding_rate,
                     candles_regime=candles_secondary_regime,
                     candles_trigger=candles_trigger,
                     regime_timeframe="2h",
@@ -1030,6 +1285,13 @@ class BinanceAutoTrader:
         if decision.signal is None or decision.candle is None:
             return None
         rank_score, momentum_pct, volume_ratio = self._entry_rank_metrics(decision.signal, decision.rank_candles)
+        min_rank_score = mtf_min_rank_score_for_direction(strategy_config, decision.signal.direction)
+        if rank_score < min_rank_score:
+            self.log(
+                f"{symbol}: MTF {decision.signal.direction.name} rank={rank_score:.2f} "
+                f"低于门槛 {min_rank_score:.2f}，跳过"
+            )
+            return None
         candidate = EntryCandidate(symbol, decision.signal, decision.candle, rank_score, momentum_pct, volume_ratio, "mtf_4h_rsi_regime")
         self.log(
             f"{symbol}: MTF {regime_timeframe}/{trigger_timeframe} RSI候选 {decision.signal.direction.name} rank={rank_score:.2f} "
@@ -1049,6 +1311,32 @@ class BinanceAutoTrader:
         )
         self._mtf_aux_feature_cache = (now, features)
         return features
+
+    def _current_mtf_funding_rate(self, symbol: str) -> float | None:
+        now = time.time()
+        cached = self._mtf_live_funding_cache
+        if cached and now - cached[0] < 60.0:
+            return cached[1].get(symbol.upper())
+
+        try:
+            rows = self.client.premium_index()
+            rates: dict[str, float] = {}
+            for row in rows:
+                item_symbol = str(row.get("symbol", "")).upper()
+                if not item_symbol:
+                    continue
+                try:
+                    rates[item_symbol] = float(row.get("lastFundingRate"))
+                except (TypeError, ValueError):
+                    continue
+            if rates:
+                self._mtf_live_funding_cache = (now, rates)
+                return rates.get(symbol.upper())
+        except Exception as exc:
+            if now - self._mtf_live_funding_error_logged_at >= 300.0:
+                self._mtf_live_funding_error_logged_at = now
+                self.log(f"MTF实时 funding 拉取失败，期间禁止依赖 funding 的新开仓 ({type(exc).__name__}: {exc})")
+        return None
 
     def _fast_breakout_entry_candidate(self, symbol: str) -> EntryCandidate | None:
         strategy = self.config.strategy
@@ -1521,6 +1809,10 @@ class BinanceAutoTrader:
             return False
 
         execution_price = self._entry_execution_reference_price(candidate)
+        candidate = self._mtf_momentum_reset_adjust_for_execution(candidate, execution_price)
+        if candidate is None:
+            self.log("MTF动量重置成交前复核拒绝：追价、止损或目标/成本空间已失效")
+            return False
         execution_candle = replace(
             candidate.candle,
             high=max(candidate.candle.high, execution_price),
@@ -1538,7 +1830,82 @@ class BinanceAutoTrader:
             f"参考价={execution_price:.6g}"
         )
         self._enter_position(candidate.symbol, candidate.signal, execution_candle, quantity)
+        if candidate.symbol not in self._known_active_symbols:
+            return False
+        if MTF_MOMENTUM_RESET_SETUP_TOKEN in str(candidate.signal.reason):
+            entry_day = datetime.now(timezone.utc).date()
+            self._mtf_momentum_reset_entries_by_day = {
+                day: count for day, count in self._mtf_momentum_reset_entries_by_day.items() if day == entry_day
+            }
+            self._mtf_momentum_reset_entries_by_day[entry_day] = (
+                self._mtf_momentum_reset_entries_by_day.get(entry_day, 0) + 1
+            )
+            self._persist_mtf_momentum_reset_runtime_state()
         return True
+
+    def _load_mtf_momentum_reset_runtime_state(self) -> dict[str, Any]:
+        empty = {"seen_events": {}, "cluster_events": {}, "daily_entries": {}}
+        try:
+            payload = json.loads(self._mtf_momentum_reset_state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return empty
+        if not isinstance(payload, dict) or payload.get("version") != MTF_MOMENTUM_RESET_VERSION:
+            return empty
+        raw_seen = payload.get("seen_events", {})
+        raw_clusters = payload.get("cluster_events", {})
+        raw_daily = payload.get("daily_entries", {})
+        if not isinstance(raw_seen, dict) or not isinstance(raw_clusters, dict) or not isinstance(raw_daily, dict):
+            return empty
+        seen_events: dict[str, datetime] = {}
+        for event_id, raw_timestamp in raw_seen.items():
+            try:
+                seen_events[str(event_id)] = datetime.fromisoformat(str(raw_timestamp)).replace(tzinfo=None)
+            except ValueError:
+                continue
+        cluster_events: dict[tuple[str, Direction], datetime] = {}
+        for raw_key, raw_timestamp in raw_clusters.items():
+            try:
+                symbol, side = str(raw_key).split("|", 1)
+                cluster_events[(symbol.upper(), Direction[side])] = datetime.fromisoformat(
+                    str(raw_timestamp)
+                ).replace(tzinfo=None)
+            except (KeyError, ValueError):
+                continue
+        daily_entries: dict[date, int] = {}
+        for raw_day, raw_count in raw_daily.items():
+            try:
+                daily_entries[date.fromisoformat(str(raw_day))] = max(0, int(raw_count))
+            except (TypeError, ValueError):
+                continue
+        return {
+            "seen_events": seen_events,
+            "cluster_events": cluster_events,
+            "daily_entries": daily_entries,
+        }
+
+    def _persist_mtf_momentum_reset_runtime_state(self) -> None:
+        try:
+            self._mtf_momentum_reset_state_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": MTF_MOMENTUM_RESET_VERSION,
+                "seen_events": {
+                    event_id: timestamp.isoformat()
+                    for event_id, timestamp in self._mtf_momentum_reset_seen_events.items()
+                },
+                "cluster_events": {
+                    f"{symbol}|{direction.name}": timestamp.isoformat()
+                    for (symbol, direction), timestamp in self._mtf_momentum_reset_last_cluster_event.items()
+                },
+                "daily_entries": {
+                    day.isoformat(): count for day, count in self._mtf_momentum_reset_entries_by_day.items()
+                },
+            }
+            self._mtf_momentum_reset_state_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            self.log(f"保存MTF动量重置运行状态失败 ({type(exc).__name__}: {exc})")
 
     def _portfolio_control_filter_candidate(self, candidate: EntryCandidate, account: AccountSnapshot) -> EntryCandidate | None:
         control = self.config.portfolio_control
@@ -2247,6 +2614,10 @@ class BinanceAutoTrader:
 
         candle_body_pct = (candle.close - candle.open) / max(candle.open, 1e-12) * signal.direction.value
         risk_weight = signal_risk_weight(signal.confidence, signal.risk_multiplier)
+        if MTF_MOMENTUM_RESET_SETUP_TOKEN in str(signal.reason):
+            # The frozen path uses one explicit risk budget per admitted event.
+            # Preserve its rank confidence while keeping live sizing at that budget.
+            risk_weight = max(0.0, min(1.5, float(signal.risk_multiplier)))
         momentum_score = max(-1.0, min(3.0, directional_momentum / 0.04))
         volume_score = max(0.0, min(2.0, volume_ratio - 1.0))
         candle_score = max(-1.0, min(1.5, candle_body_pct / 0.01))
@@ -3012,6 +3383,26 @@ class BinanceAutoTrader:
         profit_state = self._profit_state_for(symbol, position)
         self._update_profit_state_with_candle(position, profit_state, exit_candle)
         self._persist_position_profit_state(symbol, position, profit_state)
+        if MTF_REASON_TOKEN in str(position.entry_reason):
+            managed_exit_allowed = self._managed_exit_allowed(position)
+            mtf_exit_reason = (
+                self._mtf_position_exit_reason(position, exit_candle, state=profit_state)
+                if managed_exit_allowed
+                else None
+            )
+            self._log_position_exit_diagnostics(
+                symbol,
+                position,
+                profit_state,
+                exit_mark_price,
+                profit_exit_reason=mtf_exit_reason,
+                stale_reason=None,
+                managed_exit_allowed=managed_exit_allowed,
+            )
+            if mtf_exit_reason:
+                self.log(f"{symbol}: MTF Core V3退出触发，准备平仓 ({mtf_exit_reason})")
+                self._exit_position(symbol, position, mtf_exit_reason)
+            return
         strategy = VolatilityBreakoutScalper(self.config.strategy)
         strategy.prepare(candles)
         signal = strategy.signal(len(candles) - 1, candles)
@@ -3285,7 +3676,10 @@ class BinanceAutoTrader:
         if now - last_scale_in < trading.scale_in_cooldown_seconds:
             return
 
-        profit_pct = _position_profit_pct(position, candle.close)
+        if str(getattr(trading, "scale_in_profit_basis", "gross")).lower() == "full_cost":
+            profit_pct = _estimated_executable_net_profit_pct(self.config, position, candle.close)
+        else:
+            profit_pct = _position_profit_pct(position, candle.close)
         signal_quality = max(0.25, min(1.0, signal.risk_multiplier))
         if profit_pct >= trading.scale_in_min_profit_pct:
             entry_fraction = _scale_fraction(trading.scale_in_entry_fraction, scale_count) * signal_quality
@@ -3454,27 +3848,39 @@ class BinanceAutoTrader:
                         reason = "take_profit"
 
                 if exit_price is None:
-                    self._update_sim_profit_protection(position, candle)
-                    if self._managed_exit_allowed(position):
-                        profit_reason = self._profit_exit_reason(position, candles, current_candle=candle)
-                        if profit_reason:
-                            exit_price = candle.close
-                            reason = profit_reason
+                    is_mtf = MTF_REASON_TOKEN in str(position.entry_reason)
+                    if is_mtf:
+                        if position.direction == Direction.LONG:
+                            position.best_price = max(position.best_price, candle.high)
                         else:
-                            fail_fast_reason = self._indicator_long_fail_fast_exit_reason(position, candle.close)
-                            if fail_fast_reason:
+                            position.best_price = min(position.best_price, candle.low)
+                        if self._managed_exit_allowed(position):
+                            mtf_reason = self._mtf_position_exit_reason(position, candle)
+                            if mtf_reason:
                                 exit_price = candle.close
-                                reason = fail_fast_reason
+                                reason = mtf_reason
+                    else:
+                        self._update_sim_profit_protection(position, candle)
+                        if self._managed_exit_allowed(position):
+                            profit_reason = self._profit_exit_reason(position, candles, current_candle=candle)
+                            if profit_reason:
+                                exit_price = candle.close
+                                reason = profit_reason
                             else:
-                                trend_loss_reason = self._trend_loss_exit_reason(position, candle.close)
-                                if trend_loss_reason:
+                                fail_fast_reason = self._indicator_long_fail_fast_exit_reason(position, candle.close)
+                                if fail_fast_reason:
                                     exit_price = candle.close
-                                    reason = trend_loss_reason
+                                    reason = fail_fast_reason
                                 else:
-                                    stale_reason = self._stale_position_exit_reason(position, candle.close)
-                                    if stale_reason:
+                                    trend_loss_reason = self._trend_loss_exit_reason(position, candle.close)
+                                    if trend_loss_reason:
                                         exit_price = candle.close
-                                        reason = stale_reason
+                                        reason = trend_loss_reason
+                                    else:
+                                        stale_reason = self._stale_position_exit_reason(position, candle.close)
+                                        if stale_reason:
+                                            exit_price = candle.close
+                                            reason = stale_reason
 
                 if exit_price is None and position.max_holding_bars > 0 and position.bars_held >= position.max_holding_bars:
                     exit_price = candle.close
@@ -3563,6 +3969,7 @@ class BinanceAutoTrader:
                 best_price=candle.close,
                 leverage=leverage,
                 entry_reason=signal.reason,
+                initial_stop_price=stop,
             )
             self._entry_reasons[symbol] = signal.reason
             self._position_opened_at[symbol] = opened_at
@@ -3914,18 +4321,24 @@ class BinanceAutoTrader:
                     pass
 
     def _persist_position_entry(self, symbol: str, signal: Signal, entry_price: float, opened_at: datetime) -> None:
+        initial_stop_price = entry_price * (
+            1.0 - signal.stop_loss_pct
+            if signal.direction == Direction.LONG
+            else 1.0 + signal.stop_loss_pct
+        )
         self._position_state[symbol] = {
             "entry_reason": signal.reason,
             "opened_at": opened_at.isoformat(),
             "entry_price": entry_price,
             "best_price": entry_price,
+            "initial_stop_price": initial_stop_price,
             "direction": signal.direction.name,
         }
         self._persist_position_state()
 
     def _persist_position_profit_state(self, symbol: str, position: LivePosition, state: ProfitState) -> None:
         entry_reason = position.entry_reason or self._entry_reasons.get(symbol, "")
-        if not _is_vbp_entry_reason(entry_reason):
+        if not _is_vbp_entry_reason(entry_reason) and MTF_REASON_TOKEN not in entry_reason:
             return
         data = self._position_state.setdefault(symbol, {})
         data["entry_reason"] = entry_reason or data.get("entry_reason", "")
@@ -3974,6 +4387,77 @@ class BinanceAutoTrader:
                 )
         if abs(position.stop_price - previous_stop) / max(position.entry_price, 1e-12) >= 0.00005:
             self.log(f"{position.symbol}: 盈利保护移动止损 {previous_stop:.6g} -> {position.stop_price:.6g}")
+
+    def _mtf_position_exit_reason(
+        self,
+        position: LivePosition | SimPosition,
+        candle: Candle,
+        *,
+        state: ProfitState | None = None,
+        candles_1h: list[Candle] | None = None,
+    ) -> str | None:
+        if MTF_REASON_TOKEN not in str(getattr(position, "entry_reason", "")):
+            return None
+        strategy = self.config.strategy
+
+        if bool(getattr(strategy, "mtf_exit_on_30m_confirm_lost", False)):
+            try:
+                candles_30m = self._closed_candles_for_timeframe(position.symbol, "30m", 80)
+            except Exception as exc:
+                self.log(f"{position.symbol}: MTF 30m退出确认数据不可用，本轮保留交易所保护止损 ({exc})")
+                candles_30m = []
+            if candles_30m and Mtf4hRsiRegimePullbackStrategy(
+                self.config
+            ).thirty_minute_confirm_lost(position.direction, candles_30m):
+                return "mtf_30m_confirm_lost"
+
+        if bool(getattr(strategy, "mtf_exit_on_1h_confirm_lost", True)):
+            if candles_1h is None:
+                try:
+                    candles_1h = self._closed_candles_for_timeframe(position.symbol, "1h", 80)
+                except Exception as exc:
+                    self.log(f"{position.symbol}: MTF 1h退出确认数据不可用，本轮保留交易所保护止损 ({exc})")
+                    candles_1h = []
+            if candles_1h and Mtf4hRsiRegimePullbackStrategy(self.config).one_h_confirm_lost(
+                position.direction,
+                candles_1h,
+            ):
+                return "mtf_1h_confirm_lost"
+
+        bars_held = self._position_bars_held(position)
+        bar_minutes = max(1.0, interval_to_milliseconds(self.config.trading.timeframe) / 60_000.0)
+        hold_minutes = bars_held * bar_minutes
+        state_data = self._position_state.get(position.symbol, {})
+        initial_stop = getattr(position, "initial_stop_price", None)
+        if initial_stop is None:
+            initial_stop = state_data.get("initial_stop_price")
+        if initial_stop is None and isinstance(position, SimPosition):
+            initial_stop = position.stop_price
+        initial_stop = float(initial_stop or 0.0)
+        entry_price = float(position.entry_price)
+        quantity = abs(float(position.quantity))
+        risk_cash = abs(entry_price - initial_stop) * quantity
+
+        best_price = getattr(position, "best_price", None)
+        if best_price is None and state is not None:
+            best_price = state.best_price
+        if best_price is None:
+            best_price = state_data.get("best_price", entry_price)
+        best_price = float(best_price or entry_price)
+        mfe_cash = max(0.0, position.direction.value * (best_price - entry_price)) * quantity
+
+        fail_fast_minutes = max(1, int(getattr(strategy, "mtf_fail_fast_minutes", 120)))
+        fail_fast_min_r = max(0.0, float(getattr(strategy, "mtf_fail_fast_min_r", 0.5)))
+        if hold_minutes >= fail_fast_minutes and risk_cash > 0 and mfe_cash < risk_cash * fail_fast_min_r:
+            return (
+                f"mtf_fail_fast hold={hold_minutes:.0f}m "
+                f"mfe_r={mfe_cash / risk_cash:.2f}<{fail_fast_min_r:.2f}"
+            )
+
+        max_holding_minutes = max(1, int(getattr(strategy, "mtf_max_holding_minutes", 720)))
+        if hold_minutes >= max_holding_minutes:
+            return "mtf_time_stop"
+        return None
 
     def _profit_exit_reason(
         self,
@@ -4509,12 +4993,28 @@ class BinanceAutoTrader:
         if remaining_margin <= 0:
             return "0", "margin_usage_limit"
 
+        maintenance_ratio_limit = max(
+            0.0,
+            float(getattr(self.config.risk, "max_maintenance_margin_ratio_pct", 0.0)),
+        )
+        estimated_maintenance_rate = max(
+            0.0,
+            float(getattr(self.config.risk, "estimated_maintenance_margin_rate", 0.005)),
+        )
+        remaining_maintenance_notional = float("inf")
+        if maintenance_ratio_limit > 0.0 and estimated_maintenance_rate > 0.0:
+            remaining_maintenance = account.equity * maintenance_ratio_limit - account.maintenance_margin
+            if remaining_maintenance <= 0.0:
+                return "0", "maintenance_margin_ratio_limit"
+            remaining_maintenance_notional = remaining_maintenance / estimated_maintenance_rate
+
         existing_notional = existing_position.notional if existing_position else 0.0
         risk_weight = signal_risk_weight(signal.confidence, signal.risk_multiplier)
         drawdown_multiplier = self._soft_drawdown_size_multiplier(account)
         if drawdown_multiplier <= 0:
             return "0", "soft_drawdown_stop"
-        risk_notional = account.equity * self.config.risk.risk_per_trade_pct * risk_weight * drawdown_multiplier / signal.stop_loss_pct
+        sizing_risk_pct = _full_cost_risk_pct_for_sizing(self.config, signal)
+        risk_notional = account.equity * self.config.risk.risk_per_trade_pct * risk_weight * drawdown_multiplier / sizing_risk_pct
         leverage = _effective_entry_leverage(self.config, symbol, signal)
         symbol_margin_notional = account.equity * symbol_margin_pct * leverage * drawdown_multiplier
         policy_notional_cap = self.config.risk.max_position_notional_usdt
@@ -4533,6 +5033,7 @@ class BinanceAutoTrader:
             remaining_symbol_notional,
             remaining_policy_notional,
             remaining_margin_notional,
+            remaining_maintenance_notional,
         )
         if existing_position:
             if existing_position.direction != signal.direction:
@@ -4902,6 +5403,13 @@ def _position_profit_pct(position: LivePosition, mark_price: float) -> float:
     if position.entry_price <= 0:
         return 0.0
     return _directional_profit_pct(position.direction, position.entry_price, mark_price)
+
+
+def _estimated_executable_net_profit_pct(config: LiveAppConfig, position: LivePosition, mark_price: float) -> float:
+    gross_profit_pct = _position_profit_pct(position, mark_price)
+    taker_fee = max(0.0, float(getattr(config.risk, "taker_fee_rate", 0.0)))
+    market_slippage = max(0.0, float(getattr(config.risk, "market_slippage_bps", 0.0))) / 10_000.0
+    return gross_profit_pct - 2.0 * taker_fee - 2.0 * market_slippage
 
 
 def _directional_profit_pct(direction: Direction, entry_price: float, mark_price: float) -> float:
@@ -5340,12 +5848,46 @@ def _account_margin_limit_pct(config: LiveAppConfig, signal: Signal | None = Non
             return mtf_override
         return base
     if (
-        bool(getattr(strategy, "mtf_4h_rsi_regime_enabled", False))
+        (
+            bool(getattr(strategy, "mtf_4h_rsi_regime_enabled", False))
+            or bool(getattr(strategy, "mtf_momentum_reset_enabled", False))
+        )
         and bool(getattr(strategy, "mtf_disable_legacy_strategies", False))
         and mtf_override > 0
     ):
         return mtf_override
     return base
+
+
+def _mtf_momentum_reset_round_trip_cost_pct(config: LiveAppConfig) -> float:
+    risk = config.risk
+    return (
+        2.0 * max(0.0, float(getattr(risk, "taker_fee_rate", 0.0)))
+        + (
+            max(0.0, float(getattr(risk, "market_slippage_bps", 0.0)))
+            + max(
+                max(0.0, float(getattr(risk, "stop_slippage_bps", 0.0))),
+                max(0.0, float(getattr(risk, "take_profit_slippage_bps", 0.0))),
+            )
+        )
+        / 10_000.0
+    )
+
+
+def _full_cost_risk_pct_for_sizing(config: LiveAppConfig, signal: Signal) -> float:
+    price_risk = max(float(signal.stop_loss_pct), 1e-12)
+    if MTF_MOMENTUM_RESET_SETUP_TOKEN not in str(signal.reason):
+        return price_risk
+    risk = config.risk
+    stop_cost = (
+        2.0 * max(0.0, float(getattr(risk, "taker_fee_rate", 0.0)))
+        + (
+            max(0.0, float(getattr(risk, "market_slippage_bps", 0.0)))
+            + max(0.0, float(getattr(risk, "stop_slippage_bps", 0.0)))
+        )
+        / 10_000.0
+    )
+    return price_risk + stop_cost
 
 
 def _symbol_margin_limit_pct(config: LiveAppConfig, signal: Signal) -> float:

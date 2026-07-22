@@ -28,7 +28,11 @@ def parse_timestamp(value: str) -> datetime:
     return parsed
 
 
-def load_candles_csv(path: str | Path) -> list[Candle]:
+def load_candles_csv(
+    path: str | Path,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list[Candle]:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(path)
@@ -38,17 +42,28 @@ def load_candles_csv(path: str | Path) -> list[Candle]:
         missing = [column for column in REQUIRED_COLUMNS if column not in (reader.fieldnames or [])]
         if missing:
             raise ValueError(f"missing CSV columns: {', '.join(missing)}")
-        candles = [
-            Candle(
-                timestamp=parse_timestamp(row["timestamp"]),
-                open=float(row["open"]),
-                high=float(row["high"]),
-                low=float(row["low"]),
-                close=float(row["close"]),
-                volume=float(row["volume"]),
+        start_token = start.isoformat(timespec="seconds") if start is not None else None
+        end_token = end.isoformat(timespec="seconds") if end is not None else None
+        candles = []
+        for row in reader:
+            timestamp_text = row["timestamp"]
+            # Binance research files are UTC-naive, sorted ISO-8601 timestamps.
+            # Lexical filtering avoids constructing millions of out-of-window
+            # datetime/float objects during walk-forward research.
+            if start_token is not None and timestamp_text < start_token:
+                continue
+            if end_token is not None and timestamp_text > end_token:
+                break
+            candles.append(
+                Candle(
+                    timestamp=parse_timestamp(timestamp_text),
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    volume=float(row["volume"]),
+                )
             )
-            for row in reader
-        ]
 
     candles.sort(key=lambda candle: candle.timestamp)
     for candle in candles:

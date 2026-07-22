@@ -1,0 +1,48 @@
+{
+  "research_name": "mtf_native_shadow_trigger_stage15",
+  "frozen_config": "config.mtf-htf.long-rank3p5-aggressive-3p5.json",
+  "frozen_strategy_is_modified": false,
+  "mtpc_enabled": false,
+  "portfolio_integration": false,
+  "experiment_budget": 2,
+  "trigger_config": {
+    "local_lookback": 4,
+    "frozen_structure_lookback": 3,
+    "min_confirm_body_atr": 0.15,
+    "max_confirm_body_atr": 1.8,
+    "min_directional_close_position": 0.6,
+    "min_false_break_wick_ratio": 0.2,
+    "min_volume_ratio": 0.0,
+    "max_volume_ratio": 2.0,
+    "max_distance_from_setup_ema_pct": 0.01,
+    "require_macd_improvement": true,
+    "allow_two_bar_false_break": true,
+    "allow_pivot_break": true
+  },
+  "trigger_modes": [
+    "two_bar_false_break",
+    "higher_low_break_or_lower_high_break"
+  ],
+  "hard_rules": {
+    "same_frozen_higher_timeframe_gates": true,
+    "same_direction_specific_rank_floor": true,
+    "next_1m_open_execution": true,
+    "full_cost": true,
+    "conservative_same_bar_path": true,
+    "structure_independence_window_minutes": 120,
+    "shadow_only": true
+  },
+  "periods": {
+    "train": ["2025-06-12", "2026-01-01"],
+    "validation": ["2026-01-01", "2026-04-01"],
+    "historical_test": ["2026-04-01", "2026-06-12"]
+  },
+  "acceptance": {
+    "minimum_events_per_trigger_side": 20,
+    "expectancy_r_must_be_positive": true,
+    "profit_factor_r_minimum": 1.1,
+    "must_add_independent_events": true,
+    "must_not_fail_validation_or_historical": true,
+    "portfolio_test_only_after_event_acceptance": true
+  }
+}

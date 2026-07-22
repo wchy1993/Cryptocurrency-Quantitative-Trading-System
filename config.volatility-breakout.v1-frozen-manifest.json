@@ -1,0 +1,63 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout",
+  "freeze_name": "volatility_breakout_v1_frozen",
+  "freeze_date": "2026-07-18",
+  "status": "frozen_historical_research",
+  "backtest_period": {
+    "start": "2026-03-06T00:00:00",
+    "end": "2026-06-06T00:00:00"
+  },
+  "execution_model": {
+    "full_cost": true,
+    "path_aware_1m": true,
+    "closed_signal_bars_only": true,
+    "entry_at_next_1m_open": true,
+    "same_bar_conflict": "adverse_stop_first"
+  },
+  "artifacts": {
+    "config_30": {
+      "path": "config.volatility-breakout.v1-frozen-30.json",
+      "sha256": "872d0d8eee7ff33058d4476b13f850339de06125c713882f88c4ff8a4575bc5e"
+    },
+    "config_50": {
+      "path": "config.volatility-breakout.v1-frozen-50.json",
+      "sha256": "be3fc60639a6a7acc8f45448fab56f494b6d371595589010395c04486e9b4020"
+    },
+    "report_json": {
+      "path": "reports/volatility_breakout_v1_frozen_3m_30_vs_50.json",
+      "sha256": "3a19a8a79943b9307ad12c448fa1402742897216b3f4f20667afc7a0183f7683"
+    },
+    "report_markdown": {
+      "path": "reports/volatility_breakout_v1_frozen_3m_30_vs_50.md",
+      "sha256": "c53c2f303dcdc8e4c6e1345f8c364f09e61dfbfd9afa1400b7a3a81e82fb0e9e"
+    }
+  },
+  "historical_source_hashes_at_freeze": {
+    "signal_source": {
+      "path": "crypto_scalper/volatility_breakout.py",
+      "sha256": "6400f9848a85cad1a9c6317f35e6a02c90dd0a246f1aa7ac3b92459cf6b5dd6a"
+    },
+    "optimizer_source": {
+      "path": "crypto_scalper/volatility_breakout_optimize.py",
+      "sha256": "f0f6fa44d152acddcca5075c1a0557443090edc3fd3272d10183dabaab42aaef"
+    },
+    "tests_source": {
+      "path": "tests/test_volatility_breakout.py",
+      "sha256": "fe27e8af0a0058cb491c1f3602a1f941f0eeb3fc0e764e8d02384db082628aaa"
+    }
+  },
+  "compatible_runtime_after_v2": {
+    "signal_source_sha256": "c7fc8a9accfa5bd59811ca7d0f6891754419667b67aee38e735621ac5bbe9181",
+    "optimizer_source_sha256": "d3169f1b834574dd50bb1866e7c6f4d5e1b3d92e8a43ba487d1634895e1464ac",
+    "tests_source_sha256": "90b565710694b596b0416fd1de14f6568c80168057a5b20870ab5bc61651f062",
+    "baseline_invariance_report": "reports/volatility_breakout_v2_3m_30_vs_50.json",
+    "trade_path_equal_for_30_and_50": true,
+    "net_profit_delta_tolerance": 1e-6
+  },
+  "notes": [
+    "This freeze preserves the selected 30-symbol and 50-symbol historical maxima before v2 research.",
+    "The three-month period is historical research, not an untouched holdout or live expectation.",
+    "Subsequent v2 experiments must use separate configuration, report, and cache names.",
+    "The v2 runtime adds disabled-by-default fields and reproduces both v1 portfolios exactly."
+  ]
+}

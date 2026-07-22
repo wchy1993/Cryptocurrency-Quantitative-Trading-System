@@ -60,10 +60,19 @@ python -m unittest discover -s tests
 
 ## Binance U 本位自动交易
 
-当前实盘模块默认是 `testnet + dry-run`，不会真实下单。图形界面入口：
+图形界面当前默认加载独立的 `Breakout + Dynamic Trend Grid 50币 Max2` shadow
+配置：主网公开行情、共享 200U 模拟账户、全局最多两仓、每个来源策略最多一仓，
+并强制 `dry-run + full_cost`，不会调用订单接口。旧 GUI 和单策略配置仍保留为回滚版本。
+图形界面入口：
 
 ```powershell
 python -m crypto_scalper.gui
+```
+
+也可以不启动 GUI，单独运行同一个组合 shadow：
+
+```powershell
+python -m crypto_scalper.combined_volatility_trend_grid_shadow --config config.gui.combined-volatility-trend-grid-max2-shadow.json
 ```
 
 命令行跑一轮检查：

@@ -1,0 +1,48 @@
+{
+  "strategy_name": "hybrid_v5_balanced_expansion_runner_plus_dynamic_trend_grid_v3_max2",
+  "deployment_scope": "gui_dry_run_only",
+  "frozen_version": "hybrid_v5_grid_v3_max2_shadow_20260721",
+  "active_gui_config": "config.gui.combined-hybrid-v5-grid-v3-max2-shadow.json",
+  "initial_equity_usdt": 200.0,
+  "portfolio_limits": {
+    "global_max_open_positions": 2,
+    "max_open_positions_per_strategy": 1,
+    "max_gross_notional_multiple": 9.0,
+    "allow_same_symbol_across_strategies": false,
+    "entry_priority": [
+      "volatility_breakout",
+      "dynamic_trend_following_grid"
+    ]
+  },
+  "execution_alignment": [
+    "closed_1m_only",
+    "both_source_exits_before_new_entries",
+    "adverse_stop_first_on_same_bar",
+    "full_fee_slippage_and_funding",
+    "hybrid_v5_partial_take_profit_8r_fraction_0_05",
+    "grid_v3_point_in_time_market_overlay_and_alignment_ranking"
+  ],
+  "fresh_sample": {
+    "state": "logs/combined_hybrid_v5_grid_v3_max2_20260721_shadow_state.json",
+    "events": "logs/combined_hybrid_v5_grid_v3_max2_20260721_shadow_events.jsonl",
+    "report": "reports/combined_hybrid_v5_grid_v3_max2_20260721_shadow_acceptance.json",
+    "preserves_previous_samples": true
+  },
+  "backtest_reference": "reports/combined_hybrid_v5_grid_v3_max2_3m_6m.json",
+  "hashes": {
+    "crypto_scalper/combined_hybrid_v5_grid_v3_shadow.py": "b13b5d1029a8c9e49d4679ba08f167f08bef2dab203118572b27b80f99d6f74e",
+    "crypto_scalper/combined_volatility_trend_grid_shadow.py": "46ee311630511e21ec7360638e4b6fdadc1a257c04f8896ee4a36ac858f7ac92",
+    "crypto_scalper/gui.py": "a448806741de69657c112826a294156a76a43ec212dc93a089c99b4f0cfed31b",
+    "config.gui.combined-hybrid-v5-grid-v3-max2-shadow.json": "c8a6dde446a4ed56c1bd8d091861af5611b7c0770913e6aa84b92a1704c2cd87",
+    "config.combined-hybrid-v5-grid-v3-max2.json": "467b06babd1653f8404fa35731026ca72060f0a216237620876f7a4ad3a8af76",
+    "config.volatility-breakout.hybrid-v5-balanced-expansion-runner-50.json": "b55f72e09371fb938225cbf5bf9c21c683445c9fceddf07d2a1c641c61a77c8d",
+    "config.trend-grid.v3-optimized-50.json": "f9ba5ce6a7e2504acf0985a8bfda9956ff1e16d71dd35155d0a7e42565e97038",
+    "tests/test_combined_hybrid_v5_grid_v3_shadow.py": "dcfe994562f3f9d8bdaed08dfdd3927ee97cbceb6d6441ee092f65d7a7a1d7a9"
+  },
+  "preserved": {
+    "standalone_hybrid_v5_source": "unchanged",
+    "standalone_grid_v3_source": "unchanged",
+    "apt_grid": "unchanged",
+    "previous_dry_run_samples": "unchanged"
+  }
+}

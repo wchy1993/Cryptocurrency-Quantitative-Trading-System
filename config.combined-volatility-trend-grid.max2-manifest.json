@@ -1,0 +1,17 @@
+{
+  "strategy_name": "volatility_breakout_v2_balanced_plus_dynamic_trend_grid_v2",
+  "status": "historical_research_frozen_separately_from_source_strategies",
+  "source_strategies_modified": false,
+  "report": "reports/combined_volatility_trend_grid_max2_3m.json",
+  "summary": "reports/combined_volatility_trend_grid_max2_3m.md",
+  "hashes": {
+    "config.combined-volatility-trend-grid.max2.json": "181b4b5b92dfddb8b14f844deee8473cdc271bf41d3a1469afee366b03090d40",
+    "reports/combined_volatility_trend_grid_max2_3m.json": "3299a5c55614582ad9bfbef2a0d272e2eb426171eb6d55f2bed57aacc4411a11",
+    "reports/combined_volatility_trend_grid_max2_3m.md": "54864b46fd6d07d2aa4d61527842cbeb6c95c0543a44ea8543e69eb601ba1412",
+    "config.volatility-breakout.v2-optimized-50.json": "56d50ee9edc00b4b6601a525a426df818bdcbc54956938342e05fe0d8771ca1e",
+    "config.volatility-breakout.v2-balanced-50-shadow.json": "9573a12eed840b9c0135ad457223f254b8c0d5ff818f3fa419d3cf3a07446bc9",
+    "config.trend-grid.v2-optimized-50.json": "c45b4ab37ee7535a9feec162478a80990c55b7f57491b319b335a1a1ae5888ce",
+    "crypto_scalper/combined_volatility_trend_grid_backtest.py": "faf5563c5310f1d0cb2335eba01a15c9dedbd858a97d995257e32afd24ac2402",
+    "tests/test_combined_volatility_trend_grid_backtest.py": "312955071c93fb7de800ff81194742c47cfce4dde270fa25fdcaf00b6bed1c9b"
+  }
+}

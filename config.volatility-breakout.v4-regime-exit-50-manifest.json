@@ -1,0 +1,20 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v4_regime_entry_exit",
+  "status": "independent_historical_research_grid_and_gui_preserved",
+  "report": "reports/volatility_breakout_v4_regime_exit_3m.json",
+  "summary": "reports/volatility_breakout_v4_regime_exit_3m.md",
+  "trades": "reports/volatility_breakout_v4_regime_exit_3m_trades.csv",
+  "config": "config.volatility-breakout.v4-regime-exit-50.json",
+  "grid_modified": false,
+  "gui_modified": false,
+  "hashes": {
+    "reports/volatility_breakout_v4_regime_exit_3m.json": "c71490ed306d8abeab1d3fe3243dfeceb48a0507cf6e7ee6090e707eeaed4111",
+    "reports/volatility_breakout_v4_regime_exit_3m.md": "030d70446274b5c7c8ba026cd20f9ae376eb648be4cef5132a5f842a61bd167e",
+    "reports/volatility_breakout_v4_regime_exit_3m_trades.csv": "4aa5ce29531248685676893e267f7caff3af056dea26f1c31524a112edcd031e",
+    "config.volatility-breakout.v4-regime-exit-50.json": "2082b4724af7dcefcbbd8cad409af7846f01060b35fb385e7265d9313269e0e1",
+    "crypto_scalper/volatility_breakout_v4_research.py": "b2f4c7ebf7aae690215fe096d82763b203197aae6912174e8dfedcfd9ff34980",
+    "crypto_scalper/combined_volatility_trend_grid_v4_backtest.py": "d12e69efa0af14c1ca984de4ffb43a3635cc38dc75ff19e7fd262e57510a0f85",
+    "config.trend-grid.v2-optimized-50.json": "c45b4ab37ee7535a9feec162478a80990c55b7f57491b319b335a1a1ae5888ce",
+    "config.volatility-breakout.v2-optimized-50.json": "56d50ee9edc00b4b6601a525a426df818bdcbc54956938342e05fe0d8771ca1e"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "base_config": "config.mtf-htf.optimized-structure-only-v3.json",
+  "experiment_budget": 2,
+  "selection_source": "2026-01-01/2026-04-01 validation only",
+  "evaluation_period": "2025-06-12/2026-06-06 historical research",
+  "historical_test_is_not_untouched": true,
+  "final_acceptance_requires_post_freeze_shadow": true,
+  "experiments": [
+    {
+      "name": "core_v3_no_oi",
+      "strategy": {
+        "mtf_use_oi_filter": false,
+        "mtf_oi_max_age_minutes": 15
+      }
+    },
+    {
+      "name": "derivatives_oi_strict_0pct",
+      "strategy": {
+        "mtf_use_oi_filter": true,
+        "mtf_oi_30m_max_increase_pct": 0.0,
+        "mtf_oi_max_age_minutes": 15,
+        "mtf_oi_data_dir": "data/binance_derivatives_metrics_5m"
+      }
+    }
+  ]
+}

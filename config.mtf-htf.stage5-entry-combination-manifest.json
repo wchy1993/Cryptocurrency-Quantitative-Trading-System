@@ -1,0 +1,33 @@
+{
+  "base_config": "config.mtf-htf.no-generic-profit-exit.json",
+  "experiment_budget": 3,
+  "selection_data": [
+    "2025-06-12/2026-01-01 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "experiments": [
+    {
+      "name": "entry_funding_volume",
+      "strategy": {
+        "mtf_short_min_funding_rate": 0.0,
+        "mtf_trigger_max_volume_ratio": 2.0
+      }
+    },
+    {
+      "name": "entry_funding_stop150",
+      "strategy": {
+        "mtf_short_min_funding_rate": 0.0,
+        "mtf_max_stop_pct": 0.015
+      }
+    },
+    {
+      "name": "entry_funding_volume_stop150",
+      "strategy": {
+        "mtf_short_min_funding_rate": 0.0,
+        "mtf_trigger_max_volume_ratio": 2.0,
+        "mtf_max_stop_pct": 0.015
+      }
+    }
+  ]
+}

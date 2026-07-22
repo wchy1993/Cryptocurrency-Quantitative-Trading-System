@@ -1,0 +1,97 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-b.json",
+  "experiment_budget": 2,
+  "research_name": "mtf_core_v3_rank3p5_dynamic_liquidity_universe_stage10",
+  "selection_data": [
+    "2025-06-12/2025-12-31 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "frozen_reference": "config.mtf-htf.long-rank3p5-frozen-20260717-manifest.json",
+  "experiments": [
+    {
+      "name": "dynamic_top30_from_60",
+      "strategy": {
+        "mtf_symbols_mode": "configured"
+      },
+      "trading": {
+        "symbols": [
+          "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT",
+          "TRXUSDT", "DOGEUSDT", "XLMUSDT", "ADAUSDT", "XMRUSDT",
+          "LINKUSDT", "BCHUSDT", "HBARUSDT", "LTCUSDT", "AVAXUSDT",
+          "SUIUSDT", "1000SHIBUSDT", "NEARUSDT", "TAOUSDT", "WLDUSDT",
+          "DOTUSDT", "UNIUSDT", "ICPUSDT", "1000PEPEUSDT", "ETCUSDT",
+          "AAVEUSDT", "ENAUSDT", "ATOMUSDT", "ALGOUSDT", "POLUSDT",
+          "HYPEUSDT", "ZECUSDT", "TONUSDT", "ONDOUSDT", "FILUSDT",
+          "PENGUUSDT", "INJUSDT", "DASHUSDT", "ARBUSDT", "APEUSDT",
+          "APTUSDT", "WIFUSDT", "VIRTUALUSDT", "RENDERUSDT", "CRVUSDT",
+          "JTOUSDT", "OPUSDT", "CHZUSDT", "1000BONKUSDT", "1000LUNCUSDT",
+          "TIAUSDT", "AXSUSDT", "GALAUSDT", "SEIUSDT", "PENDLEUSDT",
+          "LDOUSDT", "TRUMPUSDT", "FETUSDT", "CAKEUSDT", "JUPUSDT"
+        ],
+        "entry_symbols": [
+          "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT",
+          "TRXUSDT", "DOGEUSDT", "XLMUSDT", "ADAUSDT", "XMRUSDT",
+          "LINKUSDT", "BCHUSDT", "HBARUSDT", "LTCUSDT", "AVAXUSDT",
+          "SUIUSDT", "1000SHIBUSDT", "NEARUSDT", "TAOUSDT", "WLDUSDT",
+          "DOTUSDT", "UNIUSDT", "ICPUSDT", "1000PEPEUSDT", "ETCUSDT",
+          "AAVEUSDT", "ENAUSDT", "ATOMUSDT", "ALGOUSDT", "POLUSDT",
+          "HYPEUSDT", "ZECUSDT", "TONUSDT", "ONDOUSDT", "FILUSDT",
+          "PENGUUSDT", "INJUSDT", "DASHUSDT", "ARBUSDT", "APEUSDT",
+          "APTUSDT", "WIFUSDT", "VIRTUALUSDT", "RENDERUSDT", "CRVUSDT",
+          "JTOUSDT", "OPUSDT", "CHZUSDT", "1000BONKUSDT", "1000LUNCUSDT",
+          "TIAUSDT", "AXSUSDT", "GALAUSDT", "SEIUSDT", "PENDLEUSDT",
+          "LDOUSDT", "TRUMPUSDT", "FETUSDT", "CAKEUSDT", "JUPUSDT"
+        ]
+      },
+      "risk": {
+        "point_in_time_universe_enabled": true,
+        "point_in_time_universe_top_n": 30,
+        "universe_lookback_days": 1,
+        "new_symbol_warmup_days": 20
+      }
+    },
+    {
+      "name": "dynamic_top40_from_60",
+      "strategy": {
+        "mtf_symbols_mode": "configured"
+      },
+      "trading": {
+        "symbols": [
+          "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT",
+          "TRXUSDT", "DOGEUSDT", "XLMUSDT", "ADAUSDT", "XMRUSDT",
+          "LINKUSDT", "BCHUSDT", "HBARUSDT", "LTCUSDT", "AVAXUSDT",
+          "SUIUSDT", "1000SHIBUSDT", "NEARUSDT", "TAOUSDT", "WLDUSDT",
+          "DOTUSDT", "UNIUSDT", "ICPUSDT", "1000PEPEUSDT", "ETCUSDT",
+          "AAVEUSDT", "ENAUSDT", "ATOMUSDT", "ALGOUSDT", "POLUSDT",
+          "HYPEUSDT", "ZECUSDT", "TONUSDT", "ONDOUSDT", "FILUSDT",
+          "PENGUUSDT", "INJUSDT", "DASHUSDT", "ARBUSDT", "APEUSDT",
+          "APTUSDT", "WIFUSDT", "VIRTUALUSDT", "RENDERUSDT", "CRVUSDT",
+          "JTOUSDT", "OPUSDT", "CHZUSDT", "1000BONKUSDT", "1000LUNCUSDT",
+          "TIAUSDT", "AXSUSDT", "GALAUSDT", "SEIUSDT", "PENDLEUSDT",
+          "LDOUSDT", "TRUMPUSDT", "FETUSDT", "CAKEUSDT", "JUPUSDT"
+        ],
+        "entry_symbols": [
+          "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT",
+          "TRXUSDT", "DOGEUSDT", "XLMUSDT", "ADAUSDT", "XMRUSDT",
+          "LINKUSDT", "BCHUSDT", "HBARUSDT", "LTCUSDT", "AVAXUSDT",
+          "SUIUSDT", "1000SHIBUSDT", "NEARUSDT", "TAOUSDT", "WLDUSDT",
+          "DOTUSDT", "UNIUSDT", "ICPUSDT", "1000PEPEUSDT", "ETCUSDT",
+          "AAVEUSDT", "ENAUSDT", "ATOMUSDT", "ALGOUSDT", "POLUSDT",
+          "HYPEUSDT", "ZECUSDT", "TONUSDT", "ONDOUSDT", "FILUSDT",
+          "PENGUUSDT", "INJUSDT", "DASHUSDT", "ARBUSDT", "APEUSDT",
+          "APTUSDT", "WIFUSDT", "VIRTUALUSDT", "RENDERUSDT", "CRVUSDT",
+          "JTOUSDT", "OPUSDT", "CHZUSDT", "1000BONKUSDT", "1000LUNCUSDT",
+          "TIAUSDT", "AXSUSDT", "GALAUSDT", "SEIUSDT", "PENDLEUSDT",
+          "LDOUSDT", "TRUMPUSDT", "FETUSDT", "CAKEUSDT", "JUPUSDT"
+        ]
+      },
+      "risk": {
+        "point_in_time_universe_enabled": true,
+        "point_in_time_universe_top_n": 40,
+        "universe_lookback_days": 1,
+        "new_symbol_warmup_days": 20
+      }
+    }
+  ]
+}

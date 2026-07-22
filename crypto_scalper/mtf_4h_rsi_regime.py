@@ -7,11 +7,13 @@ import json
 import math
 import statistics
 from dataclasses import dataclass
+from dataclasses import field
 from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from typing import Callable
 
 from .data import interval_to_milliseconds
 from .indicators import atr
@@ -29,11 +31,19 @@ MTF_LONG_REASON = "long_mtf_4h_rsi_regime_pullback"
 MTF_SHORT_REASON = "short_mtf_4h_rsi_regime_pullback"
 
 
+def mtf_min_rank_score_for_direction(strategy: Any, direction: Direction) -> float:
+    global_floor = float(getattr(strategy, "mtf_min_rank_score", -999.0))
+    field = "mtf_long_min_rank_score" if direction is Direction.LONG else "mtf_short_min_rank_score"
+    return max(global_floor, float(getattr(strategy, field, -999.0)))
+
+
 @dataclass(frozen=True)
 class MtfRegimeResult:
     regime: str
     rsi: float
     reason: str = ""
+    ema_slope_atr: float = 0.0
+    ema_spread_atr: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -55,6 +65,9 @@ class MtfTriggerResult:
     candle: Candle
     atr15m: float
     volume_ratio: float = 1.0
+    body_atr: float = 0.0
+    close_position: float = 0.5
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -111,6 +124,47 @@ class Mtf4hRsiRegimePullbackStrategy:
         current_rsi = rsi_values[-1]
         previous_rsi = rsi_values[-2]
         recent_rsi = rsi_values[-lookback:]
+        regime_mode = str(getattr(strategy, "mtf_regime_mode", "rsi_reversal")).strip().lower()
+        if regime_mode == "trend_pullback":
+            atr_value = max(atr(candles, 14)[-1], 1e-12)
+            slope_lookback = max(1, int(getattr(strategy, "mtf_trend_slope_lookback_bars", 3)))
+            slope_start = max(0, index - slope_lookback)
+            ema_slope_atr = (ema_mid_values[index] - ema_mid_values[slope_start]) / atr_value
+            ema_spread_atr = (ema_fast_values[index] - ema_mid_values[index]) / atr_value
+            trend_distance = abs(current.close - ema_mid_values[index]) / max(current.close, 1e-12)
+            if trend_distance > max(0.0, float(getattr(strategy, "mtf_trend_max_distance_from_ema21_pct", 0.08))):
+                return MtfRegimeResult(
+                    "NO_TRADE",
+                    current_rsi,
+                    f"{label}_trend_far_from_ema21",
+                    ema_slope_atr,
+                    ema_spread_atr,
+                )
+            require_trend_macd = bool(getattr(strategy, "mtf_trend_require_macd_support", True))
+            long_macd = hist[index] > 0 or hist[index] > hist[index - 1]
+            short_macd = hist[index] < 0 or hist[index] < hist[index - 1]
+            long_bias = (
+                bool(getattr(strategy, "mtf_allow_long", True))
+                and current.close > ema_mid_values[index]
+                and ema_fast_values[index] > ema_mid_values[index]
+                and ema_slope_atr >= float(getattr(strategy, "mtf_trend_long_min_ema_slope_atr", 0.05))
+                and float(getattr(strategy, "mtf_trend_long_rsi_min", 48.0)) <= current_rsi <= float(getattr(strategy, "mtf_trend_long_rsi_max", 72.0))
+                and (not require_trend_macd or long_macd)
+            )
+            if long_bias:
+                return MtfRegimeResult("LONG_BIAS", current_rsi, f"{label}_trend_up", ema_slope_atr, ema_spread_atr)
+            short_bias = (
+                bool(getattr(strategy, "mtf_allow_short", True))
+                and current.close < ema_mid_values[index]
+                and ema_fast_values[index] < ema_mid_values[index]
+                and ema_slope_atr <= float(getattr(strategy, "mtf_trend_short_max_ema_slope_atr", -0.08))
+                and float(getattr(strategy, "mtf_trend_short_rsi_min", 28.0)) <= current_rsi <= float(getattr(strategy, "mtf_trend_short_rsi_max", 52.0))
+                and (not require_trend_macd or short_macd)
+            )
+            if short_bias:
+                return MtfRegimeResult("SHORT_BIAS", current_rsi, f"{label}_trend_down", ema_slope_atr, ema_spread_atr)
+            return MtfRegimeResult("NO_TRADE", current_rsi, f"{label}_no_trend", ema_slope_atr, ema_spread_atr)
+
         distance = abs(current.close - ema_mid_values[-1]) / max(current.close, 1e-12)
         max_distance = max(0.0, float(_tf_get(strategy, prefix, "max_distance_from_ema21_pct", getattr(strategy, "mtf_4h_max_distance_from_ema21_pct", 0.035))))
         if distance > max_distance:
@@ -251,7 +305,7 @@ class Mtf4hRsiRegimePullbackStrategy:
         strategy = self.strategy
         timeframe = _normal_timeframe(timeframe or getattr(strategy, "mtf_trigger_timeframe", "15m"), "15m")
         mode = str(getattr(strategy, "mtf_15m_trigger_mode", "both")).lower()
-        if mode not in {"sweep", "structure_break", "both"}:
+        if mode not in {"sweep", "structure_break", "both", "ema_reclaim", "structure_or_reclaim"}:
             mode = "both"
         lookback = max(2, int(getattr(strategy, "mtf_15m_structure_break_lookback", 3)))
         minimum = max(lookback + 3, 24)
@@ -266,6 +320,9 @@ class Mtf4hRsiRegimePullbackStrategy:
         if body_atr > float(getattr(strategy, "mtf_15m_max_body_atr", 1.8)):
             return None, f"{timeframe}_body_too_large"
         volume_ratio = _latest_volume_ratio(candles, max(1, int(getattr(strategy, "mtf_trigger_volume_period", 20))))
+        max_volume_ratio = max(0.0, float(getattr(strategy, "mtf_trigger_max_volume_ratio", 999.0)))
+        if max_volume_ratio > 0 and volume_ratio > max_volume_ratio:
+            return None, f"{timeframe}_volume_too_high"
         if bool(getattr(strategy, "mtf_trigger_volume_filter_enabled", False)):
             min_volume_ratio = max(0.0, float(getattr(strategy, "mtf_trigger_min_volume_ratio", 1.20)))
             if volume_ratio < min_volume_ratio:
@@ -276,6 +333,12 @@ class Mtf4hRsiRegimePullbackStrategy:
 
         candle_range = max(latest.high - latest.low, 1e-12)
         close_position = (latest.close - latest.low) / candle_range
+        reclaim_period = max(2, int(getattr(strategy, "mtf_reclaim_ema_period", 9)))
+        reclaim_ema = ema(closes, reclaim_period)
+        _, _, histogram = macd(closes)
+        reclaim_min_body = max(0.0, float(getattr(strategy, "mtf_reclaim_min_body_atr", 0.25)))
+        reclaim_min_volume = max(0.0, float(getattr(strategy, "mtf_reclaim_min_volume_ratio", 0.80)))
+        require_reclaim_macd = bool(getattr(strategy, "mtf_reclaim_require_macd_improvement", True))
         if direction == Direction.LONG:
             sweep_ref = min(setup.support, setup.ema21)
             sweep = (
@@ -287,11 +350,26 @@ class Mtf4hRsiRegimePullbackStrategy:
             structure = (
                 latest.low >= min(item.low for item in previous)
                 and latest.close > max(item.high for item in previous)
+                and body_atr >= max(0.0, float(getattr(strategy, "mtf_structure_min_body_atr", 0.0)))
+                and close_position >= float(getattr(strategy, "mtf_structure_min_close_position_long", 0.0))
+            )
+            reclaim = (
+                bool(getattr(strategy, "mtf_reclaim_allow_long", True))
+                and candles[-2].close <= reclaim_ema[-2]
+                and latest.close > reclaim_ema[-1]
+                and latest.close > latest.open
+                and latest.low >= setup.support
+                and body_atr >= reclaim_min_body
+                and close_position >= float(getattr(strategy, "mtf_reclaim_min_close_position_long", 0.65))
+                and volume_ratio >= reclaim_min_volume
+                and (not require_reclaim_macd or histogram[-1] > histogram[-2])
             )
             if mode in {"sweep", "both"} and sweep:
-                return MtfTriggerResult(direction, "sweep", latest, atr15, volume_ratio), f"{timeframe}_long_sweep"
-            if mode in {"structure_break", "both"} and structure:
-                return MtfTriggerResult(direction, "structure_break", latest, atr15, volume_ratio), f"{timeframe}_long_structure_break"
+                return MtfTriggerResult(direction, "sweep", latest, atr15, volume_ratio, body_atr, close_position), f"{timeframe}_long_sweep"
+            if mode in {"structure_break", "both", "structure_or_reclaim"} and structure:
+                return MtfTriggerResult(direction, "structure_break", latest, atr15, volume_ratio, body_atr, close_position), f"{timeframe}_long_structure_break"
+            if mode in {"ema_reclaim", "structure_or_reclaim"} and reclaim:
+                return MtfTriggerResult(direction, "ema_reclaim", latest, atr15, volume_ratio, body_atr, close_position), f"{timeframe}_long_ema_reclaim"
 
         if direction == Direction.SHORT:
             sweep_ref = max(setup.resistance, setup.ema21)
@@ -304,11 +382,26 @@ class Mtf4hRsiRegimePullbackStrategy:
             structure = (
                 latest.high <= max(item.high for item in previous)
                 and latest.close < min(item.low for item in previous)
+                and body_atr >= max(0.0, float(getattr(strategy, "mtf_structure_min_body_atr", 0.0)))
+                and close_position <= float(getattr(strategy, "mtf_structure_max_close_position_short", 1.0))
+            )
+            reclaim = (
+                bool(getattr(strategy, "mtf_reclaim_allow_short", True))
+                and candles[-2].close >= reclaim_ema[-2]
+                and latest.close < reclaim_ema[-1]
+                and latest.close < latest.open
+                and latest.high <= setup.resistance
+                and body_atr >= reclaim_min_body
+                and close_position <= float(getattr(strategy, "mtf_reclaim_max_close_position_short", 0.35))
+                and volume_ratio >= reclaim_min_volume
+                and (not require_reclaim_macd or histogram[-1] < histogram[-2])
             )
             if mode in {"sweep", "both"} and sweep:
-                return MtfTriggerResult(direction, "sweep", latest, atr15, volume_ratio), f"{timeframe}_short_sweep"
-            if mode in {"structure_break", "both"} and structure:
-                return MtfTriggerResult(direction, "structure_break", latest, atr15, volume_ratio), f"{timeframe}_short_structure_break"
+                return MtfTriggerResult(direction, "sweep", latest, atr15, volume_ratio, body_atr, close_position), f"{timeframe}_short_sweep"
+            if mode in {"structure_break", "both", "structure_or_reclaim"} and structure:
+                return MtfTriggerResult(direction, "structure_break", latest, atr15, volume_ratio, body_atr, close_position), f"{timeframe}_short_structure_break"
+            if mode in {"ema_reclaim", "structure_or_reclaim"} and reclaim:
+                return MtfTriggerResult(direction, "ema_reclaim", latest, atr15, volume_ratio, body_atr, close_position), f"{timeframe}_short_ema_reclaim"
         return None, f"{timeframe}_no_trigger"
 
     def build_signal(
@@ -326,6 +419,10 @@ class Mtf4hRsiRegimePullbackStrategy:
         candles_trigger: list[Candle] | None = None,
         regime_timeframe: str | None = None,
         trigger_timeframe: str | None = None,
+        trigger_detector: Callable[
+            [Direction, list[Candle], MtfSetupResult, str],
+            tuple[MtfTriggerResult | None, str],
+        ] | None = None,
     ) -> MtfSignalDecision:
         regime_timeframe = _normal_timeframe(regime_timeframe or getattr(self.strategy, "mtf_regime_timeframe", "4h"), "4h")
         trigger_timeframe = _normal_timeframe(trigger_timeframe or getattr(self.strategy, "mtf_trigger_timeframe", "15m"), "15m")
@@ -342,6 +439,9 @@ class Mtf4hRsiRegimePullbackStrategy:
         regime = self.regime(regime_candles, regime_timeframe)
         metadata["4h_regime"] = regime.regime
         metadata["4h_rsi"] = regime.rsi
+        metadata["regime_reason"] = regime.reason
+        metadata["regime_ema_slope_atr"] = regime.ema_slope_atr
+        metadata["regime_ema_spread_atr"] = regime.ema_spread_atr
         if regime.regime == "LONG_BIAS":
             direction = Direction.LONG
         elif regime.regime == "SHORT_BIAS":
@@ -372,7 +472,10 @@ class Mtf4hRsiRegimePullbackStrategy:
         if setup is None:
             return MtfSignalDecision(None, None, trigger_candles[-30:] if trigger_candles else [], metadata, setup_reason)
 
-        trigger, trigger_reason = self.trigger_timeframe(direction, trigger_candles, setup, trigger_timeframe)
+        if trigger_detector is None:
+            trigger, trigger_reason = self.trigger_timeframe(direction, trigger_candles, setup, trigger_timeframe)
+        else:
+            trigger, trigger_reason = trigger_detector(direction, trigger_candles, setup, trigger_timeframe)
         if trigger is None:
             return MtfSignalDecision(None, None, trigger_candles[-30:] if trigger_candles else [], metadata, trigger_reason)
 
@@ -389,6 +492,9 @@ class Mtf4hRsiRegimePullbackStrategy:
         max_stop = max(0.0, float(getattr(self.strategy, "mtf_max_stop_pct", 0.020)))
         if stop_loss_pct <= 0:
             return MtfSignalDecision(None, None, trigger_candles[-30:], metadata, "mtf_bad_stop")
+        min_stop = max(0.0, float(getattr(self.strategy, "mtf_min_stop_pct", 0.0)))
+        if min_stop > 0 and stop_loss_pct < min_stop:
+            return MtfSignalDecision(None, None, trigger_candles[-30:], metadata, "mtf_stop_too_tight")
         if max_stop > 0 and stop_loss_pct > max_stop:
             return MtfSignalDecision(None, None, trigger_candles[-30:], metadata, "mtf_stop_too_wide")
 
@@ -405,6 +511,7 @@ class Mtf4hRsiRegimePullbackStrategy:
             regime_timeframe,
             trigger_timeframe,
             trigger.volume_ratio,
+            str(getattr(self.strategy, "mtf_regime_mode", "rsi_reversal")),
         )
         signal = Signal(
             direction,
@@ -417,8 +524,15 @@ class Mtf4hRsiRegimePullbackStrategy:
         )
         metadata["trigger_mode"] = trigger.mode
         metadata["trigger_volume_ratio"] = trigger.volume_ratio
+        metadata["trigger_body_atr"] = trigger.body_atr
+        metadata["trigger_close_position"] = trigger.close_position
+        metadata["trigger_atr"] = trigger.atr15m
+        metadata["trigger_close"] = trigger.candle.close
+        metadata.update(trigger.metadata)
+        metadata["structural_stop_price"] = stop_price
         metadata["stop_loss_pct"] = stop_loss_pct
         metadata["take_profit_pct"] = take_profit_pct
+        metadata["take_profit_r"] = max(0.1, float(getattr(self.strategy, "mtf_take_profit_r", 2.0)))
         metadata["4h_rsi_bucket"] = _rsi_bucket(regime.rsi)
         metadata["funding_bucket"] = _funding_bucket(funding_rate)
         metadata["oi_change_bucket"] = _oi_bucket(oi_chg_30m)
@@ -435,6 +549,39 @@ class Mtf4hRsiRegimePullbackStrategy:
         if direction == Direction.SHORT:
             return closes[-1] > ema_values[-1]
         return False
+
+    def thirty_minute_confirm_lost(self, direction: Direction, candles_30m: list[Candle]) -> bool:
+        period = max(2, int(getattr(self.strategy, "mtf_30m_ema_period", 21)))
+        confirm_bars = max(1, int(getattr(self.strategy, "mtf_30m_exit_confirm_bars", 2)))
+        if len(candles_30m) < period + confirm_bars + 1:
+            return False
+        closes = [item.close for item in candles_30m]
+        ema_values = ema(closes, period)
+        if direction == Direction.LONG:
+            structure_lost = all(
+                closes[index] < ema_values[index]
+                for index in range(-confirm_bars, 0)
+            )
+        elif direction == Direction.SHORT:
+            structure_lost = all(
+                closes[index] > ema_values[index]
+                for index in range(-confirm_bars, 0)
+            )
+        else:
+            return False
+        if not structure_lost:
+            return False
+        if not bool(getattr(self.strategy, "mtf_30m_exit_require_macd_adverse", True)):
+            return True
+        _, _, histogram = macd(
+            closes,
+            self.config.filters.macd_fast,
+            self.config.filters.macd_slow,
+            self.config.filters.macd_signal,
+        )
+        if direction == Direction.LONG:
+            return histogram[-1] < 0.0 and histogram[-1] <= histogram[-2]
+        return histogram[-1] > 0.0 and histogram[-1] >= histogram[-2]
 
     def _futures_filter_reject_reason(
         self,
@@ -453,6 +600,8 @@ class Mtf4hRsiRegimePullbackStrategy:
                     return "mtf_rejected_funding"
             if btc_1h_return <= float(getattr(strategy, "mtf_btc_1h_long_min_return_pct", -0.006)):
                 return "mtf_rejected_btc"
+            if btc_4h_return < float(getattr(strategy, "mtf_btc_4h_long_min_return_pct", -1.0)):
+                return "mtf_rejected_btc_4h_long_regime"
             if bool(getattr(strategy, "mtf_btc_4h_block_strong_opposite", True)) and btc_4h_return <= -0.012:
                 return "mtf_rejected_btc"
         elif direction == Direction.SHORT:
@@ -492,18 +641,20 @@ def available_candle_end(timestamps: list[datetime], decision_time: datetime, ti
 
 
 def build_oi_features(rows: list[dict[str, str]]) -> list[OiFeature]:
-    points: list[tuple[datetime, float]] = []
+    points_by_timestamp: dict[datetime, float] = {}
     for row in rows:
         timestamp = _parse_dt(row.get("timestamp") or row.get("time") or "")
         if timestamp is None:
             continue
         try:
-            value = float(row.get("sumOpenInterestValue", "0") or 0)
+            value = float(row.get("sumOpenInterest", row.get("sum_open_interest", "0")) or 0)
+            if value <= 0:
+                value = float(row.get("sumOpenInterestValue", row.get("sum_open_interest_value", "0")) or 0)
         except ValueError:
             continue
         if value > 0:
-            points.append((timestamp, value))
-    points.sort(key=lambda item: item[0])
+            points_by_timestamp[timestamp] = value
+    points = sorted(points_by_timestamp.items())
     output: list[OiFeature] = []
     for index, (timestamp, value) in enumerate(points):
         oi_chg_30m = None
@@ -514,7 +665,7 @@ def build_oi_features(rows: list[dict[str, str]]) -> list[OiFeature]:
 
 
 def build_funding_features(rows: list[dict[str, str]]) -> list[FundingFeature]:
-    output = []
+    output_by_timestamp: dict[datetime, FundingFeature] = {}
     for row in rows:
         timestamp = _parse_dt(row.get("timestamp") or row.get("fundingTime") or "")
         if timestamp is None:
@@ -523,9 +674,8 @@ def build_funding_features(rows: list[dict[str, str]]) -> list[FundingFeature]:
             rate = float(row.get("funding_rate", row.get("fundingRate", "0")) or 0)
         except ValueError:
             rate = 0.0
-        output.append(FundingFeature(timestamp, rate))
-    output.sort(key=lambda item: item.timestamp)
-    return output
+        output_by_timestamp[timestamp] = FundingFeature(timestamp, rate)
+    return [output_by_timestamp[timestamp] for timestamp in sorted(output_by_timestamp)]
 
 
 def load_auxiliary_features(symbols: tuple[str, ...], oi_data_dir: str, funding_data_dir: str) -> dict[str, dict[str, Any]]:
@@ -542,7 +692,11 @@ def load_auxiliary_features(symbols: tuple[str, ...], oi_data_dir: str, funding_
     return output
 
 
-def oi_change_at(features: dict[str, Any] | None, timestamp: datetime) -> float | None:
+def oi_change_at(
+    features: dict[str, Any] | None,
+    timestamp: datetime,
+    max_age_minutes: int = 15,
+) -> float | None:
     if not features:
         return None
     items: list[OiFeature] = features.get("oi", [])
@@ -550,7 +704,10 @@ def oi_change_at(features: dict[str, Any] | None, timestamp: datetime) -> float 
     index = bisect.bisect_right(times, timestamp) - 1
     if index < 0 or index >= len(items):
         return None
-    return items[index].oi_chg_30m
+    item = items[index]
+    if timestamp - item.available_time > timedelta(minutes=max(0, max_age_minutes)):
+        return None
+    return item.oi_chg_30m
 
 
 def funding_at(features: dict[str, Any] | None, timestamp: datetime, default: float = 0.0) -> float:
@@ -617,7 +774,7 @@ def run_experiments(
             continue
         config = _mtf_experiment_config(base_config, symbols, overrides)
         row: dict[str, Any] = {"name": name}
-        mtf_candidate_cache: dict[tuple[str, Any], Any] = {}
+        mtf_candidate_cache: dict[tuple[Any, ...], Any] = {}
         shared_reject_stats: dict[str, int] | None = None
         for cost_experiment in ("no_cost", "full_cost"):
             summary = run_execution_backtest_config(
@@ -676,7 +833,10 @@ def _load_oi_for_symbol(symbol: str, data_dir: str) -> list[OiFeature]:
 
 
 def _load_funding_for_symbol(symbol: str, data_dir: str) -> list[FundingFeature]:
-    roots = [Path(data_dir), Path("data/binance_30m_365d")]
+    roots: list[Path] = []
+    for root in (Path(data_dir), Path("data/binance_30m_365d")):
+        if root not in roots:
+            roots.append(root)
     rows: list[dict[str, str]] = []
     for root in roots:
         matches = sorted(root.glob(f"{symbol}_funding_*.csv"))
@@ -756,10 +916,11 @@ def _mtf_reason(
     regime_timeframe: str = "4h",
     trigger_timeframe: str = "15m",
     trigger_volume_ratio: float = 1.0,
+    regime_mode: str = "rsi_reversal",
 ) -> str:
     base = MTF_LONG_REASON if direction == Direction.LONG else MTF_SHORT_REASON
     return (
-        f"{base} regime={regime.regime} regime_tf={regime_timeframe} rsi_bucket={_rsi_bucket(regime.rsi)} "
+        f"{base} regime={regime.regime} regime_mode={regime_mode} regime_tf={regime_timeframe} rsi_bucket={_rsi_bucket(regime.rsi)} "
         f"trigger={trigger} trigger_tf={trigger_timeframe} vol={_volume_bucket(trigger_volume_ratio)} "
         f"funding={_funding_bucket(funding_rate)} "
         f"oi={_oi_bucket(oi_chg_30m)} btc={btc_state}"

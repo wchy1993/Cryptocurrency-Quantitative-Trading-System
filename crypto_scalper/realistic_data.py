@@ -106,9 +106,15 @@ def load_funding_rate_directory(path: str | Path, symbols: Iterable[str]) -> dic
     if not root.exists():
         return output
     for symbol in symbols:
-        rows = _read_funding_csv(root / f"{symbol.upper()}_funding.csv")
+        symbol = symbol.upper()
+        paths = [root / f"{symbol}_funding.csv"]
+        paths.extend(sorted(root.glob(f"{symbol}_funding_*.csv")))
+        rows = []
+        for candidate in paths:
+            rows.extend(_read_funding_csv(candidate))
         if rows:
-            output[symbol.upper()] = tuple(rows)
+            unique = {row.timestamp: row for row in rows}
+            output[symbol] = tuple(unique[timestamp] for timestamp in sorted(unique))
     return output
 
 
@@ -166,7 +172,13 @@ def _read_funding_csv(path: Path) -> list[FundingRate]:
     if not path.exists():
         return []
     with path.open("r", encoding="utf-8", newline="") as handle:
-        return [FundingRate(parse_timestamp(row["timestamp"]), float(row["rate"])) for row in csv.DictReader(handle)]
+        rows = []
+        for row in csv.DictReader(handle):
+            rate = row.get("rate", row.get("funding_rate"))
+            if rate in {None, ""}:
+                continue
+            rows.append(FundingRate(parse_timestamp(row["timestamp"]), float(rate)))
+        return rows
 
 
 def _write_funding_csv(path: Path, rows: Iterable[FundingRate]) -> None:

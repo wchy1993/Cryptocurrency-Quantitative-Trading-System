@@ -1,0 +1,41 @@
+{
+  "strategy_name": "volatility_breakout_v2_balanced_plus_dynamic_trend_grid_v2",
+  "status": "historical_research_new_combination_code",
+  "initial_equity": 200.0,
+  "period": {
+    "start": "2026-03-06T00:00:00",
+    "end": "2026-06-06T00:00:00"
+  },
+  "data": {
+    "signal_data_dir": "data/binance_15m_365d_top100",
+    "execution_data_dir": "data/binance_1m_365d_top100",
+    "funding_data_dir": "data/binance_funding_365d_top100",
+    "cost_config": "config.gui.mtf-momentum-reset-stage21.json"
+  },
+  "source_configs": {
+    "volatility_breakout": {
+      "path": "config.volatility-breakout.v2-optimized-50.json",
+      "profile": "balanced",
+      "frozen_shadow_path": "config.volatility-breakout.v2-balanced-50-shadow.json"
+    },
+    "dynamic_trend_following_grid": {
+      "path": "config.trend-grid.v2-optimized-50.json",
+      "profile": "historical_maximum"
+    }
+  },
+  "portfolio": {
+    "max_open_positions": 2,
+    "max_gross_notional_multiple": 9.0,
+    "hard_drawdown_stop_pct": 0.6,
+    "allow_same_symbol_across_strategies": false,
+    "entry_priority": [
+      "volatility_breakout",
+      "dynamic_trend_following_grid"
+    ]
+  },
+  "output": {
+    "report": "reports/combined_volatility_trend_grid_max2_3m.json",
+    "summary": "reports/combined_volatility_trend_grid_max2_3m.md",
+    "manifest": "config.combined-volatility-trend-grid.max2-manifest.json"
+  }
+}

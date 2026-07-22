@@ -1,0 +1,30 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-b.json",
+  "experiment_budget": 2,
+  "research_name": "mtf_core_v3_rank3p5_strict_5m_frequency_stage5",
+  "selection_data": [
+    "2025-06-12/2025-12-31 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "frozen_reference": "config.mtf-htf.long-rank3p5-frozen-20260717-manifest.json",
+  "experiments": [
+    {
+      "name": "trigger_5m_structure",
+      "strategy": {
+        "mtf_trigger_timeframe": "5m",
+        "mtf_15m_trigger_mode": "structure_break"
+      }
+    },
+    {
+      "name": "trigger_5m_structure_volume_1p05",
+      "strategy": {
+        "mtf_trigger_timeframe": "5m",
+        "mtf_15m_trigger_mode": "structure_break",
+        "mtf_trigger_volume_filter_enabled": true,
+        "mtf_trigger_min_volume_ratio": 1.05,
+        "mtf_trigger_volume_period": 12
+      }
+    }
+  ]
+}

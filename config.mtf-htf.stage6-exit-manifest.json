@@ -1,0 +1,47 @@
+{
+  "base_config": "config.mtf-htf.no-generic-profit-exit.json",
+  "experiment_budget": 3,
+  "frozen_entry": {
+    "mtf_short_min_funding_rate": 0.0,
+    "mtf_trigger_max_volume_ratio": 2.0,
+    "mtf_max_stop_pct": 0.015
+  },
+  "selection_data": [
+    "2025-06-12/2026-01-01 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "experiments": [
+    {
+      "name": "exit_breakeven_080r",
+      "strategy": {
+        "mtf_short_min_funding_rate": 0.0,
+        "mtf_trigger_max_volume_ratio": 2.0,
+        "mtf_max_stop_pct": 0.015,
+        "mtf_profit_protection_enabled": true,
+        "mtf_move_stop_to_breakeven_r": 0.8,
+        "mtf_trailing_mode": "none"
+      }
+    },
+    {
+      "name": "exit_breakeven_100r",
+      "strategy": {
+        "mtf_short_min_funding_rate": 0.0,
+        "mtf_trigger_max_volume_ratio": 2.0,
+        "mtf_max_stop_pct": 0.015,
+        "mtf_profit_protection_enabled": true,
+        "mtf_move_stop_to_breakeven_r": 1.0,
+        "mtf_trailing_mode": "none"
+      }
+    },
+    {
+      "name": "exit_no_1h_confirmation_loss",
+      "strategy": {
+        "mtf_short_min_funding_rate": 0.0,
+        "mtf_trigger_max_volume_ratio": 2.0,
+        "mtf_max_stop_pct": 0.015,
+        "mtf_exit_on_1h_confirm_lost": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "base_config": "config.mtf-htf.optimized-structure-only-v3.json",
+  "experiment_budget": 4,
+  "research_name": "mtf_core_v3_long_btc_4h_regime_gate_stage1",
+  "frozen_modules": [
+    "short_alpha",
+    "entry_trigger",
+    "fixed_2r_exit",
+    "full_cost_model",
+    "portfolio_risk"
+  ],
+  "experiments": [
+    {
+      "name": "long_btc4h_floor_0pct",
+      "trading": {"initial_entry_fraction": 1.0},
+      "strategy": {
+        "mtf_risk_multiplier": 1.0,
+        "mtf_exit_mode": "fixed_tp",
+        "mtf_profit_protection_enabled": false,
+        "mtf_btc_4h_long_min_return_pct": 0.0
+      },
+      "risk": {
+        "starting_capital_usdt": 200.0,
+        "risk_per_trade_pct": 0.0275862069,
+        "max_account_margin_usage_pct": 0.3,
+        "max_symbol_margin_pct": 0.3,
+        "max_maintenance_margin_ratio_pct": 0.05,
+        "estimated_maintenance_margin_rate": 0.005,
+        "max_drawdown_pct": 0.4,
+        "starting_capital_drawdown_stop_pct": 0.4,
+        "weekly_profit_drawdown_stop_pct": 0.4,
+        "soft_drawdown_reduce_pct": 0.2,
+        "soft_drawdown_stop_pct": 0.35,
+        "soft_drawdown_min_size_multiplier": 0.5
+      }
+    },
+    {
+      "name": "long_btc4h_floor_0p2pct",
+      "trading": {"initial_entry_fraction": 1.0},
+      "strategy": {
+        "mtf_risk_multiplier": 1.0,
+        "mtf_exit_mode": "fixed_tp",
+        "mtf_profit_protection_enabled": false,
+        "mtf_btc_4h_long_min_return_pct": 0.002
+      },
+      "risk": {
+        "starting_capital_usdt": 200.0,
+        "risk_per_trade_pct": 0.0275862069,
+        "max_account_margin_usage_pct": 0.3,
+        "max_symbol_margin_pct": 0.3,
+        "max_maintenance_margin_ratio_pct": 0.05,
+        "estimated_maintenance_margin_rate": 0.005,
+        "max_drawdown_pct": 0.4,
+        "starting_capital_drawdown_stop_pct": 0.4,
+        "weekly_profit_drawdown_stop_pct": 0.4,
+        "soft_drawdown_reduce_pct": 0.2,
+        "soft_drawdown_stop_pct": 0.35,
+        "soft_drawdown_min_size_multiplier": 0.5
+      }
+    },
+    {
+      "name": "long_btc4h_floor_0p4pct",
+      "trading": {"initial_entry_fraction": 1.0},
+      "strategy": {
+        "mtf_risk_multiplier": 1.0,
+        "mtf_exit_mode": "fixed_tp",
+        "mtf_profit_protection_enabled": false,
+        "mtf_btc_4h_long_min_return_pct": 0.004
+      },
+      "risk": {
+        "starting_capital_usdt": 200.0,
+        "risk_per_trade_pct": 0.0275862069,
+        "max_account_margin_usage_pct": 0.3,
+        "max_symbol_margin_pct": 0.3,
+        "max_maintenance_margin_ratio_pct": 0.05,
+        "estimated_maintenance_margin_rate": 0.005,
+        "max_drawdown_pct": 0.4,
+        "starting_capital_drawdown_stop_pct": 0.4,
+        "weekly_profit_drawdown_stop_pct": 0.4,
+        "soft_drawdown_reduce_pct": 0.2,
+        "soft_drawdown_stop_pct": 0.35,
+        "soft_drawdown_min_size_multiplier": 0.5
+      }
+    },
+    {
+      "name": "long_btc4h_floor_0p6pct",
+      "trading": {"initial_entry_fraction": 1.0},
+      "strategy": {
+        "mtf_risk_multiplier": 1.0,
+        "mtf_exit_mode": "fixed_tp",
+        "mtf_profit_protection_enabled": false,
+        "mtf_btc_4h_long_min_return_pct": 0.006
+      },
+      "risk": {
+        "starting_capital_usdt": 200.0,
+        "risk_per_trade_pct": 0.0275862069,
+        "max_account_margin_usage_pct": 0.3,
+        "max_symbol_margin_pct": 0.3,
+        "max_maintenance_margin_ratio_pct": 0.05,
+        "estimated_maintenance_margin_rate": 0.005,
+        "max_drawdown_pct": 0.4,
+        "starting_capital_drawdown_stop_pct": 0.4,
+        "weekly_profit_drawdown_stop_pct": 0.4,
+        "soft_drawdown_reduce_pct": 0.2,
+        "soft_drawdown_stop_pct": 0.35,
+        "soft_drawdown_min_size_multiplier": 0.5
+      }
+    }
+  ]
+}

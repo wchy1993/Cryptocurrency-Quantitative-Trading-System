@@ -1,0 +1,26 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-3p5.json",
+  "experiment_budget": 2,
+  "research_name": "mtf_core_v3_long_rank3p5_risk3p5_stress",
+  "strategy_frozen_before_stress": true,
+  "experiments": [
+    {
+      "name": "higher_cost_50pct",
+      "risk": {
+        "estimated_fee_bps": 7.5,
+        "estimated_slippage_bps": 3.0,
+        "market_slippage_bps": 3.0,
+        "stop_slippage_bps": 7.5,
+        "take_profit_slippage_bps": 3.0,
+        "maker_fee_rate": 0.0003,
+        "taker_fee_rate": 0.00075
+      }
+    },
+    {
+      "name": "extra_entry_delay_1m",
+      "strategy": {
+        "mtf_extra_execution_delay_minutes": 1
+      }
+    }
+  ]
+}

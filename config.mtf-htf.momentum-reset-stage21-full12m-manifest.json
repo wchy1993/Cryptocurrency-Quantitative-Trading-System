@@ -1,0 +1,44 @@
+{
+  "research_name": "mtf_1h_reset_30m_release_frozen_full12m_continuous_path",
+  "branch": "codex/cmipr-realistic-20260713",
+  "source_frozen_manifest": "config.mtf-htf.momentum-reset-stage20-manifest.json",
+  "parameter_selection_during_run": false,
+  "portfolio_reset_during_run": false,
+  "starting_equity": 200.0,
+  "risk_pct": 0.0321839081,
+  "symbol_count": 30,
+  "start": "2025-06-12T00:00:00",
+  "end": "2026-06-12T00:00:00",
+  "effective_end_after_embargo": "2026-06-11T12:00:00",
+  "execution": {
+    "full_cost": true,
+    "path_aware": true,
+    "next_1m_open": true,
+    "conservative_same_bar_order": true,
+    "max_open_positions": 1,
+    "max_daily_trades": 2,
+    "symbol_cooldown_hours": 12
+  },
+  "frozen_candidate_rules": {
+    "side": "LONG",
+    "minimum_rank_score": 4.25,
+    "minimum_target_to_full_cost_ratio": 12.0,
+    "minimum_btc_closed_4h_return": -0.001,
+    "minimum_directional_breadth_above_ema21": 0.55,
+    "candidate_priority": [
+      "target_to_cost_ratio",
+      "rank_score"
+    ]
+  },
+  "outputs": {
+    "events": "reports/mtf_momentum_reset_full12m_stage21_events.json",
+    "events_csv": "reports/mtf_momentum_reset_full12m_stage21_events.csv",
+    "regime": "reports/mtf_momentum_reset_full12m_stage21_regime.json",
+    "continuous_path": "reports/mtf_momentum_reset_full12m_stage21_path.json",
+    "summary": "reports/mtf_momentum_reset_full12m_stage21_summary.md"
+  },
+  "status": "historical_continuous_path_research_only",
+  "untouched_holdout": false,
+  "live_config_modified": false,
+  "gui_modified": false
+}

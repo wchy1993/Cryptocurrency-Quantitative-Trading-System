@@ -1,0 +1,19 @@
+{
+  "strategy_name": "dynamic_trend_following_grid_v3_regime_adaptive",
+  "status": "independent_research_artifacts",
+  "config": "config.trend-grid.v3-optimized-50.json",
+  "report": "reports/trend_grid_v3_latest_3m_50.json",
+  "summary": "reports/trend_grid_v3_latest_3m_50.md",
+  "hashes": {
+    "crypto_scalper/trend_grid_v3_optimize.py": "df8f50bdcea2285c3dab72e32f782d8ad21af3cc7c3655217586c28d3fc3140c",
+    "tests/test_trend_grid_v3_optimize.py": "4498645e069c0f3966205a68a509f311dbb087a699645308013f1b5ef3002ec9",
+    "config.trend-grid.v3-optimized-50.json": "f9ba5ce6a7e2504acf0985a8bfda9956ff1e16d71dd35155d0a7e42565e97038",
+    "reports/trend_grid_v3_latest_3m_50.json": "f4c0f3f82035b184e290c1b7662ff49c8eb90e4e1bbd99c86f0a8e1b1c951afc",
+    "reports/trend_grid_v3_latest_3m_50.md": "f87dd39159e9a0ca6a33dd6eebb0a783c4d2c9548fc11269c73216bd87d163f8"
+  },
+  "preserved": {
+    "active_gui_config": "config.volatility-breakout.v2-balanced-50-shadow.json",
+    "apt_grid": "unchanged",
+    "other_strategy_source": "unchanged"
+  }
+}

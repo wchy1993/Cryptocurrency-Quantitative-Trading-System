@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import queue
 import re
 import threading
@@ -8,8 +9,15 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
+from typing import Any
 
 from .binance_client import BinanceFuturesClient
+from .combined_volatility_trend_grid_shadow import (
+    TREND_GRID_SHADOW_REASON_TOKEN,
+    CombinedVolatilityTrendGridShadowTrader,
+)
+from .combined_hybrid_v5_grid_v3_backtest import COMBINED_V5_GRID_V3_NAME
+from .combined_hybrid_v5_grid_v3_shadow import CombinedHybridV5GridV3ShadowTrader
 from .live_config import (
     DEFAULT_SYMBOLS,
     ExchangeConfig,
@@ -21,27 +29,43 @@ from .live_config import (
     write_live_config,
 )
 from .live_trader import AccountSnapshot, BinanceAutoTrader
+from .mtf_4h_rsi_regime import MTF_REASON_TOKEN
+from .mtf_momentum_reset import MTF_MOMENTUM_RESET_SETUP_TOKEN
 from .secrets import mask_secret, read_secret
+from .volatility_breakout_shadow import (
+    DUAL_THRUST_SHADOW_REASON_TOKEN,
+    DualThrustShadowTrader,
+)
 
 
-DEFAULT_CONFIG_PATH = "config.live_safe.json"
+DEFAULT_CONFIG_PATH = "config.gui.mtf-momentum-reset-stage21.json"
+ACTIVE_GUI_CONFIG_PATH = "config.gui.combined-hybrid-v5-grid-v3-max2-shadow.json"
 FALLBACK_CONFIG_PATH = "config.live.example.json"
 STRATEGY_MODE_INDICATOR = "指标反转稳定版"
 STRATEGY_MODE_SUPER_VOLUME = "强放量突破"
 STRATEGY_MODE_MTF = "MTF多周期"
+STRATEGY_MODE_MTF_RESET = "MTF动量重置"
 STRATEGY_MODE_OI_FLUSH = "OI去杠杆反弹"
+STRATEGY_MODE_DUAL_THRUST_SHADOW = "Hybrid v5 50币 Shadow"
+STRATEGY_MODE_COMBINED_SHADOW = "Hybrid v5 + Grid v3 50币 Max2"
 STRATEGY_MODE_MANUAL = "手动配置"
 STRATEGY_MODE_VALUES = (
+    STRATEGY_MODE_COMBINED_SHADOW,
+    STRATEGY_MODE_DUAL_THRUST_SHADOW,
     STRATEGY_MODE_INDICATOR,
     STRATEGY_MODE_SUPER_VOLUME,
+    STRATEGY_MODE_MTF_RESET,
     STRATEGY_MODE_MTF,
     STRATEGY_MODE_OI_FLUSH,
     STRATEGY_MODE_MANUAL,
 )
 STRATEGY_MODE_SUMMARIES = {
+    STRATEGY_MODE_COMBINED_SHADOW: "50币共享账户：Hybrid v5 Breakout + Grid v3，各最多1仓、全局最多2仓、8R分批止盈、Grid市场过滤、full-cost；强制 dry-run。",
+    STRATEGY_MODE_DUAL_THRUST_SHADOW: "Hybrid v5 Balanced Expansion Runner：50币、60m 多空、单仓、风险2.5%、8R止盈5%、60R主目标、full-cost；强制 dry-run。",
     STRATEGY_MODE_INDICATOR: "当前启用：indicator_reversal 多空分离版。20x/持仓4，risk 0.065，多头0.282/空头0.34，其它策略关闭。",
     STRATEGY_MODE_SUPER_VOLUME: "启用强放量突破策略；适合捕捉高量能趋势启动，旧突破/回踩/反转策略保持关闭。",
-    STRATEGY_MODE_MTF: "启用 MTF 多周期策略；旧策略关闭，由多周期信号单独筛选入场。",
+    STRATEGY_MODE_MTF_RESET: "MTF动量重置 Stage 2.1：1h 动量重置 + 30m 收缩释放，只做多、单仓、固定 2R、禁止加仓。",
+    STRATEGY_MODE_MTF: "MTF Core V3 Rank 3.5：多空双向、单仓、固定 2R、禁止加仓；其余策略全部关闭。",
     STRATEGY_MODE_OI_FLUSH: "启用 OI 去杠杆反弹策略；只做多，旧策略关闭。",
     STRATEGY_MODE_MANUAL: "保留当前配置文件中的隐藏策略开关，只保存界面上可编辑的参数。",
 }
@@ -72,8 +96,17 @@ THEME = {
 }
 
 
+def _combined_shadow_trader_class(config: LiveAppConfig):
+    if (
+        config.combined_volatility_trend_grid_shadow.strategy_name
+        == COMBINED_V5_GRID_V3_NAME
+    ):
+        return CombinedHybridV5GridV3ShadowTrader
+    return CombinedVolatilityTrendGridShadowTrader
+
+
 class TradingApp(tk.Tk):
-    def __init__(self) -> None:
+    def __init__(self, initial_config_path: str = ACTIVE_GUI_CONFIG_PATH) -> None:
         super().__init__()
         self.title("Crypto Scalper - Binance Futures")
         self.geometry("1320x760")
@@ -86,7 +119,7 @@ class TradingApp(tk.Tk):
         self.account_queue: queue.Queue[tuple[AccountSnapshot, bool]] = queue.Queue()
         self.stop_event: threading.Event | None = None
         self.worker: threading.Thread | None = None
-        self.config_path = tk.StringVar(value=DEFAULT_CONFIG_PATH)
+        self.config_path = tk.StringVar(value=initial_config_path)
         self.summary_vars: dict[str, tk.StringVar] = {}
         self.summary_labels: dict[str, ttk.Label] = {}
         self.symbols_text: tk.Text | None = None
@@ -137,10 +170,13 @@ class TradingApp(tk.Tk):
         self.min_profit_after_cost = tk.StringVar()
         self.min_available = tk.StringVar()
         self.mainnet_confirmation = tk.StringVar()
-        self.strategy_mode = tk.StringVar(value=STRATEGY_MODE_INDICATOR)
-        self.strategy_mode_summary = tk.StringVar(value=STRATEGY_MODE_SUMMARIES[STRATEGY_MODE_INDICATOR])
+        self.strategy_mode = tk.StringVar(value=STRATEGY_MODE_MTF_RESET)
+        self.strategy_mode_summary = tk.StringVar(value=STRATEGY_MODE_SUMMARIES[STRATEGY_MODE_MTF_RESET])
         self.strategy_indicator_enabled = tk.BooleanVar(value=True)
         self.strategy_vbp_enabled = tk.BooleanVar(value=True)
+        self.mtf_allow_long = tk.BooleanVar(value=True)
+        self.mtf_allow_short = tk.BooleanVar(value=False)
+        self.mtf_core_parameters = tk.StringVar()
         self.fast_ema = tk.StringVar()
         self.slow_ema = tk.StringVar()
         self.atr_period = tk.StringVar()
@@ -226,6 +262,8 @@ class TradingApp(tk.Tk):
         style.configure("SectionTitle.TLabel", background=c["panel"], foreground=c["title"], font=("Microsoft YaHei UI", 11, "bold"))
         style.configure("Muted.TLabel", background=c["panel"], foreground=c["muted"])
         style.configure("CardTitle.TLabel", background=c["card"], foreground=c["muted"], font=("Microsoft YaHei UI", 9))
+        style.configure("CardSection.TLabel", background=c["card"], foreground=c["title"], font=("Microsoft YaHei UI", 11, "bold"))
+        style.configure("CardBody.TLabel", background=c["card"], foreground=c["muted"])
         style.configure("CardValue.TLabel", background=c["card"], foreground=c["title"], font=("Consolas", 17, "bold"))
         style.configure("Profit.CardValue.TLabel", background=c["card"], foreground=c["profit"], font=("Consolas", 17, "bold"))
         style.configure("Loss.CardValue.TLabel", background=c["card"], foreground=c["loss"], font=("Consolas", 17, "bold"))
@@ -432,48 +470,17 @@ class TradingApp(tk.Tk):
         self._entry(risk, "最低保留U", self.min_available, 14)
 
         self._build_strategy_selector(strategy)
-        strategy_fields = ttk.Frame(strategy, style="Panel.TFrame")
+        strategy_fields = ttk.Frame(strategy, style="Card.TFrame", padding=(12, 10))
         strategy_fields.grid(row=2, column=0, columnspan=4, sticky="ew")
-        strategy = strategy_fields
-
-        self._entry(strategy, "快EMA", self.fast_ema, 0, column=0)
-        self._entry(strategy, "慢EMA", self.slow_ema, 1, column=0)
-        self._entry(strategy, "突破通道", self.channel_period, 2, column=0)
-        self._entry(strategy, "量比", self.min_volume_ratio, 3, column=0)
-        self._entry(strategy, "突破缓冲", self.breakout_buffer, 4, column=0)
-        self._entry(strategy, "EMA差", self.ema_gap, 5, column=0)
-        self._entry(strategy, "止损ATR", self.stop_loss_atr, 0, column=2)
-        self._entry(strategy, "止盈ATR", self.take_profit_atr, 1, column=2)
-        ttk.Checkbutton(strategy, text="插针保护", variable=self.spike_guard_enabled).grid(row=2, column=3, sticky=tk.W, pady=5)
-        ttk.Checkbutton(strategy, text="插针反打", variable=self.spike_trade_enabled).grid(row=3, column=3, sticky=tk.W, pady=5)
-        self._entry(strategy, "插针范围", self.spike_min_range_atr, 4, column=2)
-        self._entry(strategy, "影线ATR", self.spike_min_wick_atr, 5, column=2)
-        self._entry(strategy, "影线占比", self.spike_min_wick_ratio, 6, column=0)
-        self._entry(strategy, "插针量比", self.spike_min_volume_ratio, 7, column=0)
-        self._entry(strategy, "冷却K数", self.spike_block_bars, 6, column=2)
-        self._entry(strategy, "收回比例", self.spike_recovery_ratio, 7, column=2)
-        self._entry(strategy, "插针止损", self.spike_stop_atr, 8, column=0)
-        self._entry(strategy, "插针止盈", self.spike_take_profit_atr, 8, column=2)
-        self._entry(strategy, "风险倍数", self.spike_risk_multiplier, 9, column=0)
-        self._entry(strategy, "最长持仓", self.spike_max_holding_bars, 9, column=2)
-        self._entry(strategy, "ATR周期", self.atr_period, 10, column=0)
-        self._entry(strategy, "量均周期", self.volume_period, 10, column=2)
-        self._entry(strategy, "最小ATR", self.min_atr_pct, 11, column=0)
-        self._entry(strategy, "最大ATR", self.max_atr_pct, 11, column=2)
-        self._entry(strategy, "保本ATR", self.breakeven_atr, 12, column=0)
-        self._entry(strategy, "移动启动", self.trailing_activation_atr, 12, column=2)
-        self._entry(strategy, "移动止损", self.trailing_stop_atr, 13, column=0)
-        self._entry(strategy, "常规最长", self.max_holding_bars, 13, column=2)
-        ttk.Checkbutton(strategy, text="允许做空", variable=self.allow_short).grid(row=14, column=1, sticky=tk.W, pady=5)
-        ttk.Checkbutton(strategy, text="趋势过滤", variable=self.regime_filter_enabled).grid(row=14, column=3, sticky=tk.W, pady=5)
-        self._entry(strategy, "多头分数", self.long_score_threshold, 15, column=0)
-        self._entry(strategy, "空头分数", self.short_score_threshold, 15, column=2)
-        self._entry(strategy, "多头风险", self.long_risk_bias, 16, column=0)
-        self._entry(strategy, "空头风险", self.short_risk_bias, 16, column=2)
-        self._entry(strategy, "趋势周期", self.regime_lookback, 17, column=0)
-        self._entry(strategy, "多头斜率", self.long_min_slow_slope_atr, 17, column=2)
-        self._entry(strategy, "空头斜率", self.short_max_slow_slope_atr, 18, column=0)
-        ttk.Checkbutton(strategy, text="RSI反打", variable=self.rsi_reversal_enabled).grid(row=18, column=3, sticky=tk.W, pady=5)
+        strategy_fields.columnconfigure(0, weight=1)
+        ttk.Label(strategy_fields, text="当前策略参数", style="CardSection.TLabel").grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(
+            strategy_fields,
+            textvariable=self.mtf_core_parameters,
+            style="CardBody.TLabel",
+            justify=tk.LEFT,
+            wraplength=360,
+        ).grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
         ttk.Checkbutton(macro, text="启用非农策略", variable=self.macro_enabled).grid(row=0, column=1, sticky=tk.W, pady=(0, 8))
         self._entry(macro, "事件文件", self.macro_events_path, 1)
@@ -651,21 +658,22 @@ class TradingApp(tk.Tk):
         ttk.Label(parent, text="策略选择", style="SectionTitle.TLabel").grid(row=0, column=0, sticky=tk.W, pady=(0, 6))
         selector = ttk.Frame(parent, style="Panel.TFrame")
         selector.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 12))
-        selector.columnconfigure(2, weight=1)
-        ttk.Label(selector, text="启用策略").grid(row=0, column=0, sticky=tk.W, padx=(0, 8), pady=5)
-        ttk.Checkbutton(
+        selector.columnconfigure(1, weight=1)
+        ttk.Label(selector, text="运行策略").grid(row=0, column=0, sticky=tk.W, padx=(0, 10), pady=5)
+        strategy_combo = ttk.Combobox(
             selector,
-            text="IND indicator_reversal",
-            variable=self.strategy_indicator_enabled,
-            command=self._update_strategy_mode_summary,
-        ).grid(row=0, column=1, sticky=tk.W, padx=(0, 12), pady=5)
-        ttk.Checkbutton(
+            textvariable=self.strategy_mode,
+            values=STRATEGY_MODE_VALUES,
+            state="readonly",
+            width=31,
+        )
+        strategy_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=5)
+        strategy_combo.bind("<<ComboboxSelected>>", self._on_strategy_mode_selected)
+        ttk.Button(
             selector,
-            text="VBP 放量突破回踩",
-            variable=self.strategy_vbp_enabled,
-            command=self._update_strategy_mode_summary,
-        ).grid(row=0, column=2, sticky=tk.W, padx=(0, 12), pady=5)
-        ttk.Button(selector, text="应用分仓", command=self._apply_selected_strategy_to_form).grid(row=0, column=3, sticky=tk.E, pady=5)
+            text="应用策略参数",
+            command=self._apply_selected_strategy_to_form,
+        ).grid(row=0, column=2, sticky=tk.E, pady=5)
         ttk.Label(
             selector,
             textvariable=self.strategy_mode_summary,
@@ -678,22 +686,15 @@ class TradingApp(tk.Tk):
         self._update_strategy_mode_summary()
 
     def _update_strategy_mode_summary(self) -> None:
-        enabled = []
-        if self.strategy_indicator_enabled.get():
-            enabled.append("IND")
-        if self.strategy_vbp_enabled.get():
-            enabled.append("VBP")
-        text = "+".join(enabled) if enabled else "无"
+        mode = self._selected_strategy_mode()
         config = self._last_config
         if config is not None:
-            indicator_count = len(config.trading.entry_symbols or config.trading.symbols)
-            vbp_count = len(_vbp_strategy_symbols(config))
-            symbol_text = f"IND币种={indicator_count}，VBP币种={vbp_count}。"
+            symbol_count = len(config.trading.entry_symbols or config.trading.symbols)
+            symbol_text = f"扫描币种={symbol_count}。"
         else:
             symbol_text = ""
         self.strategy_mode_summary.set(
-            f"当前启用：{text}。{symbol_text}分仓限制：IND最多3仓，VBP最多2仓，总持仓最多5仓。"
-            "策略内部参数保持配置文件原值。"
+            f"当前选择：{mode}。{symbol_text}{STRATEGY_MODE_SUMMARIES.get(mode, '')}"
         )
 
     def _selected_strategy_mode(self) -> str:
@@ -701,21 +702,43 @@ class TradingApp(tk.Tk):
         return mode if mode in STRATEGY_MODE_VALUES else STRATEGY_MODE_MANUAL
 
     def _apply_selected_strategy_to_form(self) -> None:
+        mode = self._selected_strategy_mode()
         self._update_strategy_mode_summary()
-        self.max_open_positions.set("5")
-        config = self._last_config
-        if config is None:
-            self.log("已应用分仓: IND最多3仓，VBP最多2仓，总持仓最多5仓。策略内部参数未修改。")
-            return
-        indicator_count = len(config.trading.entry_symbols or config.trading.symbols)
-        vbp_count = len(_vbp_strategy_symbols(config))
-        self.log(
-            f"已应用分仓: IND最多3仓({indicator_count}币)，VBP最多2仓({vbp_count}币)，"
-            "总持仓最多5仓。策略内部参数未修改。"
-        )
+        self.initial_entry_fraction.set("1.0")
+        self.max_scale_ins_per_symbol.set("0")
+        self.allow_loss_scale_in.set(False)
+        self.starting_capital.set("200.0")
+        if mode == STRATEGY_MODE_COMBINED_SHADOW:
+            self.max_open_positions.set("2")
+            self.max_new_entries_per_cycle.set("2")
+            self.risk_per_trade.set("0.04")
+            self.margin_usage.set("0.95")
+            self.symbol_margin.set("0.95")
+            self.max_drawdown.set("0.60")
+            self.dry_run.set(True)
+            self.log("已应用组合shadow参数：50币、共享账户最多2仓、每策略1仓、强制dry-run。")
+        elif mode == STRATEGY_MODE_DUAL_THRUST_SHADOW:
+            self.starting_capital.set("2000.0")
+            self.max_open_positions.set("1")
+            self.max_new_entries_per_cycle.set("1")
+            self.risk_per_trade.set("0.025")
+            self.max_drawdown.set("0.60")
+            self.dry_run.set(True)
+            self.log("已应用 Hybrid v5 50币单仓 shadow 参数，强制dry-run。")
+        elif mode in {STRATEGY_MODE_MTF_RESET, STRATEGY_MODE_MTF}:
+            self.max_open_positions.set("1")
+            self.max_new_entries_per_cycle.set("1")
+            self.risk_per_trade.set("0.0321839081" if mode == STRATEGY_MODE_MTF_RESET else "0.0275862069")
+            self.margin_usage.set("0.30")
+            self.symbol_margin.set("0.30")
+            self.max_drawdown.set("0.40")
+            self.mtf_allow_short.set(False)
+            self.log(f"已应用 {mode} 单仓冻结参数。")
+        else:
+            self.log(f"已选择 {mode}；保存或启动时会应用对应配置。")
 
     def _load_initial_config(self) -> None:
-        path = Path(DEFAULT_CONFIG_PATH)
+        path = Path(self.config_path.get())
         if path.exists():
             config = load_live_config(path)
         elif Path(FALLBACK_CONFIG_PATH).exists():
@@ -764,6 +787,27 @@ class TradingApp(tk.Tk):
         try:
             client = self._client_for_config(config)
             self.log_from_thread(f"API Key: {mask_secret(client.api_key)}")
+            if config.combined_volatility_trend_grid_shadow.enabled:
+                trader = _combined_shadow_trader_class(config)(
+                    config, client, logger=self.log_from_thread
+                )
+                snapshot = trader.snapshot_account()
+                self.account_from_thread(snapshot, sync_starting_capital=False)
+                self.log_from_thread(
+                    f"组合Shadow账户: 权益={snapshot.equity:.2f}U "
+                    f"持仓={len(snapshot.position_rows)}/2 "
+                    f"样本文件={config.combined_volatility_trend_grid_shadow.state_path}"
+                )
+                return
+            if config.dual_thrust_shadow.enabled:
+                trader = DualThrustShadowTrader(config, client, logger=self.log_from_thread)
+                snapshot = trader.snapshot_account()
+                self.account_from_thread(snapshot, sync_starting_capital=False)
+                self.log_from_thread(
+                    f"Shadow账户: 权益={snapshot.equity:.2f}U 持仓={len(snapshot.positions)} "
+                    f"样本文件={config.dual_thrust_shadow.state_path}"
+                )
+                return
             if not client.api_key or not client.api_secret:
                 client.ping()
                 self.log_from_thread("未配置密钥，仅完成公开 ping")
@@ -781,6 +825,33 @@ class TradingApp(tk.Tk):
     def _trade_history_worker(self, config: LiveAppConfig) -> None:
         try:
             client = self._client_for_config(config)
+            if config.combined_volatility_trend_grid_shadow.enabled:
+                trader = _combined_shadow_trader_class(config)(
+                    config, client, logger=self.log_from_thread
+                )
+                report = trader.acceptance_report()
+                self.log_from_thread(
+                    "组合Shadow交易统计: "
+                    f"平仓={report['trade_count']} 净盈亏={report['closed_net_pnl']:+.4f}U "
+                    f"胜率={report['win_rate'] * 100:.2f}% PF={report['profit_factor']:.3f} "
+                    f"最大回撤={report['max_drawdown_pct'] * 100:.2f}%"
+                )
+                for trade in reversed(report["trades"][-20:]):
+                    self.log_from_thread(
+                        f"{trade['exit_time']} {trade['strategy']} {trade['symbol']} "
+                        f"{trade['side']} 净盈亏={trade['net_pnl']:+.4f}U "
+                        f"({trade['pnl_r']:+.3f}R) 原因={trade['exit_reason']}"
+                    )
+                return
+            if config.dual_thrust_shadow.enabled:
+                trader = DualThrustShadowTrader(config, client, logger=self.log_from_thread)
+                report = trader.acceptance_report()
+                self.log_from_thread(
+                    "Dual Thrust Shadow交易统计: "
+                    f"平仓={report['trade_count']} 净盈亏={report['closed_net_pnl']:+.4f}U "
+                    f"胜率={report['win_rate'] * 100:.2f}% PF={report['profit_factor']:.3f}"
+                )
+                return
             if not client.api_key or not client.api_secret:
                 self.log_from_thread("未配置 API Key/Secret，无法读取历史成交")
                 return
@@ -854,7 +925,27 @@ class TradingApp(tk.Tk):
                     messagebox.showerror("主网确认缺失", "真实主网下单前，主网确认文本必须填写 CONFIRM_MAINNET")
                     return
             client = self._client_for_config(config)
-            trader = BinanceAutoTrader(config, client, logger=self.log_from_thread, account_callback=self.account_from_thread)
+            if config.combined_volatility_trend_grid_shadow.enabled:
+                trader = _combined_shadow_trader_class(config)(
+                    config,
+                    client,
+                    logger=self.log_from_thread,
+                    account_callback=self.account_from_thread,
+                )
+            elif config.dual_thrust_shadow.enabled:
+                trader = DualThrustShadowTrader(
+                    config,
+                    client,
+                    logger=self.log_from_thread,
+                    account_callback=self.account_from_thread,
+                )
+            else:
+                trader = BinanceAutoTrader(
+                    config,
+                    client,
+                    logger=self.log_from_thread,
+                    account_callback=self.account_from_thread,
+                )
             self.stop_event = threading.Event()
             self.worker = threading.Thread(target=self._run_trader_worker, args=(trader, self.stop_event), daemon=True)
             self.worker.start()
@@ -864,7 +955,7 @@ class TradingApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("启动失败", str(exc))
 
-    def _run_trader_worker(self, trader: BinanceAutoTrader, stop_event: threading.Event) -> None:
+    def _run_trader_worker(self, trader: Any, stop_event: threading.Event) -> None:
         try:
             trader.run_forever(stop_event)
         except Exception as exc:
@@ -981,8 +1072,59 @@ class TradingApp(tk.Tk):
         self.macro_nfp_min_surprise_k.set(str(config.macro_events.nfp_min_surprise_k))
         self.macro_cpi_min_surprise_pct.set(str(config.macro_events.cpi_min_surprise_pct))
         self.strategy_mode.set(_detect_strategy_mode(config))
-        self.strategy_indicator_enabled.set(_indicator_strategy_enabled(config))
-        self.strategy_vbp_enabled.set(bool(getattr(config.vbp_strategy, "enabled", False)))
+        self.strategy_indicator_enabled.set(False)
+        self.strategy_vbp_enabled.set(False)
+        self.mtf_allow_long.set(bool(getattr(config.strategy, "mtf_allow_long", True)))
+        self.mtf_allow_short.set(False)
+        if config.combined_volatility_trend_grid_shadow.enabled:
+            combined = config.combined_volatility_trend_grid_shadow
+            breakout = config.dual_thrust_shadow
+            is_v5_grid_v3 = combined.strategy_name == COMBINED_V5_GRID_V3_NAME
+            combined_label = (
+                "Hybrid v5 + Grid v3"
+                if is_v5_grid_v3
+                else "Breakout + Dynamic Trend Grid"
+            )
+            self.mtf_core_parameters.set(
+                f"{combined_label} {len(combined.enabled_symbols)}币  |  共享模拟账户\n"
+                f"全局最多 {combined.max_open_positions} 仓  |  每策略最多 "
+                f"{combined.max_open_positions_per_strategy} 仓  |  同币互斥\n"
+                f"Hybrid v5: 已收盘{breakout.timeframe_minutes}m 多空 / 风险"
+                f"{breakout.risk_per_trade_pct * 100:.1f}% / {breakout.stop_atr_multiple:.2f}ATR止损\n"
+                f"{'Grid v3' if is_v5_grid_v3 else 'Grid'}: 已收盘60m / 仅做空 / 两层网格 / campaign风险10%\n"
+                f"总名义上限 {combined.max_gross_notional_multiple:.1f}x  |  "
+                f"硬回撤停止新开仓 {combined.hard_drawdown_stop_pct * 100:.0f}%\n"
+                "主网公开行情 + full-cost共享撮合  |  强制DRY-RUN"
+            )
+        elif config.dual_thrust_shadow.enabled:
+            shadow = config.dual_thrust_shadow
+            self.mtf_core_parameters.set(
+                f"Hybrid v5 Balanced Runner {len(shadow.enabled_symbols)}币  |  已收盘{shadow.timeframe_minutes}m信号\n"
+                f"Range回看 {shadow.lookback_days}日  |  LONG K={shadow.long_k:.2f} / SHORT K={shadow.short_k:.2f}\n"
+                f"结构止损 {shadow.stop_atr_multiple:.2f} ATR  |  {shadow.partial_take_profit_r:.0f}R止盈"
+                f"{shadow.partial_take_profit_fraction * 100:.0f}% / 主目标{shadow.take_profit_r:.0f}R  |  时间退出 {shadow.max_holding_minutes}m\n"
+                f"条件Fail-fast {shadow.fail_fast_minutes}m / MFE<{shadow.fail_fast_min_mfe_r:.2f}R / "
+                f"当前<={shadow.fail_fast_max_current_r:.2f}R\n"
+                f"单笔风险 {shadow.risk_per_trade_pct * 100:.2f}%  |  单仓  |  禁止加仓\n"
+                "主网公开行情 + full-cost shadow  |  强制DRY-RUN"
+            )
+        else:
+            self.mtf_core_parameters.set(
+                "Regime 4h trend_pullback  |  Setup 已收盘1h动量重置\n"
+                "Trigger 已收盘30m收缩释放  |  最早随后市场执行\n"
+                f"止损上限 {float(getattr(config.strategy, 'mtf_max_stop_pct', 0.015)) * 100:.2f}%  |  "
+                f"目标 {float(getattr(config.strategy, 'mtf_take_profit_r', 2.0)):.2f}R  |  "
+                f"Fail-fast {int(getattr(config.strategy, 'mtf_fail_fast_minutes', 120))}m / "
+                f"{float(getattr(config.strategy, 'mtf_fail_fast_min_r', 0.5)):.2f}R\n"
+                f"LONG rank >= {float(getattr(config.strategy, 'mtf_long_min_rank_score', 4.25)):.2f}  |  "
+                f"广度 >= {float(getattr(config.strategy, 'mtf_momentum_reset_min_breadth_ema21', 0.55)) * 100:.0f}%  |  "
+                f"目标/成本 >= {float(getattr(config.strategy, 'mtf_min_target_to_cost_ratio', 12.0)):.0f}x\n"
+                f"单笔风险 {float(config.risk.risk_per_trade_pct) * 100:.2f}%  |  "
+                f"最大持仓 {int(getattr(config.strategy, 'mtf_max_open_positions', 1))}\n"
+                f"最长持仓 {int(getattr(config.strategy, 'mtf_max_holding_minutes', 720))}m  |  "
+                f"Funding {'开启' if getattr(config.strategy, 'mtf_use_funding_filter', True) else '关闭'}  |  "
+                f"OI {'开启' if getattr(config.strategy, 'mtf_use_oi_filter', False) else '关闭'}"
+            )
         self._update_strategy_mode_summary()
         self.status_var.set(f"{config.exchange.environment.upper()} / {'DRY-RUN' if config.trading.dry_run else 'LIVE'}")
 
@@ -1057,6 +1199,8 @@ class TradingApp(tk.Tk):
             trailing_stop_atr=read_float(self.trailing_stop_atr, base.strategy.trailing_stop_atr),
             max_holding_bars=read_int(self.max_holding_bars, base.strategy.max_holding_bars),
             allow_short=bool(self.allow_short.get()),
+            mtf_allow_long=bool(self.mtf_allow_long.get()),
+            mtf_allow_short=bool(self.mtf_allow_short.get()),
             long_score_threshold=read_float(self.long_score_threshold, base.strategy.long_score_threshold),
             short_score_threshold=read_float(self.short_score_threshold, base.strategy.short_score_threshold),
             long_risk_bias=read_float(self.long_risk_bias, base.strategy.long_risk_bias),
@@ -1106,12 +1250,27 @@ class TradingApp(tk.Tk):
             macro_events=macro_events,
             vbp_strategy=base.vbp_strategy,
             portfolio_control=base.portfolio_control,
+            regime_score=base.regime_score,
+            reversal_alpha=base.reversal_alpha,
+            cmipr=base.cmipr,
+            mtper=base.mtper,
+            mtpc=base.mtpc,
+            dual_thrust_shadow=base.dual_thrust_shadow,
+            combined_volatility_trend_grid_shadow=base.combined_volatility_trend_grid_shadow,
         )
-        return _config_with_strategy_selection(
-            config,
-            indicator_enabled=bool(self.strategy_indicator_enabled.get()),
-            vbp_enabled=bool(self.strategy_vbp_enabled.get()),
-        )
+        selected_mode = self._selected_strategy_mode()
+        config = _config_with_strategy_mode(config, selected_mode)
+        if selected_mode == STRATEGY_MODE_MTF_RESET:
+            config = replace(
+                config,
+                strategy=replace(
+                    config.strategy,
+                    mtf_allow_long=bool(self.mtf_allow_long.get()),
+                    mtf_allow_short=False,
+                    allow_short=False,
+                ),
+            )
+        return _config_with_strategy_selection(config, indicator_enabled=False, vbp_enabled=False)
 
     def _apply_symbol_preset(self) -> None:
         self._set_symbols_value(DEFAULT_SYMBOLS)
@@ -1440,6 +1599,14 @@ def _position_symbols_first(symbols: tuple[str, ...], rows_by_symbol: dict[str, 
 
 def _indicator_strategy_enabled(config: LiveAppConfig) -> bool:
     strategy = config.strategy
+    if (
+        (
+            getattr(strategy, "mtf_4h_rsi_regime_enabled", False)
+            or getattr(strategy, "mtf_momentum_reset_enabled", False)
+        )
+        and getattr(strategy, "mtf_disable_legacy_strategies", False)
+    ):
+        return False
     return bool(
         config.filters.extreme_reversal_entry_enabled
         or getattr(strategy, "indicator_confirmed_cross_extreme_required_enabled", False)
@@ -1451,6 +1618,14 @@ def _strategy_short_name(entry_reason: str | None) -> str:
     reason = (entry_reason or "").lower()
     if not reason:
         return "未知"
+    if TREND_GRID_SHADOW_REASON_TOKEN in reason:
+        return "DTG"
+    if DUAL_THRUST_SHADOW_REASON_TOKEN in reason:
+        return "DT50"
+    if MTF_MOMENTUM_RESET_SETUP_TOKEN in reason:
+        return "MR30"
+    if MTF_REASON_TOKEN in reason:
+        return "MTF"
     if reason.startswith("vbp_") or "volume_breakout_pullback" in reason:
         return "VBP"
     if "indicator_" in reason or "macd_" in reason:
@@ -1470,6 +1645,95 @@ def _config_with_strategy_selection(
     indicator_enabled: bool,
     vbp_enabled: bool,
 ) -> LiveAppConfig:
+    if config.combined_volatility_trend_grid_shadow.enabled:
+        return replace(
+            config,
+            trading=replace(
+                config.trading,
+                dry_run=True,
+                max_open_positions=2,
+                max_new_entries_per_cycle=2,
+                max_scale_ins_per_symbol=0,
+                allow_loss_scale_in=False,
+                profit_exit_enabled=False,
+            ),
+            filters=replace(
+                config.filters,
+                enabled=False,
+                extreme_reversal_entry_enabled=False,
+                pre_cross_entry_enabled=False,
+            ),
+            vbp_strategy=replace(config.vbp_strategy, enabled=False),
+            portfolio_control=replace(config.portfolio_control, enabled=False),
+            regime_score=replace(config.regime_score, enabled=False),
+            reversal_alpha=replace(config.reversal_alpha, enabled=False),
+            cmipr=replace(config.cmipr, enabled=False),
+            mtper=replace(config.mtper, enabled=False),
+            mtpc=replace(config.mtpc, enabled=False),
+            macro_events=replace(config.macro_events, enabled=False),
+        )
+    if config.dual_thrust_shadow.enabled:
+        return replace(
+            config,
+            trading=replace(
+                config.trading,
+                dry_run=True,
+                max_open_positions=1,
+                max_new_entries_per_cycle=1,
+                max_scale_ins_per_symbol=0,
+                allow_loss_scale_in=False,
+                profit_exit_enabled=False,
+            ),
+            filters=replace(
+                config.filters,
+                enabled=False,
+                extreme_reversal_entry_enabled=False,
+                pre_cross_entry_enabled=False,
+            ),
+            vbp_strategy=replace(config.vbp_strategy, enabled=False),
+            portfolio_control=replace(config.portfolio_control, enabled=False),
+            regime_score=replace(config.regime_score, enabled=False),
+            reversal_alpha=replace(config.reversal_alpha, enabled=False),
+            cmipr=replace(config.cmipr, enabled=False),
+            mtper=replace(config.mtper, enabled=False),
+            mtpc=replace(config.mtpc, enabled=False),
+            macro_events=replace(config.macro_events, enabled=False),
+        )
+    if (
+        (
+            getattr(config.strategy, "mtf_4h_rsi_regime_enabled", False)
+            or getattr(config.strategy, "mtf_momentum_reset_enabled", False)
+        )
+        and getattr(config.strategy, "mtf_disable_legacy_strategies", False)
+    ):
+        return replace(
+            config,
+            strategy=replace(config.strategy, mtf_max_open_positions=1),
+            trading=replace(
+                config.trading,
+                max_open_positions=1,
+                max_new_entries_per_cycle=1,
+                initial_entry_fraction=1.0,
+                super_volume_extra_slot_enabled=False,
+                max_scale_ins_per_symbol=0,
+                allow_loss_scale_in=False,
+                profit_exit_enabled=False,
+            ),
+            filters=replace(
+                config.filters,
+                enabled=False,
+                extreme_reversal_entry_enabled=False,
+                pre_cross_entry_enabled=False,
+            ),
+            vbp_strategy=replace(config.vbp_strategy, enabled=False),
+            portfolio_control=replace(config.portfolio_control, enabled=False),
+            regime_score=replace(config.regime_score, enabled=False),
+            reversal_alpha=replace(config.reversal_alpha, enabled=False),
+            cmipr=replace(config.cmipr, enabled=False),
+            mtper=replace(config.mtper, enabled=False),
+            mtpc=replace(config.mtpc, enabled=False),
+            macro_events=replace(config.macro_events, enabled=False),
+        )
     trading = replace(config.trading, max_open_positions=5)
     vbp_strategy = replace(config.vbp_strategy, enabled=vbp_enabled)
     portfolio_control = replace(
@@ -1499,7 +1763,13 @@ def _vbp_strategy_symbols(config: LiveAppConfig) -> tuple[str, ...]:
 
 
 def _detect_strategy_mode(config: LiveAppConfig) -> str:
+    if config.combined_volatility_trend_grid_shadow.enabled:
+        return STRATEGY_MODE_COMBINED_SHADOW
+    if config.dual_thrust_shadow.enabled:
+        return STRATEGY_MODE_DUAL_THRUST_SHADOW
     strategy = config.strategy
+    if getattr(strategy, "mtf_momentum_reset_enabled", False):
+        return STRATEGY_MODE_MTF_RESET
     if getattr(strategy, "mtf_4h_rsi_regime_enabled", False):
         return STRATEGY_MODE_MTF
     if getattr(strategy, "oi_flush_reversal_enabled", False):
@@ -1528,6 +1798,10 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
     filters = config.filters
     trading = config.trading
     risk = config.risk
+    dual_thrust_shadow = replace(config.dual_thrust_shadow, enabled=False)
+    combined_shadow = replace(
+        config.combined_volatility_trend_grid_shadow, enabled=False
+    )
     disable_legacy_breakout = {
         "super_volume_breakout_enabled": False,
         "startup_breakout_enabled": False,
@@ -1536,9 +1810,102 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
         "fast_breakout_enabled": False,
         "spike_trade_enabled": False,
         "rsi_reversal_enabled": False,
+        "mtf_momentum_reset_enabled": False,
     }
 
-    if mode == STRATEGY_MODE_INDICATOR:
+    if mode == STRATEGY_MODE_COMBINED_SHADOW:
+        strategy = replace(
+            strategy,
+            **disable_legacy_breakout,
+            mtf_4h_rsi_regime_enabled=False,
+            mtf_disable_legacy_strategies=True,
+            oi_flush_reversal_enabled=False,
+            allow_short=False,
+        )
+        filters = replace(
+            filters,
+            enabled=False,
+            extreme_reversal_entry_enabled=False,
+            pre_cross_entry_enabled=False,
+        )
+        trading = replace(
+            trading,
+            timeframe="1m",
+            poll_seconds=15,
+            entry_scan_seconds=60,
+            dry_run=True,
+            max_open_positions=2,
+            max_new_entries_per_cycle=2,
+            initial_entry_fraction=1.0,
+            scale_in_entry_fraction=0.0,
+            super_volume_extra_slot_enabled=False,
+            max_scale_ins_per_symbol=0,
+            allow_loss_scale_in=False,
+            profit_exit_enabled=False,
+        )
+        risk = replace(
+            risk,
+            starting_capital_usdt=200.0,
+            risk_per_trade_pct=dual_thrust_shadow.risk_per_trade_pct,
+            max_account_margin_usage_pct=0.95,
+            max_symbol_margin_pct=0.95,
+            max_position_notional_usdt=1800.0,
+            max_drawdown_pct=0.60,
+            starting_capital_drawdown_stop_pct=0.60,
+            soft_drawdown_reduce_pct=0.60,
+            soft_drawdown_stop_pct=0.60,
+            soft_drawdown_min_size_multiplier=1.0,
+            backtest_mode="conservative",
+            cost_experiment="full_cost",
+            funding_enabled=True,
+        )
+        dual_thrust_shadow = replace(
+            dual_thrust_shadow, enabled=True, shadow_only=True
+        )
+        combined_shadow = replace(combined_shadow, enabled=True, shadow_only=True)
+    elif mode == STRATEGY_MODE_DUAL_THRUST_SHADOW:
+        strategy = replace(
+            strategy,
+            **disable_legacy_breakout,
+            mtf_4h_rsi_regime_enabled=False,
+            mtf_disable_legacy_strategies=True,
+            oi_flush_reversal_enabled=False,
+            allow_short=False,
+        )
+        filters = replace(filters, enabled=False, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False)
+        trading = replace(
+            trading,
+            timeframe="1m",
+            poll_seconds=15,
+            entry_scan_seconds=60,
+            dry_run=True,
+            max_open_positions=1,
+            max_new_entries_per_cycle=1,
+            initial_entry_fraction=1.0,
+            scale_in_entry_fraction=0.0,
+            super_volume_extra_slot_enabled=False,
+            max_scale_ins_per_symbol=0,
+            allow_loss_scale_in=False,
+            profit_exit_enabled=False,
+        )
+        risk = replace(
+            risk,
+            starting_capital_usdt=2000.0,
+            risk_per_trade_pct=0.025,
+            max_account_margin_usage_pct=0.95,
+            max_symbol_margin_pct=0.95,
+            max_position_notional_usdt=1800.0,
+            max_drawdown_pct=0.60,
+            starting_capital_drawdown_stop_pct=0.60,
+            soft_drawdown_reduce_pct=0.60,
+            soft_drawdown_stop_pct=0.60,
+            soft_drawdown_min_size_multiplier=1.0,
+            backtest_mode="conservative",
+            cost_experiment="full_cost",
+            funding_enabled=True,
+        )
+        dual_thrust_shadow = replace(dual_thrust_shadow, enabled=True, shadow_only=True)
+    elif mode == STRATEGY_MODE_INDICATOR:
         strategy = replace(
             strategy,
             **disable_legacy_breakout,
@@ -1616,16 +1983,121 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
         )
         filters = replace(filters, enabled=True, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False)
         trading = replace(trading, super_volume_extra_slot_enabled=True)
+    elif mode == STRATEGY_MODE_MTF_RESET:
+        reset_strategy_flags = dict(disable_legacy_breakout)
+        reset_strategy_flags["mtf_momentum_reset_enabled"] = True
+        strategy = replace(
+            strategy,
+            **reset_strategy_flags,
+            mtf_4h_rsi_regime_enabled=False,
+            mtf_disable_legacy_strategies=True,
+            mtf_allow_long=True,
+            mtf_allow_short=False,
+            allow_short=False,
+            mtf_symbols_mode="top30",
+            mtf_regime_timeframe="4h",
+            mtf_regime_mode="trend_pullback",
+            mtf_min_rank_score=-999.0,
+            mtf_long_min_rank_score=4.25,
+            mtf_short_min_rank_score=-999.0,
+            mtf_btc_1h_long_min_return_pct=-0.006,
+            mtf_btc_4h_long_min_return_pct=-0.001,
+            mtf_btc_4h_block_strong_opposite=True,
+            mtf_use_funding_filter=True,
+            mtf_long_min_funding_rate=0.0,
+            mtf_long_max_funding_rate=0.0002,
+            mtf_use_oi_filter=False,
+            mtf_min_stop_pct=0.0,
+            mtf_max_stop_pct=0.015,
+            mtf_min_target_to_cost_ratio=12.0,
+            mtf_take_profit_r=2.0,
+            mtf_risk_multiplier=1.0,
+            mtf_exit_mode="fixed_tp",
+            mtf_profit_protection_enabled=False,
+            mtf_exit_on_30m_confirm_lost=False,
+            mtf_exit_on_1h_confirm_lost=True,
+            mtf_fail_fast_minutes=120,
+            mtf_fail_fast_min_r=0.5,
+            mtf_max_holding_minutes=720,
+            mtf_max_daily_trades=2,
+            mtf_max_open_positions=1,
+            mtf_symbol_cooldown_hours=12,
+            mtf_momentum_reset_max_signal_age_minutes=6,
+            mtf_momentum_reset_event_cluster_hours=4,
+            mtf_momentum_reset_min_breadth_ema21=0.55,
+            mtf_momentum_reset_min_breadth_symbols=20,
+            mtf_momentum_reset_breadth_cache_seconds=60,
+            mtf_momentum_reset_priority_mode="target_to_cost_then_rank",
+            oi_flush_reversal_enabled=False,
+        )
+        filters = replace(filters, enabled=False, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False)
+        trading = replace(
+            trading,
+            timeframe="30m",
+            poll_seconds=30,
+            entry_scan_seconds=60,
+            symbol_reentry_cooldown_seconds=43200,
+            max_open_positions=1,
+            max_new_entries_per_cycle=1,
+            initial_entry_fraction=1.0,
+            scale_in_entry_fraction=0.0,
+            super_volume_extra_slot_enabled=False,
+            max_scale_ins_per_symbol=0,
+            allow_loss_scale_in=False,
+            profit_exit_enabled=False,
+        )
+        risk = replace(
+            risk,
+            starting_capital_usdt=200.0,
+            risk_per_trade_pct=0.0321839081,
+            max_account_margin_usage_pct=0.30,
+            max_symbol_margin_pct=0.30,
+            max_drawdown_pct=0.40,
+            starting_capital_drawdown_stop_pct=0.40,
+            weekly_profit_drawdown_stop_pct=0.40,
+            soft_drawdown_reduce_pct=0.20,
+            soft_drawdown_stop_pct=0.35,
+            soft_drawdown_min_size_multiplier=0.50,
+        )
     elif mode == STRATEGY_MODE_MTF:
         strategy = replace(
             strategy,
             **disable_legacy_breakout,
             mtf_4h_rsi_regime_enabled=True,
             mtf_disable_legacy_strategies=True,
+            mtf_max_open_positions=1,
+            mtf_min_rank_score=-999.0,
+            mtf_long_min_rank_score=3.5,
+            mtf_short_min_rank_score=-999.0,
+            mtf_btc_4h_long_min_return_pct=-1.0,
+            mtf_risk_multiplier=1.0,
+            mtf_exit_mode="fixed_tp",
             oi_flush_reversal_enabled=False,
         )
         filters = replace(filters, enabled=False, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False)
-        trading = replace(trading, super_volume_extra_slot_enabled=False)
+        trading = replace(
+            trading,
+            max_open_positions=1,
+            max_new_entries_per_cycle=1,
+            initial_entry_fraction=1.0,
+            super_volume_extra_slot_enabled=False,
+            max_scale_ins_per_symbol=0,
+            allow_loss_scale_in=False,
+            profit_exit_enabled=False,
+        )
+        risk = replace(
+            risk,
+            starting_capital_usdt=200.0,
+            risk_per_trade_pct=0.0275862069,
+            max_account_margin_usage_pct=0.30,
+            max_symbol_margin_pct=0.30,
+            max_drawdown_pct=0.40,
+            starting_capital_drawdown_stop_pct=0.40,
+            weekly_profit_drawdown_stop_pct=0.40,
+            soft_drawdown_reduce_pct=0.20,
+            soft_drawdown_stop_pct=0.35,
+            soft_drawdown_min_size_multiplier=0.50,
+        )
     elif mode == STRATEGY_MODE_OI_FLUSH:
         strategy = replace(
             strategy,
@@ -1639,11 +2111,40 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
         filters = replace(filters, enabled=False, extreme_reversal_entry_enabled=False, pre_cross_entry_enabled=False)
         trading = replace(trading, super_volume_extra_slot_enabled=False)
 
-    return replace(config, trading=trading, strategy=strategy, filters=filters, risk=risk)
+    updated = replace(
+        config,
+        trading=trading,
+        strategy=strategy,
+        filters=filters,
+        risk=risk,
+        dual_thrust_shadow=dual_thrust_shadow,
+        combined_volatility_trend_grid_shadow=combined_shadow,
+    )
+    if mode in {
+        STRATEGY_MODE_COMBINED_SHADOW,
+        STRATEGY_MODE_DUAL_THRUST_SHADOW,
+        STRATEGY_MODE_MTF_RESET,
+        STRATEGY_MODE_MTF,
+    }:
+        updated = replace(
+            updated,
+            vbp_strategy=replace(updated.vbp_strategy, enabled=False),
+            portfolio_control=replace(updated.portfolio_control, enabled=False),
+            regime_score=replace(updated.regime_score, enabled=False),
+            reversal_alpha=replace(updated.reversal_alpha, enabled=False),
+            cmipr=replace(updated.cmipr, enabled=False),
+            mtper=replace(updated.mtper, enabled=False),
+            mtpc=replace(updated.mtpc, enabled=False),
+            macro_events=replace(updated.macro_events, enabled=False),
+        )
+    return updated
 
 
 def main() -> int:
-    app = TradingApp()
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--config", default=ACTIVE_GUI_CONFIG_PATH)
+    args = parser.parse_args()
+    app = TradingApp(initial_config_path=args.config)
     app.mainloop()
     return 0
 

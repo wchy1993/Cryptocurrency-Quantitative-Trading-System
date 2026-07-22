@@ -9,10 +9,14 @@ import unittest
 
 from crypto_scalper.binance_client import BinanceApiError, BinanceFuturesClient, SymbolRules
 from crypto_scalper.gui import (
+    DEFAULT_CONFIG_PATH,
     STRATEGY_MODE_INDICATOR,
     STRATEGY_MODE_MTF,
+    STRATEGY_MODE_MTF_RESET,
     STRATEGY_MODE_SUPER_VOLUME,
+    _config_with_strategy_selection,
     _config_with_strategy_mode,
+    _indicator_strategy_enabled,
     _position_symbols_first,
 )
 from crypto_scalper.live_config import default_live_config, load_live_config, write_live_config
@@ -24,6 +28,7 @@ from crypto_scalper.live_trader import (
     SimPosition,
     _candidate_requires_extra_slot,
     _entry_position_limit,
+    _full_cost_risk_pct_for_sizing,
     _super_volume_extra_slot_candidate_allowed,
 )
 from crypto_scalper.models import Candle, Direction, Signal
@@ -85,6 +90,7 @@ class LiveConfigTests(unittest.TestCase):
         base = default_live_config()
         super_volume = _config_with_strategy_mode(base, STRATEGY_MODE_SUPER_VOLUME)
         mtf = _config_with_strategy_mode(base, STRATEGY_MODE_MTF)
+        reset = _config_with_strategy_mode(base, STRATEGY_MODE_MTF_RESET)
 
         self.assertTrue(super_volume.strategy.super_volume_breakout_enabled)
         self.assertFalse(super_volume.strategy.mtf_4h_rsi_regime_enabled)
@@ -92,6 +98,83 @@ class LiveConfigTests(unittest.TestCase):
         self.assertTrue(mtf.strategy.mtf_4h_rsi_regime_enabled)
         self.assertTrue(mtf.strategy.mtf_disable_legacy_strategies)
         self.assertFalse(mtf.strategy.super_volume_breakout_enabled)
+        self.assertEqual(mtf.trading.max_open_positions, 1)
+        self.assertEqual(mtf.strategy.mtf_max_open_positions, 1)
+        self.assertEqual(mtf.trading.initial_entry_fraction, 1.0)
+        self.assertEqual(mtf.strategy.mtf_long_min_rank_score, 3.5)
+        self.assertEqual(mtf.strategy.mtf_risk_multiplier, 1.0)
+        self.assertEqual(mtf.strategy.mtf_exit_mode, "fixed_tp")
+        self.assertEqual(mtf.risk.risk_per_trade_pct, 0.0275862069)
+        self.assertEqual(mtf.trading.max_scale_ins_per_symbol, 0)
+        self.assertFalse(mtf.trading.profit_exit_enabled)
+        self.assertFalse(mtf.vbp_strategy.enabled)
+        self.assertFalse(mtf.reversal_alpha.enabled)
+        self.assertFalse(mtf.cmipr.enabled)
+        self.assertFalse(mtf.mtper.enabled)
+        self.assertFalse(mtf.mtpc.enabled)
+        self.assertTrue(reset.strategy.mtf_momentum_reset_enabled)
+        self.assertFalse(reset.strategy.mtf_4h_rsi_regime_enabled)
+        self.assertTrue(reset.strategy.mtf_disable_legacy_strategies)
+        self.assertTrue(reset.strategy.mtf_allow_long)
+        self.assertFalse(reset.strategy.mtf_allow_short)
+        self.assertFalse(reset.strategy.allow_short)
+        self.assertEqual(reset.strategy.mtf_long_min_rank_score, 4.25)
+        self.assertEqual(reset.strategy.mtf_min_target_to_cost_ratio, 12.0)
+        self.assertEqual(reset.strategy.mtf_momentum_reset_min_breadth_ema21, 0.55)
+        self.assertEqual(reset.risk.risk_per_trade_pct, 0.0321839081)
+        self.assertEqual(reset.trading.max_open_positions, 1)
+        self.assertEqual(reset.trading.symbol_reentry_cooldown_seconds, 43200)
+
+    def test_gui_momentum_reset_config_is_long_only_and_dry_run_safe(self) -> None:
+        path = Path(__file__).resolve().parents[1] / DEFAULT_CONFIG_PATH
+        config = load_live_config(path)
+
+        self.assertEqual(config.exchange.environment, "mainnet")
+        self.assertTrue(config.trading.dry_run)
+        self.assertEqual(config.trading.max_open_positions, 1)
+        self.assertEqual(config.trading.max_new_entries_per_cycle, 1)
+        self.assertEqual(config.trading.max_scale_ins_per_symbol, 0)
+        self.assertFalse(config.trading.allow_loss_scale_in)
+        self.assertFalse(config.trading.profit_exit_enabled)
+        self.assertTrue(config.strategy.mtf_momentum_reset_enabled)
+        self.assertFalse(config.strategy.mtf_4h_rsi_regime_enabled)
+        self.assertTrue(config.strategy.mtf_disable_legacy_strategies)
+        self.assertEqual(config.strategy.mtf_max_open_positions, 1)
+        self.assertEqual(config.strategy.mtf_long_min_rank_score, 4.25)
+        self.assertEqual(config.strategy.mtf_min_target_to_cost_ratio, 12.0)
+        self.assertEqual(config.strategy.mtf_momentum_reset_min_breadth_ema21, 0.55)
+        self.assertEqual(config.strategy.mtf_momentum_reset_event_cluster_hours, 4)
+        self.assertEqual(config.strategy.mtf_risk_multiplier, 1.0)
+        self.assertEqual(config.strategy.mtf_exit_mode, "fixed_tp")
+        self.assertEqual(config.risk.starting_capital_usdt, 200.0)
+        self.assertEqual(config.risk.risk_per_trade_pct, 0.0321839081)
+        self.assertTrue(config.strategy.mtf_allow_long)
+        self.assertFalse(config.strategy.mtf_allow_short)
+        self.assertFalse(config.strategy.allow_short)
+        self.assertFalse(config.strategy.mtf_use_oi_filter)
+        self.assertFalse(_indicator_strategy_enabled(config))
+        self.assertFalse(config.vbp_strategy.enabled)
+        self.assertFalse(config.reversal_alpha.enabled)
+        self.assertFalse(config.cmipr.enabled)
+        self.assertFalse(config.mtper.enabled)
+        self.assertFalse(config.mtpc.enabled)
+
+    def test_gui_strategy_selection_cannot_reopen_legacy_strategies_for_momentum_reset(self) -> None:
+        path = Path(__file__).resolve().parents[1] / DEFAULT_CONFIG_PATH
+        config = load_live_config(path)
+
+        selected = _config_with_strategy_selection(config, indicator_enabled=True, vbp_enabled=True)
+
+        self.assertEqual(selected.trading.max_open_positions, 1)
+        self.assertEqual(selected.strategy.mtf_max_open_positions, 1)
+        self.assertEqual(selected.trading.max_scale_ins_per_symbol, 0)
+        self.assertFalse(selected.filters.extreme_reversal_entry_enabled)
+        self.assertFalse(selected.vbp_strategy.enabled)
+        self.assertFalse(selected.portfolio_control.enabled)
+        self.assertFalse(selected.reversal_alpha.enabled)
+        self.assertFalse(selected.cmipr.enabled)
+        self.assertFalse(selected.mtper.enabled)
+        self.assertFalse(selected.mtpc.enabled)
 
     def test_live_config_round_trip_normalizes_symbols(self) -> None:
         config = default_live_config()
@@ -101,6 +184,56 @@ class LiveConfigTests(unittest.TestCase):
             loaded = load_live_config(path)
         self.assertIn("BTCUSDT", loaded.trading.symbols)
         self.assertTrue(loaded.trading.dry_run)
+
+    def test_momentum_reset_sizing_includes_full_cost_stop_loss(self) -> None:
+        path = Path(__file__).resolve().parents[1] / DEFAULT_CONFIG_PATH
+        config = load_live_config(path)
+        signal = Signal(
+            Direction.LONG,
+            0.62,
+            "long_mtf_4h_rsi_regime_pullback|setup=1h_reset_30m_release",
+            0.01,
+            0.02,
+        )
+
+        sizing_risk = _full_cost_risk_pct_for_sizing(config, signal)
+
+        expected_cost = 2 * 0.0005 + (2.0 + 5.0) / 10_000.0
+        self.assertAlmostEqual(sizing_risk, 0.01 + expected_cost)
+
+    def test_momentum_reset_fill_revalidation_uses_actual_price_and_cost_guard(self) -> None:
+        path = Path(__file__).resolve().parents[1] / DEFAULT_CONFIG_PATH
+        config = load_live_config(path)
+        trader = BinanceAutoTrader(config, FakeClient())
+        candle = Candle(datetime(2026, 1, 1), 99.8, 100.2, 99.7, 100.0, 1000.0)
+        signal = Signal(
+            Direction.LONG,
+            0.62,
+            "long_mtf_4h_rsi_regime_pullback|setup=1h_reset_30m_release",
+            0.01,
+            0.02,
+        )
+        candidate = EntryCandidate(
+            "BTCUSDT",
+            signal,
+            candle,
+            4.5,
+            0.01,
+            1.2,
+            "mtf_momentum_reset_contraction_release",
+            metadata={
+                "trigger_atr": 2.0,
+                "trigger_close": 100.0,
+                "structural_stop_price": 99.0,
+            },
+        )
+
+        accepted = trader._mtf_momentum_reset_adjust_for_execution(candidate, 100.2)
+        rejected = trader._mtf_momentum_reset_adjust_for_execution(candidate, 101.0)
+
+        self.assertIsNotNone(accepted)
+        self.assertGreaterEqual(float((accepted or candidate).metadata["target_to_cost_ratio"]), 12.0)
+        self.assertIsNone(rejected)
 
     def test_default_live_config_uses_ultra_short_multi_timeframe_universe(self) -> None:
         config = default_live_config()
@@ -118,7 +251,7 @@ class LiveConfigTests(unittest.TestCase):
         self.assertEqual(config.trading.entry_scan_seconds, 300)
         self.assertEqual(config.trading.symbol_reentry_cooldown_seconds, 3600)
         self.assertEqual(config.trading.leverage, 30)
-        self.assertEqual(config.trading.max_open_positions, 4)
+        self.assertEqual(config.trading.max_open_positions, 5)
         self.assertFalse(config.trading.super_volume_extra_slot_enabled)
         self.assertEqual(config.trading.super_volume_extra_max_open_positions, 5)
         self.assertEqual(config.trading.max_new_entries_per_cycle, 1)
@@ -131,12 +264,13 @@ class LiveConfigTests(unittest.TestCase):
         self.assertEqual(config.trading.initial_entry_fraction, 0.75)
         self.assertEqual(config.trading.scale_in_entry_fraction, 0.35)
         self.assertEqual(config.trading.scale_in_min_profit_pct, 0.004)
+        self.assertEqual(config.trading.scale_in_profit_basis, "gross")
         self.assertEqual(config.trading.max_scale_ins_per_symbol, 2)
         self.assertFalse(config.trading.allow_loss_scale_in)
         self.assertEqual(config.trading.loss_scale_in_entry_fraction, 0.25)
         self.assertEqual(config.risk.max_position_notional_usdt, 10_000.0)
         self.assertEqual(config.risk.risk_per_trade_pct, 0.06)
-        self.assertEqual(config.risk.max_account_margin_usage_pct, 0.08)
+        self.assertEqual(config.risk.max_account_margin_usage_pct, 0.10)
         self.assertEqual(config.risk.max_symbol_margin_pct, 0.04)
         self.assertEqual(config.risk.min_symbol_margin_pct, 0.01)
         self.assertEqual(config.risk.max_daily_loss_pct, 0.15)
@@ -202,8 +336,8 @@ class LiveConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(_entry_position_limit(config), 5)
-        self.assertFalse(_candidate_requires_extra_slot(config, 3))
-        self.assertTrue(_candidate_requires_extra_slot(config, 4))
+        self.assertFalse(_candidate_requires_extra_slot(config, 4))
+        self.assertTrue(_candidate_requires_extra_slot(config, 5))
         self.assertTrue(_super_volume_extra_slot_candidate_allowed(config, strong))
         self.assertFalse(_super_volume_extra_slot_candidate_allowed(config, weak))
         self.assertFalse(_super_volume_extra_slot_candidate_allowed(config, normal))
@@ -296,6 +430,66 @@ class LiveConfigTests(unittest.TestCase):
         notional = float(qty) * 100.0
         self.assertLessEqual(notional, config.risk.max_position_notional_usdt * config.trading.initial_entry_fraction)
         self.assertGreaterEqual(notional, account.equity * config.risk.min_symbol_margin_pct * config.trading.leverage)
+
+    def test_order_size_respects_maintenance_margin_ratio_cap(self) -> None:
+        base = default_live_config()
+        config = replace(
+            base,
+            trading=replace(base.trading, initial_entry_fraction=1.0),
+            risk=replace(
+                base.risk,
+                risk_per_trade_pct=0.10,
+                max_account_margin_usage_pct=1.0,
+                max_symbol_margin_pct=1.0,
+                max_position_notional_usdt=1_000_000.0,
+                max_maintenance_margin_ratio_pct=0.05,
+                estimated_maintenance_margin_rate=0.005,
+            ),
+        )
+        trader = BinanceAutoTrader(config, FakeClient())
+        account = AccountSnapshot(
+            equity=1_000.0,
+            wallet_balance=1_000.0,
+            available_balance=1_000.0,
+            initial_margin=0.0,
+            maintenance_margin=0.0,
+            total_unrealized_pnl=0.0,
+            positions={},
+        )
+        signal = Signal(Direction.LONG, 1.0, "test", 0.005, 0.01)
+
+        quantity, reason = trader._size_order("BTCUSDT", 100.0, signal, account)
+
+        self.assertEqual(reason, "ok")
+        notional = float(quantity) * 100.0
+        self.assertLessEqual(notional * config.risk.estimated_maintenance_margin_rate, 50.0)
+
+    def test_order_size_rejects_when_maintenance_margin_cap_is_already_used(self) -> None:
+        base = default_live_config()
+        config = replace(
+            base,
+            risk=replace(
+                base.risk,
+                max_maintenance_margin_ratio_pct=0.05,
+                estimated_maintenance_margin_rate=0.005,
+            ),
+        )
+        trader = BinanceAutoTrader(config, FakeClient())
+        account = AccountSnapshot(
+            equity=1_000.0,
+            wallet_balance=1_000.0,
+            available_balance=900.0,
+            initial_margin=10.0,
+            maintenance_margin=50.0,
+            total_unrealized_pnl=0.0,
+            positions={},
+        )
+        signal = Signal(Direction.LONG, 1.0, "test", 0.01, 0.02)
+
+        quantity, reason = trader._size_order("BTCUSDT", 100.0, signal, account)
+
+        self.assertEqual(quantity, "0")
+        self.assertEqual(reason, "maintenance_margin_ratio_limit")
 
     def test_high_equity_min_margin_does_not_block_fixed_notional_cap(self) -> None:
         config = default_live_config()
@@ -489,6 +683,58 @@ class LiveConfigTests(unittest.TestCase):
         reason = trader._profit_exit_reason(position, [candle], current_candle=candle)
 
         self.assertIsNone(reason)
+
+    def test_mtf_core_v3_fail_fast_uses_directional_mfe_for_long_and_short(self) -> None:
+        path = Path(__file__).resolve().parents[1] / DEFAULT_CONFIG_PATH
+        base = load_live_config(path)
+        config = replace(
+            base,
+            strategy=replace(
+                base.strategy,
+                mtf_exit_on_1h_confirm_lost=False,
+                mtf_fail_fast_minutes=120,
+                mtf_fail_fast_min_r=0.5,
+                mtf_max_holding_minutes=720,
+            ),
+        )
+        trader = BinanceAutoTrader(config, FakeClient())
+        candle = Candle(datetime(2025, 1, 1, 2, 0), 100.0, 101.0, 99.0, 100.0, 1000.0)
+
+        for direction, stop, best in (
+            (Direction.LONG, 95.0, 101.0),
+            (Direction.SHORT, 105.0, 99.0),
+        ):
+            position = SimPosition(
+                symbol="BTCUSDT",
+                direction=direction,
+                quantity=1.0,
+                entry_price=100.0,
+                stop_price=stop,
+                take_profit_price=110.0 if direction == Direction.LONG else 90.0,
+                max_holding_bars=24,
+                entry_time=datetime(2025, 1, 1),
+                last_checked_time=candle.timestamp,
+                best_price=best,
+                bars_held=4,
+                entry_reason=f"{direction.name.lower()}_mtf_4h_rsi_regime_pullback",
+                initial_stop_price=stop,
+            )
+
+            reason = trader._mtf_position_exit_reason(position, candle)
+
+            self.assertIsNotNone(reason)
+            self.assertIn("mtf_fail_fast", reason or "")
+
+    def test_mtf_live_funding_uses_current_premium_index(self) -> None:
+        path = Path(__file__).resolve().parents[1] / DEFAULT_CONFIG_PATH
+        config = load_live_config(path)
+        client = FundingClient()
+        trader = BinanceAutoTrader(config, client)
+
+        self.assertAlmostEqual(trader._current_mtf_funding_rate("BTCUSDT") or 0.0, 0.0001)
+        self.assertEqual(client.premium_calls, 1)
+        self.assertAlmostEqual(trader._current_mtf_funding_rate("ETHUSDT") or 0.0, -0.0002)
+        self.assertEqual(client.premium_calls, 1)
 
     def test_prepare_symbol_skips_margin_type_blocked_by_open_orders(self) -> None:
         base = default_live_config()
@@ -819,6 +1065,18 @@ class FakeClient:
 
     def symbol_rules(self, symbol: str) -> SymbolRules:
         return SymbolRules(symbol, "0.001", "0.001", "0.01", "5")
+
+
+class FundingClient(FakeClient):
+    def __init__(self) -> None:
+        self.premium_calls = 0
+
+    def premium_index(self):
+        self.premium_calls += 1
+        return [
+            {"symbol": "BTCUSDT", "lastFundingRate": "0.0001"},
+            {"symbol": "ETHUSDT", "lastFundingRate": "-0.0002"},
+        ]
 
 
 class MarginBlockedClient(FakeClient):

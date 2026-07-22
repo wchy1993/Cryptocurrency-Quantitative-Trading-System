@@ -1,0 +1,34 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout",
+  "status": "historical_research_frozen_after_boundary_search",
+  "report": "reports/volatility_breakout_3m_30_vs_50.json",
+  "summary": "reports/volatility_breakout_3m_30_vs_50.md",
+  "configs": [
+    "config.volatility-breakout.optimized-30.json",
+    "config.volatility-breakout.optimized-50.json"
+  ],
+  "implementation_files": [
+    "crypto_scalper/volatility_breakout.py",
+    "crypto_scalper/volatility_breakout_optimize.py",
+    "tests/test_volatility_breakout.py"
+  ],
+  "hashes": {
+    "reports/volatility_breakout_3m_30_vs_50.json": "3a19a8a79943b9307ad12c448fa1402742897216b3f4f20667afc7a0183f7683",
+    "reports/volatility_breakout_3m_30_vs_50.md": "c53c2f303dcdc8e4c6e1345f8c364f09e61dfbfd9afa1400b7a3a81e82fb0e9e",
+    "config.volatility-breakout.optimized-30.json": "872d0d8eee7ff33058d4476b13f850339de06125c713882f88c4ff8a4575bc5e",
+    "config.volatility-breakout.optimized-50.json": "be3fc60639a6a7acc8f45448fab56f494b6d371595589010395c04486e9b4020",
+    "crypto_scalper/volatility_breakout.py": "6400f9848a85cad1a9c6317f35e6a02c90dd0a246f1aa7ac3b92459cf6b5dd6a",
+    "crypto_scalper/volatility_breakout_optimize.py": "f0f6fa44d152acddcca5075c1a0557443090edc3fd3272d10183dabaab42aaef",
+    "tests/test_volatility_breakout.py": "fe27e8af0a0058cb491c1f3602a1f941f0eeb3fc0e764e8d02384db082628aaa",
+    "config.gui.mtf-momentum-reset-stage21.json": "cb7bdc9c4c8577a9555361f40a7d1490e92eacded588f3c9eb784c467d6654c5",
+    "config.mtf-htf.momentum-reset-stage21-gui-dryrun-manifest.json": "8b37ab80c43fcc8fe71309cdbef504eb96cc95bc545b89d030caa4232815e3ab",
+    "reports/mtf_momentum_reset_full12m_stage21_path.json": "dfa5e621812ed6b0ec710f4fe8e1bd654c08881f6a02cdc9b83ec7c884e063c1",
+    "reports/mtf_momentum_reset_full12m_stage21_summary.md": "8bf9bfdf6391031c5ad95281782db1425d6be2fef70c3a19f977442367fbc3b5"
+  },
+  "preserved_mtf_assets": [
+    "config.gui.mtf-momentum-reset-stage21.json",
+    "config.mtf-htf.momentum-reset-stage21-gui-dryrun-manifest.json",
+    "reports/mtf_momentum_reset_full12m_stage21_path.json",
+    "reports/mtf_momentum_reset_full12m_stage21_summary.md"
+  ]
+}

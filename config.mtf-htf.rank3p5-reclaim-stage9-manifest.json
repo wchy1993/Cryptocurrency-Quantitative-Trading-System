@@ -1,0 +1,41 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-b.json",
+  "experiment_budget": 2,
+  "research_name": "mtf_core_v3_rank3p5_ema_reclaim_stage9",
+  "selection_data": [
+    "2025-06-12/2025-12-31 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "frozen_reference": "config.mtf-htf.long-rank3p5-frozen-20260717-manifest.json",
+  "experiments": [
+    {
+      "name": "ema_reclaim_only_strict",
+      "strategy": {
+        "mtf_15m_trigger_mode": "ema_reclaim",
+        "mtf_reclaim_ema_period": 9,
+        "mtf_reclaim_allow_long": true,
+        "mtf_reclaim_allow_short": true,
+        "mtf_reclaim_min_body_atr": 0.25,
+        "mtf_reclaim_min_close_position_long": 0.65,
+        "mtf_reclaim_max_close_position_short": 0.35,
+        "mtf_reclaim_min_volume_ratio": 0.8,
+        "mtf_reclaim_require_macd_improvement": true
+      }
+    },
+    {
+      "name": "structure_plus_ema_reclaim_strict",
+      "strategy": {
+        "mtf_15m_trigger_mode": "structure_or_reclaim",
+        "mtf_reclaim_ema_period": 9,
+        "mtf_reclaim_allow_long": true,
+        "mtf_reclaim_allow_short": true,
+        "mtf_reclaim_min_body_atr": 0.25,
+        "mtf_reclaim_min_close_position_long": 0.65,
+        "mtf_reclaim_max_close_position_short": 0.35,
+        "mtf_reclaim_min_volume_ratio": 0.8,
+        "mtf_reclaim_require_macd_improvement": true
+      }
+    }
+  ]
+}

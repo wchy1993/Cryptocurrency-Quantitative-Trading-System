@@ -1,0 +1,39 @@
+{
+  "base_config": "config.mtf-htf.optimized-frozen-v1.json",
+  "experiment_budget": 4,
+  "selection_data": [
+    "2025-06-12/2026-01-01 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "experiments": [
+    {
+      "name": "failfast_45m_025r",
+      "strategy": {
+        "mtf_fail_fast_minutes": 45,
+        "mtf_fail_fast_min_r": 0.25
+      }
+    },
+    {
+      "name": "failfast_60m_025r",
+      "strategy": {
+        "mtf_fail_fast_minutes": 60,
+        "mtf_fail_fast_min_r": 0.25
+      }
+    },
+    {
+      "name": "failfast_60m_050r",
+      "strategy": {
+        "mtf_fail_fast_minutes": 60,
+        "mtf_fail_fast_min_r": 0.50
+      }
+    },
+    {
+      "name": "failfast_120m_050r",
+      "strategy": {
+        "mtf_fail_fast_minutes": 120,
+        "mtf_fail_fast_min_r": 0.50
+      }
+    }
+  ]
+}

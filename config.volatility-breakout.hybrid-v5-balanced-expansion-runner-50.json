@@ -1,0 +1,67 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_hybrid_v5_balanced_expansion_runner",
+  "status": "research_not_live_gui_unchanged",
+  "selected_reason": "restores_50R_plus_winners_with_lower_drawdown_than_old_v2",
+  "entry": {
+    "family_key": "tf60_lb5_lk0.7_sk0.6",
+    "include_stable_lane": false,
+    "min_alignment": -999.0,
+    "max_alignment": 999.0,
+    "max_body": 999.0,
+    "max_volume": 999.0,
+    "max_range": 999.0,
+    "max_extension": 999.0,
+    "min_close_position": 0.0,
+    "min_market_efficiency": 0.0,
+    "min_ema55_alignment": -999.0,
+    "max_ema55_alignment": 999.0,
+    "min_regime_score": -999.0,
+    "max_directional_btc_return_4h": 0.02
+  },
+  "runner": {
+    "risk_per_trade_pct": 0.025,
+    "long_risk_multiplier": 1.0,
+    "short_risk_multiplier": 1.0,
+    "stop_atr_multiple": 1.0,
+    "take_profit_r": 60.0,
+    "partial_take_profit_r": 8.0,
+    "partial_take_profit_fraction": 0.05,
+    "max_holding_minutes": 960,
+    "fail_fast_minutes": 120,
+    "fail_fast_min_mfe_r": 0.1,
+    "fail_fast_max_current_r": -0.5,
+    "ranking_mode": "quality_desc",
+    "max_open_positions": 1,
+    "compound": true
+  },
+  "six_month_result": {
+    "trade_count": 277,
+    "net_profit": 5733.510217022102,
+    "profit_factor": 1.6213206835711431,
+    "win_rate": 0.3140794223826715,
+    "max_drawdown_pct": 0.3984891763435947,
+    "largest_trade_net_profit": 1020.9237901228838,
+    "largest_trade_r": 57.511447145430495,
+    "five_r_winner_count": 21
+  },
+  "three_month_result": {
+    "trade_count": 148,
+    "net_profit": 1673.3831719459233,
+    "profit_factor": 1.614474422766328,
+    "win_rate": 0.31756756756756754,
+    "max_drawdown_pct": 0.39848963308176066,
+    "largest_trade_net_profit": 322.3640537722951,
+    "largest_trade_r": 57.51284704180197,
+    "five_r_winner_count": 10
+  },
+  "old_reference_period_result": {
+    "trade_count": 152,
+    "net_profit": 3511.266838549577,
+    "profit_factor": 2.1848622345229423,
+    "win_rate": 0.34868421052631576,
+    "max_drawdown_pct": 0.2999894731910256,
+    "largest_trade_net_profit": 786.2802248324742,
+    "largest_trade_r": 57.51106433277573,
+    "five_r_winner_count": 13
+  }
+}

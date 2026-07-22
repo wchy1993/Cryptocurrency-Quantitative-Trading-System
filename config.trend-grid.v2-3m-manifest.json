@@ -1,0 +1,25 @@
+{
+  "strategy_name": "dynamic_trend_following_grid_v2",
+  "status": "historical_research_frozen_separately_from_gui_strategy",
+  "report": "reports/trend_grid_v2_3m_30_vs_50.json",
+  "configs": [
+    "config.trend-grid.v2-optimized-30.json",
+    "config.trend-grid.v2-optimized-50.json"
+  ],
+  "preserved_gui_strategy": "config.volatility-breakout.v2-balanced-50-shadow.json",
+  "hashes": {
+    "reports/trend_grid_v2_3m_30_vs_50.json": "c4d56f198dcdce97868f5193d3b037843007ce4e1bf8c3dc0e06870e57b61b59",
+    "reports/trend_grid_v2_3m_30_vs_50.md": "e7e8172e76a9982f6a45e5b0f531c5db476a9910e6c7975be6b33c7102110138",
+    "reports/trend_grid_v2_final_audit.json": "0770932bb32e2a306c5794db41397db181f471f339c678fcc268dbd85030797e",
+    "config.trend-grid.v2-optimized-30.json": "61512432da8abc1b3faf06365c36c1ed43a838e9dfac6a9528ca1bee774b7336",
+    "config.trend-grid.v2-optimized-50.json": "c45b4ab37ee7535a9feec162478a80990c55b7f57491b319b335a1a1ae5888ce",
+    "crypto_scalper/trend_grid.py": "10db748859eed0a49d6c9f417e685a396f5a424a1fbe65f539b1fb4ed5959615",
+    "crypto_scalper/trend_grid_optimize.py": "cc21c943adc6723c50c64ba3740c2ff77176bd9bb9d6c4873666a985ca89ee72",
+    "crypto_scalper/trend_grid_v2_optimize.py": "366d2e924ad5313c4a653e517ca32c8ea3cf32d4691e99dc2fefb4db23a5daf0",
+    "scripts/trend_grid_final_audit.py": "ae1b997faa650c3ed821eed68e46d071e1cd50fadbd45a752319e355f06b82b6",
+    "tests/test_trend_grid.py": "89f6502430b4549552c0b82153fd345eaf823730bd9ffea32edcba1d13e63879",
+    "config.volatility-breakout.v2-balanced-50-shadow-manifest.json": "178656e7114c176496d2ff44b4319c18fd12871c7bbab7db4bf89c7911727c1a"
+  },
+  "summary": "reports/trend_grid_v2_3m_30_vs_50.md",
+  "final_audit": "reports/trend_grid_v2_final_audit.json"
+}

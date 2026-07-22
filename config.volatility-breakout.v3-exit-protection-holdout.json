@@ -1,0 +1,37 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v3_exit_protection",
+  "status": "frozen_recent_holdout_not_live",
+  "initial_equity": 200.0,
+  "period": {
+    "start": "2026-06-17T00:00:00",
+    "end": "2026-07-19T00:00:00"
+  },
+  "data": {
+    "signal_data_dir": "data/binance_15m_v3_exit_holdout_20260612_20260719",
+    "execution_data_dir": "data/binance_1m_v3_exit_holdout_20260522_20260719",
+    "funding_data_dir": "data/binance_funding_v3_exit_holdout_20260612_20260719",
+    "cost_config": "config.gui.mtf-momentum-reset-stage21.json",
+    "source": "Binance USD-M Futures official API",
+    "downloaded_after_selection": true
+  },
+  "frozen_sources": {
+    "research_report": "reports/volatility_breakout_v3_exit_protection_3m.json",
+    "selected_config": "config.volatility-breakout.v3-exit-protection-selected.json"
+  },
+  "fixed_variants": [
+    "partial_0.25_at_1.5r_runner_original_stop",
+    "partial_0.25_at_2r_runner_original_stop",
+    "partial_0.75_at_1.5r_runner_original_stop",
+    "breakeven_1.5r",
+    "giveback_activate_5r_allow_1.5r",
+    "partial_0.5_at_1.5r_giveback_3_1.5"
+  ],
+  "stress": {
+    "cost_multiplier": 2.0
+  },
+  "output": {
+    "report": "reports/volatility_breakout_v3_exit_protection_recent_holdout.json",
+    "summary": "reports/volatility_breakout_v3_exit_protection_recent_holdout.md",
+    "manifest": "config.volatility-breakout.v3-exit-protection-holdout-manifest.json"
+  }
+}

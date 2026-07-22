@@ -1,0 +1,89 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-3p5.json",
+  "experiment_budget": 4,
+  "research_name": "mtf_core_v3_rank3p5_plus_independent_mtpc_stage13",
+  "selection_data": [
+    "2025-06-12/2025-12-31 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test_used_for_selection": false,
+  "frozen_reference": "config.mtf-htf.long-rank3p5-risk3p5-frozen-20260717-manifest.json",
+  "experiments": [
+    {
+      "name": "frozen_mtf_reference",
+      "universe_source_config": "config.mtpc.frequency-profit-v1.json",
+      "append_universe_to_base": true,
+      "trading": {
+        "max_open_positions": 1,
+        "max_new_entries_per_cycle": 1
+      },
+      "risk": {
+        "funding_data_dir": "data/binance_funding_365d_top60",
+        "point_in_time_universe_enabled": true,
+        "point_in_time_universe_top_n": 60,
+        "universe_lookback_days": 1,
+        "new_symbol_warmup_days": 20
+      }
+    },
+    {
+      "name": "mtpc_reference_frozen_costs",
+      "mtpc_source_config": "config.mtpc.frequency-profit-v1.json",
+      "universe_source_config": "config.mtpc.frequency-profit-v1.json",
+      "append_universe_to_base": true,
+      "trading": {
+        "max_open_positions": 1,
+        "max_new_entries_per_cycle": 1
+      },
+      "strategy": {
+        "mtf_4h_rsi_regime_enabled": false
+      },
+      "risk": {
+        "funding_data_dir": "data/binance_funding_365d_top60",
+        "point_in_time_universe_enabled": true,
+        "point_in_time_universe_top_n": 60,
+        "universe_lookback_days": 1,
+        "new_symbol_warmup_days": 20
+      }
+    },
+    {
+      "name": "combined_shared_slot",
+      "mtpc_source_config": "config.mtpc.frequency-profit-v1.json",
+      "universe_source_config": "config.mtpc.frequency-profit-v1.json",
+      "append_universe_to_base": true,
+      "trading": {
+        "max_open_positions": 1,
+        "max_new_entries_per_cycle": 1
+      },
+      "risk": {
+        "funding_data_dir": "data/binance_funding_365d_top60",
+        "point_in_time_universe_enabled": true,
+        "point_in_time_universe_top_n": 60,
+        "universe_lookback_days": 1,
+        "new_symbol_warmup_days": 20
+      },
+      "mtpc": {
+        "combine_with_mtf": true
+      }
+    },
+    {
+      "name": "combined_dual_slot_opposite_side_only",
+      "mtpc_source_config": "config.mtpc.frequency-profit-v1.json",
+      "universe_source_config": "config.mtpc.frequency-profit-v1.json",
+      "append_universe_to_base": true,
+      "trading": {
+        "max_open_positions": 2,
+        "max_new_entries_per_cycle": 1
+      },
+      "risk": {
+        "funding_data_dir": "data/binance_funding_365d_top60",
+        "point_in_time_universe_enabled": true,
+        "point_in_time_universe_top_n": 60,
+        "universe_lookback_days": 1,
+        "new_symbol_warmup_days": 20
+      },
+      "mtpc": {
+        "combine_with_mtf": true
+      }
+    }
+  ]
+}

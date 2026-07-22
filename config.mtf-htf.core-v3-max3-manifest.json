@@ -1,0 +1,16 @@
+{
+  "base_config": "config.mtf-htf.optimized-structure-only-v3.json",
+  "experiment_budget": 1,
+  "change_scope": "maximum concurrent positions only",
+  "experiments": [
+    {
+      "name": "core_v3_max3",
+      "trading": {
+        "max_open_positions": 3
+      },
+      "strategy": {
+        "mtf_max_open_positions": 3
+      }
+    }
+  ]
+}

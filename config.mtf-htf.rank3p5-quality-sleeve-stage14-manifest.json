@@ -1,0 +1,53 @@
+{
+  "stage": 14,
+  "research_name": "frozen_mtf_unfilled_candidate_quality_sleeve",
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-3p5.json",
+  "selection_policy": {
+    "train": "2025-06-12 to 2025-12-31",
+    "validation": "2026-01-01 to 2026-03-31",
+    "historical_test": "2026-04-01 to 2026-06-11 (not untouched)",
+    "selected_rule": "SHORT only, frozen entry rank >= 3.7",
+    "mtpc_enabled": false
+  },
+  "experiments": [
+    {
+      "name": "frozen_baseline"
+    },
+    {
+      "name": "quality_short_rank3p7_sequential",
+      "strategy": {
+        "mtf_quality_sleeve_enabled": true,
+        "mtf_quality_sleeve_allow_long": false,
+        "mtf_quality_sleeve_allow_short": true,
+        "mtf_quality_sleeve_ranking_mode": "rank",
+        "mtf_quality_sleeve_long_min_score": 999.0,
+        "mtf_quality_sleeve_short_min_score": 3.7,
+        "mtf_quality_sleeve_risk_multiplier": 1.0,
+        "mtf_quality_sleeve_max_daily_trades": 4,
+        "mtf_quality_sleeve_max_open_positions": 1,
+        "mtf_quality_sleeve_symbol_cooldown_hours": 0,
+        "mtf_quality_sleeve_max_signal_age_minutes": 0
+      }
+    },
+    {
+      "name": "quality_short_rank3p7_max2",
+      "trading": {
+        "max_open_positions": 2,
+        "max_new_entries_per_cycle": 1
+      },
+      "strategy": {
+        "mtf_quality_sleeve_enabled": true,
+        "mtf_quality_sleeve_allow_long": false,
+        "mtf_quality_sleeve_allow_short": true,
+        "mtf_quality_sleeve_ranking_mode": "rank",
+        "mtf_quality_sleeve_long_min_score": 999.0,
+        "mtf_quality_sleeve_short_min_score": 3.7,
+        "mtf_quality_sleeve_risk_multiplier": 1.0,
+        "mtf_quality_sleeve_max_daily_trades": 4,
+        "mtf_quality_sleeve_max_open_positions": 2,
+        "mtf_quality_sleeve_symbol_cooldown_hours": 0,
+        "mtf_quality_sleeve_max_signal_age_minutes": 0
+      }
+    }
+  ]
+}

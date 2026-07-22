@@ -1,0 +1,21 @@
+{
+  "strategy_name": "hybrid_v5_balanced_expansion_runner_plus_dynamic_trend_grid_v3_max2_20x_capacity",
+  "status": "independent_20x_capacity_research_artifacts",
+  "config": "config.combined-hybrid-v5-grid-v3-max2-20x.json",
+  "report": "reports/combined_hybrid_v5_grid_v3_max2_20x_3m_6m.json",
+  "summary": "reports/combined_hybrid_v5_grid_v3_max2_20x_3m_6m.md",
+  "hashes": {
+    "crypto_scalper/combined_hybrid_v5_grid_v3_20x_backtest.py": "76b486924a0dc61f6031dfa7f0b9ab607e2fa35f4754f30b9a4e1d3c1a2eada2",
+    "tests/test_combined_hybrid_v5_grid_v3_20x_backtest.py": "681d4ba8ee606b1b5b419811e521f3198f9e824ac31cf1b63e9afeb0f893e94f",
+    "config.combined-hybrid-v5-grid-v3-max2-20x.json": "877bacc17cd68f0848f71a5ec5095e4a5a908b61d38458c7f766135bfe8a64cc",
+    "reports/combined_hybrid_v5_grid_v3_max2_20x_3m_6m.json": "0d7c4e0e6664833f7cd1b718855ec63cdbe7cf0613456d5d6928eb2b8f52f8a4",
+    "reports/combined_hybrid_v5_grid_v3_max2_20x_3m_6m.md": "b00dc07ae59bb45fea1dd687e330487e11027ed660b0e8cd8053321b51cb3799"
+  },
+  "preserved": {
+    "active_gui": "unchanged",
+    "hybrid_v5_source": "unchanged",
+    "grid_v3_source": "unchanged",
+    "existing_combined_backtest": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}

@@ -41,6 +41,7 @@ from .live_trader import (
     _trend_reference_adjusted_signal_for_candles,
 )
 from .models import Candle, Direction, Signal
+from .mtf_4h_rsi_regime import MTF_REASON_TOKEN
 from .risk import (
     BacktestExecutionConfig,
     BacktestExecutionStats,
@@ -85,11 +86,41 @@ class PortfolioPosition:
     liquidity_reference_quote_volume: float = 0.0
     initial_stop_price: float = 0.0
     risk_budget_usdt: float = 0.0
+    campaign_risk_budget_usdt: float = 0.0
+    initial_leg_price_risk_usdt: float = 0.0
+    initial_leg_full_cost_risk_usdt: float = 0.0
+    initial_leg_actual_risk_fraction: float = 0.0
+    capacity_clipped_initial_risk_fraction: float = 0.0
+    stop_execution_price_estimate: float = 0.0
+    estimated_stop_exit_fee_usdt: float = 0.0
+    estimated_stop_exit_slippage_usdt: float = 0.0
+    cmipr_max_campaign_executable_r: float = 0.0
+    cmipr_min_campaign_executable_r: float = 0.0
+    cmipr_max_initial_leg_executable_r: float = 0.0
+    cmipr_min_initial_leg_executable_r: float = 0.0
+    cmipr_executable_mfe_usdt: float = 0.0
+    cmipr_executable_mae_usdt: float = 0.0
     cmipr_max_executable_r: float = 0.0
     cmipr_last_addon_index: int = -1
     cmipr_initial_quantity: float = 0.0
     cmipr_addon_1_quantity: float = 0.0
     cmipr_addon_2_quantity: float = 0.0
+    reversal_v2_max_executable_r: float = 0.0
+    mtper_max_campaign_executable_r: float = 0.0
+    mtper_min_campaign_executable_r: float = 0.0
+    mtper_max_initial_leg_executable_r: float = 0.0
+    mtper_min_initial_leg_executable_r: float = 0.0
+    mtper_executable_mfe_usdt: float = 0.0
+    mtper_executable_mae_usdt: float = 0.0
+    mtpc_max_executable_r: float = 0.0
+    mtpc_min_executable_r: float = 0.0
+    mtpc_max_campaign_executable_r: float = 0.0
+    mtpc_min_campaign_executable_r: float = 0.0
+    mtpc_max_initial_leg_executable_r: float = 0.0
+    mtpc_min_initial_leg_executable_r: float = 0.0
+    mtpc_executable_mfe_usdt: float = 0.0
+    mtpc_executable_mae_usdt: float = 0.0
+    strategy_metadata: dict[str, Any] | None = None
 
     def unrealized_pnl(self, mark_price: float) -> float:
         return self.direction.value * self.quantity * (mark_price - self.entry_price)
@@ -1744,13 +1775,19 @@ def _btc_market_filter_applies(config: Any, signal: Signal) -> bool:
     return trend_like or long_holding
 
 
-def _load_symbol_data(data_dir: str, symbols: tuple[str, ...], timeframe: str) -> dict[str, list[Candle]]:
+def _load_symbol_data(
+    data_dir: str,
+    symbols: tuple[str, ...],
+    timeframe: str,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict[str, list[Candle]]:
     root = Path(data_dir)
     loaded = {}
     for symbol in symbols:
         matches = sorted(root.glob(f"{symbol}_{timeframe}_*.csv"))
         if matches:
-            loaded[symbol] = load_candles_csv(matches[-1])
+            loaded[symbol] = load_candles_csv(matches[-1], start=start, end=end)
     return loaded
 
 
@@ -1902,6 +1939,9 @@ def _execute_macro_event_trade(
     slippage_cost = entry_fill.slippage_cost + exit_fill.slippage_cost
     funding = 0.0
     net_pnl = raw_gross_pnl - fee - slippage_cost + funding
+    if "cross_sectional_momentum_ignition_pyramid" in str(position.entry_reason):
+        position.cmipr_executable_mfe_usdt = max(position.cmipr_executable_mfe_usdt, net_pnl)
+        position.cmipr_executable_mae_usdt = min(position.cmipr_executable_mae_usdt, net_pnl)
     cash += execution_gross_pnl - exit_fill.fee + funding
     exit_candle = macro_state.candles[exit_index]
     hold_minutes = _hold_minutes(entry_candle.timestamp, exit_candle.timestamp)
@@ -2289,27 +2329,48 @@ def _maybe_scale_in_position(
     notional = abs(position.quantity * candle.close)
     if notional <= 0:
         return cash
-    profit_pct = position.unrealized_pnl(candle.close) / notional
+    if str(getattr(trading, "scale_in_profit_basis", "gross")).lower() == "full_cost":
+        profit_pct = _position_executable_net_profit_pct(config, position, candle, client.symbol_rules(symbol))
+    else:
+        profit_pct = position.unrealized_pnl(candle.close) / notional
     if profit_pct < trading.scale_in_min_profit_pct:
         return cash
 
     candles = candles_by_symbol[symbol][:index + 1]
-    candidate = _cached_entry_candidate(
-        trader,
-        config,
-        client,
-        candles_by_symbol,
-        signal_cache,
-        reversal_cache,
-        mtf_cache,
-        market_regime_cache,
-        btc_market_state_cache,
-        symbol,
-        index,
-    )
-    if candidate is not None and candidate.signal.direction == position.direction:
-        signal = candidate.signal
+    is_mtf_position = MTF_REASON_TOKEN in str(position.entry_reason)
+    if is_mtf_position:
+        signal = trader._continuation_signal(
+            position.direction,
+            candles,
+            "mtf_winner_addon_continuation",
+        )
     else:
+        candidate = _cached_entry_candidate(
+            trader,
+            config,
+            client,
+            candles_by_symbol,
+            signal_cache,
+            reversal_cache,
+            mtf_cache,
+            market_regime_cache,
+            btc_market_state_cache,
+            symbol,
+            index,
+        )
+        if candidate is not None and candidate.signal.direction == position.direction:
+            signal = candidate.signal
+        else:
+            supported, support_reason = _cached_mtf_allows(trader, config, client, mtf_cache, symbol, index, position.direction)
+            if not supported:
+                return cash
+            signal = trader._continuation_signal(
+                position.direction,
+                candles,
+                f"portfolio_profit_continuation mtf={support_reason}",
+            )
+
+    if not is_mtf_position and signal.direction != position.direction:
         supported, support_reason = _cached_mtf_allows(trader, config, client, mtf_cache, symbol, index, position.direction)
         if not supported:
             return cash
@@ -2352,6 +2413,31 @@ def _maybe_scale_in_position(
     )
 
 
+def _position_executable_net_profit_pct(
+    config: Any,
+    position: PortfolioPosition,
+    candle: Candle,
+    rules: SymbolRules,
+) -> float:
+    notional = abs(position.quantity * position.entry_price)
+    if notional <= 0.0:
+        return 0.0
+    execution_config = execution_config_from_live_config(config)
+    bar_quote_volume = abs(candle.volume * candle.close)
+    fill = market_exit_fill(
+        execution_config,
+        rules,
+        position.direction,
+        position.quantity,
+        candle.close,
+        "market",
+        bar_quote_volume,
+    )
+    execution_gross = position.direction.value * position.quantity * (fill.price - position.entry_price)
+    funding = _funding_for_position(execution_config, position, candle.timestamp)
+    return (execution_gross - position.entry_fee - fill.fee + funding) / notional
+
+
 def _update_profit_protection(trader: BinanceAutoTrader, config: Any, position: PortfolioPosition, candle: Candle) -> None:
     previous_stop = position.stop_price
     lock_pct = max(config.trading.breakeven_lock_pct, trader._minimum_profit_exit_pct())
@@ -2383,7 +2469,10 @@ def _account_snapshot(config: Any, equity: float, positions: dict[str, Portfolio
         unrealized = position.unrealized_pnl(mark)
         leverage = position.leverage or config.trading.leverage
         initial_margin += notional / max(leverage, 1)
-        maintenance_margin += notional * 0.005
+        maintenance_margin += notional * max(
+            0.0,
+            float(getattr(config.risk, "estimated_maintenance_margin_rate", 0.005)),
+        )
         total_unrealized += unrealized
         live = LivePosition(symbol, "BACKTEST", position.direction, position.quantity, position.entry_price, mark, notional, unrealized, leverage, config.trading.margin_type, None)
         rows.append(live)
@@ -2601,11 +2690,64 @@ def _close_position(
             "exit_participation_rate": fill.participation_rate,
             "capacity_fill_ratio": position.capacity_fill_ratio,
             "risk_budget_usdt": position.risk_budget_usdt,
+            "campaign_risk_budget_usdt": position.campaign_risk_budget_usdt,
+            "initial_leg_price_risk_usdt": position.initial_leg_price_risk_usdt,
+            "initial_leg_full_cost_risk_usdt": position.initial_leg_full_cost_risk_usdt,
+            "initial_leg_actual_risk_fraction": position.initial_leg_actual_risk_fraction,
+            "capacity_clipped_initial_risk_fraction": position.capacity_clipped_initial_risk_fraction,
+            "stop_execution_price_estimate": position.stop_execution_price_estimate,
+            "estimated_stop_exit_fee_usdt": position.estimated_stop_exit_fee_usdt,
+            "estimated_stop_exit_slippage_usdt": position.estimated_stop_exit_slippage_usdt,
             "initial_stop_price": position.initial_stop_price,
-            "max_executable_r": position.cmipr_max_executable_r,
+            "max_executable_r": max(
+                position.cmipr_max_campaign_executable_r,
+                position.reversal_v2_max_executable_r,
+                position.mtper_max_campaign_executable_r,
+                position.mtpc_max_executable_r,
+            ),
+            "max_executable_r_basis": (
+                "initial_leg"
+                if "multi_timeframe_trend_pullback_continuation" in str(position.entry_reason)
+                else
+                "campaign"
+                if "cross_sectional_momentum_ignition_pyramid" in str(position.entry_reason)
+                or "multi_timeframe_pre_cross_exhaustion_reversal" in str(position.entry_reason)
+                else "strategy_specific"
+            ),
+            "max_executable_campaign_r": position.cmipr_max_campaign_executable_r,
+            "min_executable_campaign_r": position.cmipr_min_campaign_executable_r,
+            "max_executable_initial_leg_r": position.cmipr_max_initial_leg_executable_r,
+            "min_executable_initial_leg_r": position.cmipr_min_initial_leg_executable_r,
+            "executable_mfe_usdt": position.cmipr_executable_mfe_usdt,
+            "executable_mae_usdt": position.cmipr_executable_mae_usdt,
+            "mtper_max_executable_campaign_r": position.mtper_max_campaign_executable_r,
+            "mtper_min_executable_campaign_r": position.mtper_min_campaign_executable_r,
+            "mtper_max_executable_initial_leg_r": position.mtper_max_initial_leg_executable_r,
+            "mtper_min_executable_initial_leg_r": position.mtper_min_initial_leg_executable_r,
+            "mtper_executable_mfe_usdt": position.mtper_executable_mfe_usdt,
+            "mtper_executable_mae_usdt": position.mtper_executable_mae_usdt,
+            "mtpc_max_executable_r": position.mtpc_max_executable_r,
+            "mtpc_min_executable_r": position.mtpc_min_executable_r,
+            "mtpc_max_executable_campaign_r": position.mtpc_max_campaign_executable_r,
+            "mtpc_min_executable_campaign_r": position.mtpc_min_campaign_executable_r,
+            "mtpc_max_executable_initial_leg_r": position.mtpc_max_initial_leg_executable_r,
+            "mtpc_min_executable_initial_leg_r": position.mtpc_min_initial_leg_executable_r,
+            "mtpc_executable_mfe_usdt": position.mtpc_executable_mfe_usdt,
+            "mtpc_executable_mae_usdt": position.mtpc_executable_mae_usdt,
+            "raw_mfe_usdt": position.mfe,
+            "raw_mae_usdt": position.mae,
+            "net_campaign_r": (
+                net_pnl / max(position.campaign_risk_budget_usdt, 1e-12)
+                if position.campaign_risk_budget_usdt > 0.0 else None
+            ),
+            "net_initial_leg_r": (
+                net_pnl / max(position.initial_leg_full_cost_risk_usdt, 1e-12)
+                if position.initial_leg_full_cost_risk_usdt > 0.0 else None
+            ),
             "initial_quantity": position.cmipr_initial_quantity,
             "addon_1_quantity": position.cmipr_addon_1_quantity,
             "addon_2_quantity": position.cmipr_addon_2_quantity,
+            "strategy_metadata": dict(position.strategy_metadata or {}),
         }
     )
     return cash
@@ -2613,7 +2755,11 @@ def _close_position(
 
 def _exit_order_type(reason: str) -> str:
     normalized = reason.lower()
-    if "stop_loss" in normalized or "liquidation" in normalized:
+    if "stop_loss" in normalized or "liquidation" in normalized or normalized in {
+        "mtf_breakeven_stop",
+        "mtf_giveback_stop",
+        "mtf_atr_stop",
+    }:
         return "stop_market"
     if "take_profit" in normalized:
         return "take_profit_market"
@@ -3009,6 +3155,10 @@ def _parse_trade_time(value: Any) -> Any:
 
 def _strategy_bucket(entry_reason: str) -> str:
     reason = entry_reason.lower()
+    if "multi_timeframe_trend_pullback_continuation" in reason:
+        return "multi_timeframe_trend_pullback_continuation"
+    if "multi_timeframe_pre_cross_exhaustion_reversal" in reason:
+        return "multi_timeframe_pre_cross_exhaustion_reversal"
     if "cross_sectional_momentum_ignition_pyramid" in reason:
         return "cross_sectional_momentum_ignition_pyramid"
     if "vbp_" in reason or "volume_breakout_pullback" in reason:

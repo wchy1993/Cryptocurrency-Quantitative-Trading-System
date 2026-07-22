@@ -1,0 +1,19 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v3_exit_protection",
+  "status": "historical_research_frozen_separately_from_v2",
+  "source_strategy_modified": false,
+  "report": "reports/volatility_breakout_v3_exit_protection_3m.json",
+  "summary": "reports/volatility_breakout_v3_exit_protection_3m.md",
+  "selected_config": "config.volatility-breakout.v3-exit-protection-selected.json",
+  "hashes": {
+    "config.volatility-breakout.v3-exit-protection-research.json": "7f01bfe2acdbd7baa6c0927be7f26639680290fd885f0c07eeef8c680c124a7a",
+    "reports/volatility_breakout_v3_exit_protection_3m.json": "14f6b58dcd34d2d96afef00364ad3463222b1ba0f5043ed53e12f8e47db14c74",
+    "reports/volatility_breakout_v3_exit_protection_3m.md": "a9c22d1171e9f39149f3489b5193e12e5c1757fa2cb3c6c3d99e940fe4d6ac40",
+    "config.volatility-breakout.v3-exit-protection-selected.json": "86b9f633efae11f613d2d00e3455710709da173ffd390f6ff80e826d3ace5447",
+    "config.volatility-breakout.v2-optimized-50.json": "56d50ee9edc00b4b6601a525a426df818bdcbc54956938342e05fe0d8771ca1e",
+    "config.volatility-breakout.v2-balanced-50-shadow.json": "9573a12eed840b9c0135ad457223f254b8c0d5ff818f3fa419d3cf3a07446bc9",
+    "crypto_scalper/volatility_breakout_exit_protection.py": "7796495b20efcf0aa6f2b3acfb148d0c0da90ab99f5004c36e89c6a83ada3196",
+    "crypto_scalper/volatility_breakout_exit_protection_research.py": "31f3bc36444698c3761fe26b2e253f61f658cb1e5132346141e13ebbc453c021",
+    "tests/test_volatility_breakout_exit_protection.py": "1a6d88e897eeabb10fd3086d9843ec2e8705484f30b0c160bd2555a756f57e54"
+  }
+}

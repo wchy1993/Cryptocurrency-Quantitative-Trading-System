@@ -1,0 +1,28 @@
+{
+  "base_config": "config.mtf-htf.long-rank3p5-aggressive-b.json",
+  "experiment_budget": 2,
+  "research_name": "mtf_core_v3_rank3p5_concurrent_position_capacity",
+  "change_scope": "Only the concurrent position limits change. Signals, sizing per trade, costs, exits, and one-new-entry-per-cycle behavior remain frozen.",
+  "experiments": [
+    {
+      "name": "rank3p5_max2",
+      "trading": {
+        "max_open_positions": 2,
+        "max_new_entries_per_cycle": 1
+      },
+      "strategy": {
+        "mtf_max_open_positions": 2
+      }
+    },
+    {
+      "name": "rank3p5_max3",
+      "trading": {
+        "max_open_positions": 3,
+        "max_new_entries_per_cycle": 1
+      },
+      "strategy": {
+        "mtf_max_open_positions": 3
+      }
+    }
+  ]
+}

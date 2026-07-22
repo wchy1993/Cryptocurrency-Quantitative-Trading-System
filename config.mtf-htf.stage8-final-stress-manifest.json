@@ -1,0 +1,40 @@
+{
+  "base_config": "config.mtf-htf.optimized-frozen-v1.json",
+  "experiment_budget": 3,
+  "strategy_frozen_before_stress": true,
+  "selection_data": [
+    "2025-06-12/2026-01-01 train",
+    "2026-01-01/2026-04-01 validation"
+  ],
+  "historical_test": "2026-04-01/2026-06-06",
+  "historical_test_is_not_untouched": true,
+  "experiments": [
+    {
+      "name": "frozen_v2_full_cost",
+      "strategy": {
+        "mtf_fail_fast_minutes": 120,
+        "mtf_fail_fast_min_r": 0.50
+      }
+    },
+    {
+      "name": "frozen_v2_higher_slippage",
+      "strategy": {
+        "mtf_fail_fast_minutes": 120,
+        "mtf_fail_fast_min_r": 0.50
+      },
+      "risk": {
+        "market_slippage_bps": 3.0,
+        "stop_slippage_bps": 7.5,
+        "take_profit_slippage_bps": 3.0
+      }
+    },
+    {
+      "name": "frozen_v2_extra_1m_delay",
+      "strategy": {
+        "mtf_fail_fast_minutes": 120,
+        "mtf_fail_fast_min_r": 0.50,
+        "mtf_extra_execution_delay_minutes": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "strategy": "mtf_structure_derivatives_trend_following_10",
+  "version": "closed_4h_1h_15m_structure_derivatives_v1",
+  "research_status": "rejected_initial_forward_test",
+  "deployment_approved": false,
+  "independent_from_gui_strategy": true,
+  "universe": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "LINKUSDT",
+    "AVAXUSDT",
+    "LTCUSDT"
+  ],
+  "timeframes": {
+    "regime": "4h",
+    "structure": "1h",
+    "entry": "15m",
+    "execution": "1m"
+  },
+  "signal": {
+    "allow_long": true,
+    "allow_short": true,
+    "max_sweep_age_bars": 5,
+    "max_four_h_bos_age": 64,
+    "max_one_h_structure_age": 24,
+    "min_four_h_spread_atr": 0.15,
+    "min_four_h_efficiency": 0.12,
+    "min_four_h_slope_atr": -0.08,
+    "min_one_h_spread_atr": 0.1,
+    "min_one_h_efficiency": 0.25,
+    "min_one_h_slope_atr": -0.05,
+    "require_one_h_structure_alignment": false,
+    "max_entry_extension_atr": 2.5,
+    "min_volume_ratio": 1.0,
+    "min_oi_change_30m": -0.02,
+    "max_oi_change_30m": 0.05,
+    "min_directional_taker_imbalance": -0.05,
+    "min_directional_cvd": 0.03,
+    "max_directional_funding_rate": 0.0001,
+    "min_quality_score": 3.0
+  },
+  "exit": {
+    "min_stop_atr": 1.0,
+    "max_stop_atr": 2.0,
+    "stop_buffer_atr": 0.5,
+    "max_stop_pct": 0.1,
+    "tp1_r": 2.0,
+    "tp1_fraction": 0.35,
+    "tp2_r": 2.5,
+    "tp2_fraction": 0.35,
+    "breakeven_after_tp1": true,
+    "breakeven_offset_r": 0.2,
+    "locked_r_after_tp2": 1.0,
+    "trailing_activation_r": 2.0,
+    "trailing_atr_multiple": 1.5,
+    "trend_exit_mode": "fast",
+    "trend_exit_confirm_bars": 1,
+    "max_holding_minutes": 1440
+  },
+  "portfolio": {
+    "initial_equity": 200.0,
+    "risk_per_trade_pct": 0.04,
+    "max_trade_risk_pct": 0.05,
+    "max_open_positions": 2,
+    "max_daily_trades": 4,
+    "symbol_cooldown_minutes": 360,
+    "max_notional_multiple": 6.0,
+    "hard_drawdown_stop_pct": 0.5,
+    "compound": true
+  },
+  "execution_costs": {
+    "market_slippage_bps": 2.0,
+    "stop_slippage_bps": 5.0,
+    "take_profit_slippage_bps": 2.0,
+    "maker_fee_rate": 0.0002,
+    "taker_fee_rate": 0.0005,
+    "funding_enabled": true
+  },
+  "data_contract": {
+    "closed_candles_only": true,
+    "entry_at_next_1m_open": true,
+    "derivatives_publication_lag_minutes": 5,
+    "cvd_definition": "Rolling 15m CVD proxy = sum[15m base volume * (taker buy/sell ratio - 1) / (ratio + 1)] / rolling base volume. Binance Vision long-history metrics expose the ratio but not raw taker buy/sell volume; no raw CVD is fabricated."
+  },
+  "selection": {
+    "seed": 20260719,
+    "attempted_trials": 1500,
+    "eligible_train_trials": 100,
+    "validation_finalists": 100,
+    "exact_1m_finalists": 2,
+    "sealed_test_used_for_selection": false
+  }
+}
