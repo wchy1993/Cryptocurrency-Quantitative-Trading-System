@@ -1,0 +1,22 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v6_core_runner",
+  "status": "independent_research_artifacts",
+  "config": "config.volatility-breakout.v6-live-balanced-final-50.json",
+  "report": "reports/volatility_breakout_v6_live_balanced_final_3m_6m.json",
+  "summary": "reports/volatility_breakout_v6_live_balanced_final_3m_6m.md",
+  "hashes": {
+    "crypto_scalper/volatility_breakout_v6.py": "4f48387de052e104f8b3b340127a948ce647c1b85cdb47a4cdc03a69a01025d9",
+    "crypto_scalper/volatility_breakout_v6_engine.py": "5725156dd2dc71bce7327b0c6ae1499a5578be86d7819447648a13b12b7134df",
+    "crypto_scalper/volatility_breakout_v6_core_runner_optimize.py": "191762f26a809f17d850466365d49d7be648a7e2d4a451197b810cba451cd743",
+    "tests/test_volatility_breakout_v6.py": "33c19bd10d27f2fa9582ad5e6f348d0b24b49ac497ac7076d6b90e23fd068195",
+    "config.volatility-breakout.v6-live-balanced-final-50.json": "6c4a1652efc1b3313ef5be98905772275615d7cc29d4cba33b3fde037d23b09e",
+    "reports/volatility_breakout_v6_live_balanced_final_3m_6m.json": "c531eae16fdf9b42d662f438e071d6d475154269b61edf9794d716deae54b99c",
+    "reports/volatility_breakout_v6_live_balanced_final_3m_6m.md": "6dae32bfb9261bc0ebb020b68a341cc08b57e82b0b37fa737759aed2a3d0b368"
+  },
+  "preserved": {
+    "active_gui": "unchanged",
+    "hybrid_v5": "unchanged",
+    "grid_v3": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}

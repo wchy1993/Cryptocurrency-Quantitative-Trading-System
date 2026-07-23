@@ -1,0 +1,21 @@
+{
+  "strategy_name": "dynamic_trend_following_grid_v4_live_robust",
+  "status": "independent_research_artifacts",
+  "config": "config.trend-grid.v4-live-robust-final-50.json",
+  "report": "reports/trend_grid_v4_live_robust_final_3m_6m.json",
+  "summary": "reports/trend_grid_v4_live_robust_final_3m_6m.md",
+  "hashes": {
+    "crypto_scalper/trend_grid_v4.py": "ee65b1fe3375f16e18b041398c6fbbe4c1633a77efd897d77dfa0b38647f8b44",
+    "crypto_scalper/trend_grid_v4_optimize.py": "9d77b87d74d30778a8d88e4107fb590b3bf12ac9ba51c58dfbf2c4dfe59c91d4",
+    "tests/test_trend_grid_v4.py": "d6d472b39c79327fb04f455c68a53f98e4045aa1cf01269f40751057a0fdf6d2",
+    "config.trend-grid.v4-live-robust-final-50.json": "b97b82287c46ec65e745bdf53a13890b74e88f239f13cca3ae5047ba4552f86d",
+    "reports/trend_grid_v4_live_robust_final_3m_6m.json": "29e1377810b3c9837ce1628b6372b84feb9e36d82e6e924f23d8d5f65562e21c",
+    "reports/trend_grid_v4_live_robust_final_3m_6m.md": "275848b8d97ca003cbe421e0bbe5b6d629626ba6543d9ce4cbf2f72514536adc"
+  },
+  "preserved": {
+    "active_gui": "unchanged",
+    "grid_v3": "unchanged",
+    "apt_grid": "unchanged",
+    "breakout_versions": "unchanged"
+  }
+}
