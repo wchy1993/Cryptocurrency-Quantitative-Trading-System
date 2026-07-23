@@ -1,0 +1,69 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v7_confidence_allocated_plus_dynamic_trend_following_grid_v5_confidence_managed_max2",
+  "status": "dry_run_shared_account_candidate",
+  "initial_equity": 200.0,
+  "symbols": [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "ZECUSDT", "HYPEUSDT",
+    "XRPUSDT", "DOGEUSDT", "BNBUSDT", "SIRENUSDT", "1000PEPEUSDT",
+    "TAOUSDT", "NEARUSDT", "WLDUSDT", "SUIUSDT", "ADAUSDT",
+    "TONUSDT", "AVAXUSDT", "ENAUSDT", "LINKUSDT", "FILUSDT",
+    "XLMUSDT", "BCHUSDT", "ONDOUSDT", "TRUMPUSDT", "AAVEUSDT",
+    "DOTUSDT", "PENGUUSDT", "LTCUSDT", "TRXUSDT", "FETUSDT",
+    "UNIUSDT", "INJUSDT", "DASHUSDT", "BUSDT", "ARBUSDT",
+    "1000SHIBUSDT", "APEUSDT", "XMRUSDT", "APTUSDT", "WIFUSDT",
+    "ICPUSDT", "ETCUSDT", "VIRTUALUSDT", "HBARUSDT", "RENDERUSDT",
+    "CRVUSDT", "JTOUSDT", "OPUSDT", "CHZUSDT", "1000BONKUSDT"
+  ],
+  "source_configs": {
+    "volatility_breakout": {
+      "path": "config.volatility-breakout.v7-confidence-refined-50.json",
+      "sha256": "bcd7eeb293de6b30470ed208faec0e529c7a90dcd299cff2545a327a1ee4c8ac"
+    },
+    "dynamic_trend_following_grid": {
+      "path": "config.trend-grid.v5-confidence-final-50.json",
+      "sha256": "3167bd70e6525aa423120387603197112265a5b28745d4e3f41c87f042f6112f"
+    }
+  },
+  "portfolio": {
+    "max_open_positions": 2,
+    "max_gross_notional_multiple": 9.0,
+    "hard_drawdown_stop_pct": 0.6,
+    "allow_same_symbol_across_strategies": false,
+    "entry_priority": [
+      "volatility_breakout",
+      "dynamic_trend_following_grid"
+    ]
+  },
+  "execution_rules": {
+    "global_max_open_positions": 2,
+    "breakout_max_open_positions": 1,
+    "grid_max_open_campaigns": 1,
+    "allow_same_symbol_across_strategies": false,
+    "old_exits_before_new_entries": true,
+    "same_bar_conflict": "adverse stop first",
+    "entry_priority": [
+      "volatility_breakout",
+      "dynamic_trend_following_grid"
+    ],
+    "breakout_entry_profile": "v7 confidence tier frozen at entry",
+    "grid_entry_profile": "v5 confidence tier frozen for campaign",
+    "weak_grid_tier": "rejected"
+  },
+  "historical_reference": {
+    "warning": "Individual strategy results only; this is not a combined shared-account backtest claim.",
+    "breakout_v7_six_month": {
+      "trade_count": 84,
+      "net_profit_usdt": 28371.32670673413,
+      "profit_factor": 6.4967218779976506,
+      "win_rate": 0.39285714285714285,
+      "max_drawdown_pct": 0.3072889300032368
+    },
+    "grid_v5_six_month": {
+      "trade_count": 39,
+      "net_profit_usdt": 401.43742249732304,
+      "profit_factor": 11.615272621282275,
+      "win_rate": 0.8717948717948718,
+      "max_drawdown_pct": 0.09822006268639703
+    }
+  }
+}

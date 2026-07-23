@@ -18,6 +18,10 @@ from .combined_volatility_trend_grid_shadow import (
 )
 from .combined_hybrid_v5_grid_v3_backtest import COMBINED_V5_GRID_V3_NAME
 from .combined_hybrid_v5_grid_v3_shadow import CombinedHybridV5GridV3ShadowTrader
+from .combined_breakout_v7_grid_v5_shadow import (
+    COMBINED_V7_GRID_V5_NAME,
+    CombinedBreakoutV7GridV5ShadowTrader,
+)
 from .live_config import (
     DEFAULT_SYMBOLS,
     ExchangeConfig,
@@ -39,7 +43,7 @@ from .volatility_breakout_shadow import (
 
 
 DEFAULT_CONFIG_PATH = "config.gui.mtf-momentum-reset-stage21.json"
-ACTIVE_GUI_CONFIG_PATH = "config.gui.combined-hybrid-v5-grid-v3-max2-shadow.json"
+ACTIVE_GUI_CONFIG_PATH = "config.gui.breakout-v7-grid-v5-max2-shadow.json"
 FALLBACK_CONFIG_PATH = "config.live.example.json"
 STRATEGY_MODE_INDICATOR = "指标反转稳定版"
 STRATEGY_MODE_SUPER_VOLUME = "强放量突破"
@@ -47,7 +51,7 @@ STRATEGY_MODE_MTF = "MTF多周期"
 STRATEGY_MODE_MTF_RESET = "MTF动量重置"
 STRATEGY_MODE_OI_FLUSH = "OI去杠杆反弹"
 STRATEGY_MODE_DUAL_THRUST_SHADOW = "Hybrid v5 50币 Shadow"
-STRATEGY_MODE_COMBINED_SHADOW = "Hybrid v5 + Grid v3 50币 Max2"
+STRATEGY_MODE_COMBINED_SHADOW = "Breakout v7 + Grid v5 50币 Max2"
 STRATEGY_MODE_MANUAL = "手动配置"
 STRATEGY_MODE_VALUES = (
     STRATEGY_MODE_COMBINED_SHADOW,
@@ -60,7 +64,7 @@ STRATEGY_MODE_VALUES = (
     STRATEGY_MODE_MANUAL,
 )
 STRATEGY_MODE_SUMMARIES = {
-    STRATEGY_MODE_COMBINED_SHADOW: "50币共享账户：Hybrid v5 Breakout + Grid v3，各最多1仓、全局最多2仓、8R分批止盈、Grid市场过滤、full-cost；强制 dry-run。",
+    STRATEGY_MODE_COMBINED_SHADOW: "50币共享账户：Breakout v7 + Grid v5，各最多1仓、全局最多2仓；v7置信度动态风险，v5拒绝弱信号，full-cost；强制 dry-run。",
     STRATEGY_MODE_DUAL_THRUST_SHADOW: "Hybrid v5 Balanced Expansion Runner：50币、60m 多空、单仓、风险2.5%、8R止盈5%、60R主目标、full-cost；强制 dry-run。",
     STRATEGY_MODE_INDICATOR: "当前启用：indicator_reversal 多空分离版。20x/持仓4，risk 0.065，多头0.282/空头0.34，其它策略关闭。",
     STRATEGY_MODE_SUPER_VOLUME: "启用强放量突破策略；适合捕捉高量能趋势启动，旧突破/回踩/反转策略保持关闭。",
@@ -97,6 +101,11 @@ THEME = {
 
 
 def _combined_shadow_trader_class(config: LiveAppConfig):
+    if (
+        config.combined_volatility_trend_grid_shadow.strategy_name
+        == COMBINED_V7_GRID_V5_NAME
+    ):
+        return CombinedBreakoutV7GridV5ShadowTrader
     if (
         config.combined_volatility_trend_grid_shadow.strategy_name
         == COMBINED_V5_GRID_V3_NAME
@@ -711,12 +720,12 @@ class TradingApp(tk.Tk):
         if mode == STRATEGY_MODE_COMBINED_SHADOW:
             self.max_open_positions.set("2")
             self.max_new_entries_per_cycle.set("2")
-            self.risk_per_trade.set("0.04")
+            self.risk_per_trade.set("0.034")
             self.margin_usage.set("0.95")
             self.symbol_margin.set("0.95")
             self.max_drawdown.set("0.60")
             self.dry_run.set(True)
-            self.log("已应用组合shadow参数：50币、共享账户最多2仓、每策略1仓、强制dry-run。")
+            self.log("已应用 Breakout v7 + Grid v5 shadow参数：50币、共享账户最多2仓、每策略1仓、强制dry-run。")
         elif mode == STRATEGY_MODE_DUAL_THRUST_SHADOW:
             self.starting_capital.set("2000.0")
             self.max_open_positions.set("1")
@@ -1079,19 +1088,42 @@ class TradingApp(tk.Tk):
         if config.combined_volatility_trend_grid_shadow.enabled:
             combined = config.combined_volatility_trend_grid_shadow
             breakout = config.dual_thrust_shadow
+            is_v7_grid_v5 = combined.strategy_name == COMBINED_V7_GRID_V5_NAME
             is_v5_grid_v3 = combined.strategy_name == COMBINED_V5_GRID_V3_NAME
             combined_label = (
-                "Hybrid v5 + Grid v3"
-                if is_v5_grid_v3
-                else "Breakout + Dynamic Trend Grid"
+                "Breakout v7 + Grid v5"
+                if is_v7_grid_v5
+                else (
+                    "Hybrid v5 + Grid v3"
+                    if is_v5_grid_v3
+                    else "Breakout + Dynamic Trend Grid"
+                )
             )
+            if is_v7_grid_v5:
+                breakout_line = (
+                    f"Breakout v7: 已收盘{breakout.timeframe_minutes}m 多空 / "
+                    f"置信度动态风险 / {breakout.stop_atr_multiple:.2f}ATR止损"
+                )
+                grid_line = (
+                    "Grid v5: 已收盘60m / 仅做空 / 两层网格 / "
+                    "置信度分层并拒绝弱信号"
+                )
+            else:
+                breakout_line = (
+                    f"Hybrid v5: 已收盘{breakout.timeframe_minutes}m 多空 / 风险"
+                    f"{breakout.risk_per_trade_pct * 100:.1f}% / "
+                    f"{breakout.stop_atr_multiple:.2f}ATR止损"
+                )
+                grid_line = (
+                    f"{'Grid v3' if is_v5_grid_v3 else 'Grid'}: "
+                    "已收盘60m / 仅做空 / 两层网格 / campaign风险10%"
+                )
             self.mtf_core_parameters.set(
                 f"{combined_label} {len(combined.enabled_symbols)}币  |  共享模拟账户\n"
                 f"全局最多 {combined.max_open_positions} 仓  |  每策略最多 "
                 f"{combined.max_open_positions_per_strategy} 仓  |  同币互斥\n"
-                f"Hybrid v5: 已收盘{breakout.timeframe_minutes}m 多空 / 风险"
-                f"{breakout.risk_per_trade_pct * 100:.1f}% / {breakout.stop_atr_multiple:.2f}ATR止损\n"
-                f"{'Grid v3' if is_v5_grid_v3 else 'Grid'}: 已收盘60m / 仅做空 / 两层网格 / campaign风险10%\n"
+                f"{breakout_line}\n"
+                f"{grid_line}\n"
                 f"总名义上限 {combined.max_gross_notional_multiple:.1f}x  |  "
                 f"硬回撤停止新开仓 {combined.hard_drawdown_stop_pct * 100:.0f}%\n"
                 "主网公开行情 + full-cost共享撮合  |  强制DRY-RUN"

@@ -1,0 +1,22 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v7_confidence_allocated_plus_dynamic_trend_following_grid_v5_confidence_managed_max2",
+  "version": "breakout_v7_grid_v5_shared_max2_backtest_20260723",
+  "status": "independent_combined_research_artifacts",
+  "report": "reports/combined_breakout_v7_grid_v5_max2_3m_6m.json",
+  "summary": "reports/combined_breakout_v7_grid_v5_max2_3m_6m.md",
+  "research_config": "config.combined-breakout-v7-grid-v5-max2-backtest.json",
+  "hashes": {
+    "crypto_scalper/combined_breakout_v7_grid_v5_backtest.py": "25bb7d1a57177680a1ae82e41834fd5dc1f763943e45a02b8622b6337c73fa45",
+    "tests/test_combined_breakout_v7_grid_v5_backtest.py": "3c031a554cb4d3ac3e402529ba0f79e26e5f229f339a0b987d19be559114472f",
+    "reports/combined_breakout_v7_grid_v5_max2_3m_6m.json": "2a32cfe49c9f760d4734750fbabf6bac67762d800c1ff26c3c151a9ba73112d8",
+    "reports/combined_breakout_v7_grid_v5_max2_3m_6m.md": "55a3ffd30fbfec2c5ea0dc7b49f843a29aba57e6385843dc7e8ef5ba83a50d35",
+    "config.combined-breakout-v7-grid-v5-max2-backtest.json": "cae820050dd7a9fb18609adc8778a2189a292b157b8b2029ec2a3a6b18a04009"
+  },
+  "preserved": {
+    "active_gui_config": "unchanged",
+    "active_gui_state": "unchanged",
+    "breakout_v7_source": "unchanged",
+    "grid_v5_source": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}
