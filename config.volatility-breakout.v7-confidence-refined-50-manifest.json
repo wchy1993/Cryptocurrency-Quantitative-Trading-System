@@ -1,0 +1,20 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v7_confidence_allocated",
+  "status": "independent_research_artifacts",
+  "config": "config.volatility-breakout.v7-confidence-refined-50.json",
+  "report": "reports/volatility_breakout_v7_confidence_refined_3m_6m.json",
+  "summary": "reports/volatility_breakout_v7_confidence_refined_3m_6m.md",
+  "hashes": {
+    "crypto_scalper/volatility_breakout_v7.py": "0e2c44fb1eb2597f3e48027acfa2c1c5253380ab01b8ef3b25f57ddf34cab35a",
+    "crypto_scalper/volatility_breakout_v7_optimize.py": "a5c90690245761f241a431f935a8ee9759518188b8f78a069a4d081ba8bd394e",
+    "config.volatility-breakout.v7-confidence-refined-50.json": "bcd7eeb293de6b30470ed208faec0e529c7a90dcd299cff2545a327a1ee4c8ac",
+    "reports/volatility_breakout_v7_confidence_refined_3m_6m.json": "8472d816370133d619e50aad74c0192c5482f1ad4c22b4bfbe47b03f429383ea",
+    "reports/volatility_breakout_v7_confidence_refined_3m_6m.md": "3ed274926dabab1f797763c701440ee4b8e44a10741d02c21c647d742d0a1f5e"
+  },
+  "preserved": {
+    "breakout_v6": "unchanged",
+    "grid_v4": "unchanged",
+    "active_gui": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}

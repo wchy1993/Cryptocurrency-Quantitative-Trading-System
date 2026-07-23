@@ -1,0 +1,22 @@
+{
+  "strategy_name": "dynamic_trend_following_grid_v5_confidence_managed",
+  "status": "independent_research_artifacts",
+  "config": "config.trend-grid.v5-confidence-final-50.json",
+  "report": "reports/trend_grid_v5_confidence_final_3m_6m.json",
+  "summary": "reports/trend_grid_v5_confidence_final_3m_6m.md",
+  "hashes": {
+    "crypto_scalper/trend_grid_v5.py": "3dedb065383e5c8c22c1dc0daa7b24ed4c94a79bcf708310d1a75eb2dc13ac3c",
+    "crypto_scalper/trend_grid_v5_engine.py": "255d3733a852ef55524820cefc3f023f37dd7c81b69296e2febaca82464d86f1",
+    "crypto_scalper/trend_grid_v5_optimize.py": "294b00ebe699603727bc1bb1cacf3236389d83ce45513fec17fd65defad61256",
+    "config.trend-grid.v5-confidence-final-50.json": "3167bd70e6525aa423120387603197112265a5b28745d4e3f41c87f042f6112f",
+    "reports/trend_grid_v5_confidence_final_3m_6m.json": "073fa83794542db165561495cc32fb20cce51e6bbd701c2ea4d015561321bc7e",
+    "reports/trend_grid_v5_confidence_final_3m_6m.md": "3a6b7ccbe82a24820a15b89cee7daf48777cabbc2499b4c1817dcd3c048b1c13"
+  },
+  "preserved": {
+    "grid_v4": "unchanged",
+    "breakout_v6": "unchanged",
+    "breakout_v7": "unchanged",
+    "active_gui": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}
