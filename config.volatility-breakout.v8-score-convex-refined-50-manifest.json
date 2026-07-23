@@ -1,0 +1,20 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v8_score_convex",
+  "status": "independent_research_artifacts",
+  "config": "config.volatility-breakout.v8-score-convex-refined-50.json",
+  "report": "reports/volatility_breakout_v8_score_convex_refined_3m_6m.json",
+  "summary": "reports/volatility_breakout_v8_score_convex_refined_3m_6m.md",
+  "hashes": {
+    "crypto_scalper/volatility_breakout_v8.py": "faa0ef8bb8e9e5accd194c70435b976583090d5342bb902002331a4241e38d7d",
+    "crypto_scalper/volatility_breakout_v8_optimize.py": "fff88cf790282b79b59f6bc5bf7c30d511c7eac894aa1fdc7edec58360c8cdbc",
+    "config.volatility-breakout.v8-score-convex-refined-50.json": "04cca8d0747e84fdfbb4173ebb3397c22b83583efc267c331c00a148baf259f2",
+    "reports/volatility_breakout_v8_score_convex_refined_3m_6m.json": "7560cb3dd75c578ef23e7ff725290ad9d8025db54fdf8d305a917c415add63fb",
+    "reports/volatility_breakout_v8_score_convex_refined_3m_6m.md": "9a0feb15d2847931311d301317195bebd84a777c11d5c40ed0a8df5281a767e3"
+  },
+  "preserved": {
+    "breakout_v7": "unchanged",
+    "grid_v5": "unchanged",
+    "active_gui": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}

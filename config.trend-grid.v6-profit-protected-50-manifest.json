@@ -1,0 +1,20 @@
+{
+  "strategy_name": "dynamic_trend_following_grid_v6_profit_protected",
+  "status": "independent_research_artifacts",
+  "config": "config.trend-grid.v6-profit-protected-50.json",
+  "report": "reports/trend_grid_v6_profit_protected_3m_6m.json",
+  "summary": "reports/trend_grid_v6_profit_protected_3m_6m.md",
+  "hashes": {
+    "crypto_scalper/trend_grid_v6.py": "118f12309a94db042bdb475c721cba0bb0f3c4708bba881d03b455d1bbcc572a",
+    "crypto_scalper/trend_grid_v6_optimize.py": "ebb4091adf0ccc8f6be7a580e2e3b781b41c9f990deefd1d59c92b754cd9a834",
+    "config.trend-grid.v6-profit-protected-50.json": "e238e1904ca460026bdce051620663f19a51d351d9497b9336d8d12bd6a68fae",
+    "reports/trend_grid_v6_profit_protected_3m_6m.json": "a53f2b61b222a9a1a8a8dfe14136e5471a50c476f181e2f5a0750509ed919241",
+    "reports/trend_grid_v6_profit_protected_3m_6m.md": "1155d5ac87f413dd2fe1d5dda0784c9606272c9100de2787fbb1d09f72b432fa"
+  },
+  "preserved": {
+    "breakout_v7": "unchanged",
+    "grid_v5": "unchanged",
+    "active_gui": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}

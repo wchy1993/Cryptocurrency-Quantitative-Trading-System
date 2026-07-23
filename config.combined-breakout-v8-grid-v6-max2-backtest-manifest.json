@@ -1,0 +1,21 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v8_score_convex_plus_dynamic_trend_following_grid_v6_profit_protected_max2",
+  "version": "breakout_v8_grid_v6_shared_max2_backtest_20260724",
+  "status": "independent_combined_research_artifacts",
+  "report": "reports/combined_breakout_v8_grid_v6_max2_3m_6m.json",
+  "summary": "reports/combined_breakout_v8_grid_v6_max2_3m_6m.md",
+  "research_config": "config.combined-breakout-v8-grid-v6-max2-backtest.json",
+  "hashes": {
+    "crypto_scalper/combined_breakout_v8_grid_v6_backtest.py": "f57e7614870ad9a3f9b26e4ae16c1fde7fed9231525caced3f930147ada1f6d7",
+    "reports/combined_breakout_v8_grid_v6_max2_3m_6m.json": "162f9f0ce4004f744f941d9a7402d60e33631bd55abaaa36e6a902777c499b54",
+    "reports/combined_breakout_v8_grid_v6_max2_3m_6m.md": "8b134b1e1dfe65bb72f6005f2f60af87f679a356577e54e6921a1aceeca0e95d",
+    "config.combined-breakout-v8-grid-v6-max2-backtest.json": "43ecc0d62ec9255b51a1233abe8c3b687ec715430b52005ee35954765ca73b73"
+  },
+  "preserved": {
+    "active_gui_config": "unchanged",
+    "active_gui_state": "unchanged",
+    "breakout_v7_source": "unchanged",
+    "grid_v5_source": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}
