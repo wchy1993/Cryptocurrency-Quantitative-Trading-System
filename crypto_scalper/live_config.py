@@ -292,6 +292,87 @@ class CombinedVolatilityTrendGridShadowConfig:
 
 
 @dataclass(frozen=True)
+class CombinedBreakoutV8GridV6LiveConfig:
+    """Execution envelope for the isolated Breakout-v8/Grid-v6 live account.
+
+    This section is deliberately separate from the shadow configuration.  A
+    checked-in live file can describe the runner while remaining impossible to
+    start until both ``armed`` and the explicit confirmation fields are set.
+    """
+
+    enabled: bool = False
+    armed: bool = False
+    strategy_name: str = (
+        "dual_thrust_volatility_breakout_v8_score_convex_plus_"
+        "dynamic_trend_following_grid_v6_profit_protected_max2"
+    )
+    frozen_version: str = "breakout_v8_grid_v6_max2_live_20260724"
+    live_confirmation_text: str = ""
+    required_live_confirmation_text: str = "CONFIRM_BREAKOUT_V8_GRID_V6_LIVE"
+    runtime_confirmation_text: str = "RUN_LIVE_NOW"
+    enabled_symbols: tuple[str, ...] = ()
+    source_combined_config_path: str = "config.combined-breakout-v8-grid-v6-max2.json"
+    source_combined_config_sha256: str = (
+        "67c8e704ef201367cf444c6e41c7593b64f5aa7a0f5e2a1f4b7b6795dada3049"
+    )
+    max_open_positions: int = 2
+    max_open_positions_per_strategy: int = 1
+    allow_same_symbol_across_strategies: bool = False
+    entry_priority: tuple[str, ...] = (
+        "volatility_breakout",
+        "dynamic_trend_following_grid",
+    )
+    # Start with one tenth of the frozen research risk.  Raising this value is
+    # an explicit live-risk decision and never happens through strategy mode
+    # selection.
+    risk_scale: float = 0.10
+    max_gross_notional_multiple: float = 0.90
+    max_daily_loss_pct: float = 0.05
+    max_drawdown_pct: float = 0.10
+    max_consecutive_api_failures: int = 3
+    max_reconcile_failures: int = 2
+    pending_order_resolution_seconds: int = 60
+    max_market_data_age_seconds: int = 180
+    max_signal_age_minutes: int = 5
+    request_pacing_seconds: float = 0.08
+    scan_grace_seconds: int = 3
+    heartbeat_seconds: int = 60
+    transport_version: str = "binance_usdm_ws_weighted_v1"
+    websocket_enabled: bool = True
+    websocket_startup_timeout_seconds: int = 20
+    websocket_stale_seconds: int = 180
+    listen_key_keepalive_seconds: int = 1_800
+    rest_reconcile_interval_seconds: int = 60
+    rest_reconcile_fallback_seconds: int = 15
+    request_weight_limit: int = 2_400
+    request_weight_soft_limit_ratio: float = 0.60
+    rate_limit_default_cooldown_seconds: int = 65
+    transport_acceptance_required: bool = True
+    transport_acceptance_report_path: str = (
+        "reports/combined_breakout_v8_grid_v6_live_transport_acceptance.json"
+    )
+    strict_dedicated_account: bool = True
+    require_protective_stop: bool = True
+    grid_deeper_entry_mode: str = "software_market_after_touch"
+    order_id_prefix: str = "b8g6"
+    state_path: str = (
+        "logs/combined_breakout_v8_grid_v6_max2_{environment}_live_state.json"
+    )
+    event_log_path: str = (
+        "logs/combined_breakout_v8_grid_v6_max2_{environment}_live_events.jsonl"
+    )
+    report_path: str = (
+        "reports/combined_breakout_v8_grid_v6_max2_{environment}_live_status.json"
+    )
+
+    @property
+    def hard_drawdown_stop_pct(self) -> float:
+        """Expose the inherited scanner's name for the LIVE drawdown limit."""
+
+        return self.max_drawdown_pct
+
+
+@dataclass(frozen=True)
 class RegimeScoreConfig:
     enabled: bool = False
     shadow_mode: bool = True
@@ -1195,6 +1276,9 @@ class LiveAppConfig:
     combined_volatility_trend_grid_shadow: CombinedVolatilityTrendGridShadowConfig = field(
         default_factory=CombinedVolatilityTrendGridShadowConfig
     )
+    combined_breakout_v8_grid_v6_live: CombinedBreakoutV8GridV6LiveConfig = field(
+        default_factory=CombinedBreakoutV8GridV6LiveConfig
+    )
 
 
 T = TypeVar("T")
@@ -1220,7 +1304,10 @@ def _coerce_dataclass(cls: type[T], values: dict[str, Any]) -> T:
     if cls is DualThrustShadowConfig and "enabled_symbols" in values:
         values = dict(values)
         values["enabled_symbols"] = tuple(_normalize_symbols(values["enabled_symbols"]))
-    if cls is CombinedVolatilityTrendGridShadowConfig:
+    if cls in (
+        CombinedVolatilityTrendGridShadowConfig,
+        CombinedBreakoutV8GridV6LiveConfig,
+    ):
         values = dict(values)
         if "enabled_symbols" in values:
             values["enabled_symbols"] = tuple(_normalize_symbols(values["enabled_symbols"]))
@@ -1397,6 +1484,10 @@ def load_live_config(path: str | Path) -> LiveAppConfig:
             CombinedVolatilityTrendGridShadowConfig,
             raw.get("combined_volatility_trend_grid_shadow", {}),
         ),
+        combined_breakout_v8_grid_v6_live=_coerce_dataclass(
+            CombinedBreakoutV8GridV6LiveConfig,
+            raw.get("combined_breakout_v8_grid_v6_live", {}),
+        ),
     )
 
 
@@ -1418,6 +1509,9 @@ def write_live_config(path: str | Path, config: LiveAppConfig) -> None:
         "dual_thrust_shadow": asdict(config.dual_thrust_shadow),
         "combined_volatility_trend_grid_shadow": asdict(
             config.combined_volatility_trend_grid_shadow
+        ),
+        "combined_breakout_v8_grid_v6_live": asdict(
+            config.combined_breakout_v8_grid_v6_live
         ),
     }
     Path(path).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")

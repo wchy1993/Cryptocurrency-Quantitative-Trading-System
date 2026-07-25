@@ -12,6 +12,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .binance_rate_limit import (
+    RequestWeightBudget,
+    RequestWeightCooldown,
+)
 from .models import Candle
 
 
@@ -20,10 +24,41 @@ TESTNET_BASE_URL = "https://testnet.binancefuture.com"
 
 
 class BinanceApiError(RuntimeError):
-    def __init__(self, status: int | None, message: str, payload: Any = None) -> None:
+    def __init__(
+        self,
+        status: int | None,
+        message: str,
+        payload: Any = None,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.payload = payload
+        self.headers = headers or {}
+
+
+class BinanceRateLimitError(BinanceApiError):
+    def __init__(
+        self,
+        status: int | None,
+        message: str,
+        payload: Any = None,
+        *,
+        retry_after_seconds: float,
+        proactive: bool,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(
+            status,
+            message,
+            payload,
+            headers=headers,
+        )
+        self.retry_after_seconds = max(
+            0.0, float(retry_after_seconds)
+        )
+        self.proactive = bool(proactive)
 
 
 @dataclass(frozen=True)
@@ -61,6 +96,7 @@ class BinanceFuturesClient:
         environment: str = "testnet",
         recv_window: int = 5_000,
         timeout_seconds: int = 10,
+        request_weight_budget: RequestWeightBudget | None = None,
     ) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
@@ -72,6 +108,16 @@ class BinanceFuturesClient:
         self.environment = normalized
         self.base_url = TESTNET_BASE_URL if normalized == "testnet" else MAINNET_BASE_URL
         self._rules: dict[str, SymbolRules] = {}
+        self.request_weight_budget = (
+            request_weight_budget or RequestWeightBudget()
+        )
+        self._market_stream_cache: Any | None = None
+
+    def attach_market_stream_cache(self, cache: Any | None) -> None:
+        self._market_stream_cache = cache
+
+    def rate_limit_status(self) -> dict[str, Any]:
+        return self.request_weight_budget.status().as_dict()
 
     def ping(self) -> dict[str, Any]:
         return self._request("GET", "/fapi/v1/ping")
@@ -108,6 +154,13 @@ class BinanceFuturesClient:
         raise BinanceApiError(None, f"symbol not found in exchangeInfo: {symbol}")
 
     def klines(self, symbol: str, interval: str, limit: int = 200) -> list[Candle]:
+        normalized_symbol = symbol.upper()
+        if self._market_stream_cache is not None:
+            cached = self._market_stream_cache.candles(
+                normalized_symbol, interval, limit
+            )
+            if cached is not None:
+                return cached
         rows = self._request("GET", "/fapi/v1/klines", {"symbol": symbol.upper(), "interval": interval, "limit": limit})
         candles = []
         for row in rows:
@@ -124,9 +177,19 @@ class BinanceFuturesClient:
             )
         for candle in candles:
             candle.validate()
+        if self._market_stream_cache is not None:
+            self._market_stream_cache.seed_candles(
+                normalized_symbol, interval, candles
+            )
         return candles
 
     def premium_index(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        if symbol and self._market_stream_cache is not None:
+            cached = self._market_stream_cache.premium_index(
+                symbol.upper()
+            )
+            if cached is not None:
+                return [cached]
         params: dict[str, Any] = {}
         if symbol:
             params["symbol"] = symbol.upper()
@@ -224,6 +287,126 @@ class BinanceFuturesClient:
     def cancel_all_algo_open_orders(self, symbol: str) -> dict[str, Any]:
         return self._signed_request("DELETE", "/fapi/v1/algoOpenOrders", {"symbol": symbol.upper()})
 
+    def start_user_data_stream(self) -> str:
+        payload = self._api_key_request(
+            "POST", "/fapi/v1/listenKey"
+        )
+        listen_key = str(payload.get("listenKey", ""))
+        if not listen_key:
+            raise BinanceApiError(
+                None, "Binance user-data stream returned no listenKey"
+            )
+        return listen_key
+
+    def keepalive_user_data_stream(
+        self, listen_key: str
+    ) -> dict[str, Any]:
+        return self._api_key_request(
+            "PUT",
+            "/fapi/v1/listenKey",
+            {"listenKey": listen_key},
+        )
+
+    def close_user_data_stream(
+        self, listen_key: str
+    ) -> dict[str, Any]:
+        return self._api_key_request(
+            "DELETE",
+            "/fapi/v1/listenKey",
+            {"listenKey": listen_key},
+        )
+
+    def query_order(
+        self,
+        symbol: str,
+        *,
+        order_id: int | str | None = None,
+        orig_client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        if order_id is None and not orig_client_order_id:
+            raise ValueError("query_order requires order_id or orig_client_order_id")
+        params: dict[str, Any] = {"symbol": symbol.upper()}
+        if order_id is not None:
+            params["orderId"] = order_id
+        if orig_client_order_id:
+            params["origClientOrderId"] = orig_client_order_id
+        return self._signed_request("GET", "/fapi/v1/order", params)
+
+    def cancel_order(
+        self,
+        symbol: str,
+        *,
+        order_id: int | str | None = None,
+        orig_client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        if order_id is None and not orig_client_order_id:
+            raise ValueError("cancel_order requires order_id or orig_client_order_id")
+        params: dict[str, Any] = {"symbol": symbol.upper()}
+        if order_id is not None:
+            params["orderId"] = order_id
+        if orig_client_order_id:
+            params["origClientOrderId"] = orig_client_order_id
+        return self._signed_request("DELETE", "/fapi/v1/order", params)
+
+    def query_algo_order(
+        self,
+        *,
+        algo_id: int | str | None = None,
+        client_algo_id: str | None = None,
+    ) -> dict[str, Any]:
+        if algo_id is None and not client_algo_id:
+            raise ValueError("query_algo_order requires algo_id or client_algo_id")
+        params: dict[str, Any] = {}
+        if algo_id is not None:
+            params["algoId"] = algo_id
+        if client_algo_id:
+            params["clientAlgoId"] = client_algo_id
+        return self._signed_request("GET", "/fapi/v1/algoOrder", params)
+
+    def cancel_algo_order(
+        self,
+        *,
+        algo_id: int | str | None = None,
+        client_algo_id: str | None = None,
+    ) -> dict[str, Any]:
+        if algo_id is None and not client_algo_id:
+            raise ValueError("cancel_algo_order requires algo_id or client_algo_id")
+        params: dict[str, Any] = {}
+        if algo_id is not None:
+            params["algoId"] = algo_id
+        if client_algo_id:
+            params["clientAlgoId"] = client_algo_id
+        return self._signed_request("DELETE", "/fapi/v1/algoOrder", params)
+
+    def test_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: str,
+        *,
+        order_type: str = "MARKET",
+        price: str | None = None,
+        time_in_force: str = "GTC",
+        reduce_only: bool = False,
+        new_client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "side": side.upper(),
+            "type": order_type.upper(),
+            "quantity": quantity,
+        }
+        if order_type.upper() == "LIMIT":
+            if price is None:
+                raise ValueError("LIMIT test_order requires price")
+            params["price"] = price
+            params["timeInForce"] = time_in_force.upper()
+        if reduce_only:
+            params["reduceOnly"] = "true"
+        if new_client_order_id:
+            params["newClientOrderId"] = new_client_order_id
+        return self._signed_request("POST", "/fapi/v1/order/test", params)
+
     def new_market_order(
         self,
         symbol: str,
@@ -245,6 +428,32 @@ class BinanceFuturesClient:
             params["newClientOrderId"] = new_client_order_id
         return self._signed_request("POST", "/fapi/v1/order", params)
 
+    def new_limit_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: str,
+        price: str,
+        *,
+        reduce_only: bool = False,
+        time_in_force: str = "GTC",
+        new_client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "side": side.upper(),
+            "type": "LIMIT",
+            "quantity": quantity,
+            "price": price,
+            "timeInForce": time_in_force.upper(),
+            "newOrderRespType": "RESULT",
+        }
+        if reduce_only:
+            params["reduceOnly"] = "true"
+        if new_client_order_id:
+            params["newClientOrderId"] = new_client_order_id
+        return self._signed_request("POST", "/fapi/v1/order", params)
+
     def new_stop_market_order(
         self,
         symbol: str,
@@ -253,6 +462,7 @@ class BinanceFuturesClient:
         quantity: str,
         reduce_only: bool = True,
         working_type: str = "MARK_PRICE",
+        new_client_algo_id: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "algoType": "CONDITIONAL",
@@ -266,6 +476,8 @@ class BinanceFuturesClient:
         }
         if reduce_only:
             params["reduceOnly"] = "true"
+        if new_client_algo_id:
+            params["clientAlgoId"] = new_client_algo_id
         return self._signed_request("POST", "/fapi/v1/algoOrder", params)
 
     def new_take_profit_market_order(
@@ -276,6 +488,7 @@ class BinanceFuturesClient:
         quantity: str,
         reduce_only: bool = True,
         working_type: str = "MARK_PRICE",
+        new_client_algo_id: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "algoType": "CONDITIONAL",
@@ -289,6 +502,8 @@ class BinanceFuturesClient:
         }
         if reduce_only:
             params["reduceOnly"] = "true"
+        if new_client_algo_id:
+            params["clientAlgoId"] = new_client_algo_id
         return self._signed_request("POST", "/fapi/v1/algoOrder", params)
 
     def _signed_request(self, method: str, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -300,10 +515,37 @@ class BinanceFuturesClient:
         query = urlencode(signed, doseq=True)
         signature = hmac.new(self.api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
         signed["signature"] = signature
-        return self._request(method, path, signed, signed=True)
+        return self._request(method, path, signed, api_key=True)
 
-    def _request(self, method: str, path: str, params: dict[str, Any] | None = None, signed: bool = False) -> Any:
+    def _api_key_request(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        if not self.api_key:
+            raise BinanceApiError(
+                None, "Binance API key is required for this endpoint"
+            )
+        return self._request(method, path, params, api_key=True)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+        api_key: bool = False,
+    ) -> Any:
         params = params or {}
+        try:
+            self.request_weight_budget.reserve(method, path, params)
+        except RequestWeightCooldown as exc:
+            raise BinanceRateLimitError(
+                exc.status,
+                str(exc),
+                retry_after_seconds=exc.retry_after_seconds,
+                proactive=exc.proactive,
+            ) from exc
         query = urlencode(params, doseq=True)
         url = f"{self.base_url}{path}"
         data = None
@@ -315,16 +557,51 @@ class BinanceFuturesClient:
         headers = {"User-Agent": "crypto-scalper/0.1"}
         if data is not None:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
-        if signed and self.api_key:
+        if api_key and self.api_key:
             headers["X-MBX-APIKEY"] = self.api_key
 
         request = Request(url, data=data, headers=headers, method=method.upper())
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 body = response.read().decode("utf-8")
+                response_headers = {
+                    str(key): str(value)
+                    for key, value in response.headers.items()
+                }
+                self.request_weight_budget.observe_response(
+                    response_headers
+                )
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise BinanceApiError(exc.code, _error_message(body), _json_or_text(body)) from exc
+            response_headers = {
+                str(key): str(value)
+                for key, value in (exc.headers or {}).items()
+            }
+            if exc.code in {418, 429}:
+                cooldown = (
+                    self.request_weight_budget.enter_exchange_cooldown(
+                        exc.code, response_headers
+                    )
+                )
+                raise BinanceRateLimitError(
+                    exc.code,
+                    _error_message(body),
+                    _json_or_text(body),
+                    retry_after_seconds=(
+                        cooldown.retry_after_seconds
+                    ),
+                    proactive=False,
+                    headers=response_headers,
+                ) from exc
+            self.request_weight_budget.observe_response(
+                response_headers
+            )
+            raise BinanceApiError(
+                exc.code,
+                _error_message(body),
+                _json_or_text(body),
+                headers=response_headers,
+            ) from exc
         except URLError as exc:
             raise BinanceApiError(None, f"network error: {exc.reason}") from exc
 

@@ -60,9 +60,10 @@ python -m unittest discover -s tests
 
 ## Binance U 本位自动交易
 
-图形界面当前默认加载独立的 `Breakout + Dynamic Trend Grid 50币 Max2` shadow
+图形界面当前默认加载独立的 `Breakout v8 + Grid v6 50币 Max2` shadow
 配置：主网公开行情、共享 200U 模拟账户、全局最多两仓、每个来源策略最多一仓，
-并强制 `dry-run + full_cost`，不会调用订单接口。旧 GUI 和单策略配置仍保留为回滚版本。
+并强制 `dry-run + full_cost`。GUI 会读取已配置的 API 环境变量以保持 API
+连接，但 shadow 执行器不会调用订单接口。旧 GUI 和单策略配置仍保留为回滚版本。
 图形界面入口：
 
 ```powershell
@@ -72,7 +73,67 @@ python -m crypto_scalper.gui
 也可以不启动 GUI，单独运行同一个组合 shadow：
 
 ```powershell
-python -m crypto_scalper.combined_volatility_trend_grid_shadow --config config.gui.combined-volatility-trend-grid-max2-shadow.json
+python -m crypto_scalper.combined_breakout_v8_grid_v6_shadow --config config.gui.breakout-v8-grid-v6-max2-shadow.json
+```
+
+### Breakout v8 + Grid v6 独立实盘执行
+
+GUI 对这套策略只提供两个模式：
+`Breakout v8 + Grid v6 50币 Max2 DRY-RUN` 使用 Binance 主网实时行情，但资金、
+成交、持仓和盈亏全部保存在本地模拟账本，执行器没有真实下单路径；
+`Breakout v8 + Grid v6 50币 Max2 LIVE` 使用同一套 v8/v6 策略和主网行情，
+通过独立实盘执行器管理真实订单。两种模式不能同时启用。
+
+实盘执行器位于
+`crypto_scalper/combined_breakout_v8_grid_v6_live.py`，独立配置为
+`config.gui.breakout-v8-grid-v6-max2-live.json`。该配置虽然描述真实交易环境，
+但仓库内始终保持 `armed=false`、主网确认和策略确认均为空，因此默认不能下单。
+GUI 保存配置时也会自动清除这三项运行授权。
+
+执行层使用交易所账户、持仓和订单作为真实状态；最多两仓、每个策略最多一仓、
+同币互斥，所有退出均为 `reduceOnly`，入场成交后先确认交易所
+`STOP_MARKET` 保护，再继续管理仓位。Grid 的更深层加仓只在程序在线且 1m
+价格触发后使用幂等市价单执行，不在交易所长期保留可能在止损后重新开仓的普通
+限价单。账户、普通订单和条件订单在同一轮对账中各取一次；WebSocket 健康时
+每 60 秒做一次完整 REST 对账，账户事件会立即触发对账，WebSocket 失联时退化为
+每 15 秒一次。未知仓位、数量/方向/杠杆/保证金模式不一致、
+残留策略订单、连续 API/对账失败、行情过期、日亏损或峰值回撤都会锁停或熔断
+新开仓，已有保护单继续保留。DRY-RUN 与 LIVE 使用不同的状态、事件和报告文件，
+禁止混用模拟账本和实盘账本。
+
+LIVE 执行代码按职责拆分，策略信号与 v8/v6 参数不放在这些模块中：
+
+- `crypto_scalper/binance_streams.py`：Binance 2026 路由后的 `/market` 行情流和
+  `/private` 账户流、重连、listenKey 续期及线程安全缓存。
+- `crypto_scalper/binance_rate_limit.py`：按响应头校正的请求权重预算，以及
+  HTTP 429/418 强制冷却。
+- `crypto_scalper/combined_breakout_v8_grid_v6_live.py`：订单、保护单、账户对账、
+  重启恢复和熔断。
+- `crypto_scalper/combined_breakout_v8_grid_v6_live_acceptance.py`：禁止订单变更的
+  主网 DRY-RUN 压力验收。验收报告必须匹配当前执行代码才能启动 LIVE。
+
+完整的只读主网验收：
+
+```powershell
+python -m crypto_scalper.combined_breakout_v8_grid_v6_live_acceptance
+```
+
+该命令至少运行 45 秒和 200 个循环，验证 50 币行情、账户 WebSocket、缓存命中、
+单轮合并对账、请求权重和零订单变更。短时或仅公开行情的诊断结果不能解除 LIVE
+锁定。
+
+真实资金仅允许使用专用 One-way 主网账户。API 密钥只放在
+`BINANCE_FUTURES_API_KEY` 与
+`BINANCE_FUTURES_API_SECRET` 环境变量中，不写入 JSON；只授予合约交易权限，
+关闭提现并设置 IP 白名单。GUI 中明确选择
+`Breakout v8 + Grid v6 50币 Max2 LIVE` 后，仍需依次完成 ARM、
+`CONFIRM_MAINNET`（仅主网）、`CONFIRM_BREAKOUT_V8_GRID_V6_LIVE` 和启动时的
+`RUN_LIVE_NOW`。启动对账通过后还会先调用不进入撮合引擎的订单测试接口。
+
+本地故障测试：
+
+```powershell
+python -m pytest -q tests/test_combined_breakout_v8_grid_v6_live.py
 ```
 
 命令行跑一轮检查：

@@ -12,6 +12,7 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 from .binance_client import BinanceFuturesClient
+from .binance_rate_limit import RequestWeightBudget
 from .combined_volatility_trend_grid_shadow import (
     TREND_GRID_SHADOW_REASON_TOKEN,
     CombinedVolatilityTrendGridShadowTrader,
@@ -22,12 +23,16 @@ from .combined_breakout_v7_grid_v5_shadow import (
     COMBINED_V7_GRID_V5_NAME,
     CombinedBreakoutV7GridV5ShadowTrader,
 )
+from .combined_breakout_v8_grid_v6_shadow import (
+    COMBINED_V8_GRID_V6_NAME,
+    CombinedBreakoutV8GridV6ShadowTrader,
+)
+from .combined_breakout_v8_grid_v6_live import (
+    CombinedBreakoutV8GridV6LiveTrader,
+)
 from .live_config import (
     DEFAULT_SYMBOLS,
-    ExchangeConfig,
     LiveAppConfig,
-    LiveRiskConfig,
-    LiveTradingConfig,
     default_live_config,
     load_live_config,
     write_live_config,
@@ -43,7 +48,8 @@ from .volatility_breakout_shadow import (
 
 
 DEFAULT_CONFIG_PATH = "config.gui.mtf-momentum-reset-stage21.json"
-ACTIVE_GUI_CONFIG_PATH = "config.gui.breakout-v7-grid-v5-max2-shadow.json"
+ACTIVE_GUI_CONFIG_PATH = "config.gui.breakout-v8-grid-v6-max2-shadow.json"
+LIVE_GUI_CONFIG_PATH = "config.gui.breakout-v8-grid-v6-max2-live.json"
 FALLBACK_CONFIG_PATH = "config.live.example.json"
 STRATEGY_MODE_INDICATOR = "指标反转稳定版"
 STRATEGY_MODE_SUPER_VOLUME = "强放量突破"
@@ -51,10 +57,23 @@ STRATEGY_MODE_MTF = "MTF多周期"
 STRATEGY_MODE_MTF_RESET = "MTF动量重置"
 STRATEGY_MODE_OI_FLUSH = "OI去杠杆反弹"
 STRATEGY_MODE_DUAL_THRUST_SHADOW = "Hybrid v5 50币 Shadow"
-STRATEGY_MODE_COMBINED_SHADOW = "Breakout v7 + Grid v5 50币 Max2"
+STRATEGY_MODE_COMBINED_SHADOW = (
+    "Breakout v8 + Grid v6 50币 Max2 DRY-RUN"
+)
+STRATEGY_MODE_COMBINED_LIVE = (
+    "Breakout v8 + Grid v6 50币 Max2 LIVE"
+)
+EXECUTION_MODE_DRY_RUN = "DRY-RUN"
+EXECUTION_MODE_LIVE = "LIVE"
+EXECUTION_MODE_VALUES = (
+    EXECUTION_MODE_DRY_RUN,
+    EXECUTION_MODE_LIVE,
+)
+V8_V6_DRY_RUN_DISPLAY_BASELINE_USDT = 200.0
 STRATEGY_MODE_MANUAL = "手动配置"
 STRATEGY_MODE_VALUES = (
     STRATEGY_MODE_COMBINED_SHADOW,
+    STRATEGY_MODE_COMBINED_LIVE,
     STRATEGY_MODE_DUAL_THRUST_SHADOW,
     STRATEGY_MODE_INDICATOR,
     STRATEGY_MODE_SUPER_VOLUME,
@@ -64,7 +83,8 @@ STRATEGY_MODE_VALUES = (
     STRATEGY_MODE_MANUAL,
 )
 STRATEGY_MODE_SUMMARIES = {
-    STRATEGY_MODE_COMBINED_SHADOW: "50币共享账户：Breakout v7 + Grid v5，各最多1仓、全局最多2仓；v7置信度动态风险，v5拒绝弱信号，full-cost；强制 dry-run。",
+    STRATEGY_MODE_COMBINED_SHADOW: "50币共享模拟账户：Breakout v8 + Grid v6，各最多1仓、全局最多2仓；实时主网数据，资金与成交均为本地模拟。",
+    STRATEGY_MODE_COMBINED_LIVE: "独立实盘执行：交易所成交为仓位真相，严格对账、幂等订单、reduceOnly退出、保护止损与熔断；默认锁定且仅使用10%研究风险。",
     STRATEGY_MODE_DUAL_THRUST_SHADOW: "Hybrid v5 Balanced Expansion Runner：50币、60m 多空、单仓、风险2.5%、8R止盈5%、60R主目标、full-cost；强制 dry-run。",
     STRATEGY_MODE_INDICATOR: "当前启用：indicator_reversal 多空分离版。20x/持仓4，risk 0.065，多头0.282/空头0.34，其它策略关闭。",
     STRATEGY_MODE_SUPER_VOLUME: "启用强放量突破策略；适合捕捉高量能趋势启动，旧突破/回踩/反转策略保持关闭。",
@@ -94,6 +114,10 @@ THEME = {
     "button_active": "#334155",
     "danger": "#dc2626",
     "danger_active": "#b91c1c",
+    "live_soft": "#3a171d",
+    "live_text": "#fecaca",
+    "success_soft": "#102d28",
+    "success_text": "#a7f3d0",
     "profit": "#22c55e",
     "loss": "#f43f5e",
     "info": "#38bdf8",
@@ -101,6 +125,11 @@ THEME = {
 
 
 def _combined_shadow_trader_class(config: LiveAppConfig):
+    if (
+        config.combined_volatility_trend_grid_shadow.strategy_name
+        == COMBINED_V8_GRID_V6_NAME
+    ):
+        return CombinedBreakoutV8GridV6ShadowTrader
     if (
         config.combined_volatility_trend_grid_shadow.strategy_name
         == COMBINED_V7_GRID_V5_NAME
@@ -117,15 +146,17 @@ def _combined_shadow_trader_class(config: LiveAppConfig):
 class TradingApp(tk.Tk):
     def __init__(self, initial_config_path: str = ACTIVE_GUI_CONFIG_PATH) -> None:
         super().__init__()
-        self.title("Crypto Scalper - Binance Futures")
-        self.geometry("1320x760")
+        self.title("V8 / V6 Trading Console")
+        self.geometry("1280x700")
         self.minsize(1080, 620)
         self.configure(bg=THEME["root"])
         self._window_icon: tk.PhotoImage | None = None
         self._apply_window_icon()
 
         self.log_queue: queue.Queue[str] = queue.Queue()
-        self.account_queue: queue.Queue[tuple[AccountSnapshot, bool]] = queue.Queue()
+        self.account_queue: queue.Queue[
+            tuple[AccountSnapshot, bool, bool]
+        ] = queue.Queue()
         self.stop_event: threading.Event | None = None
         self.worker: threading.Thread | None = None
         self.config_path = tk.StringVar(value=initial_config_path)
@@ -133,6 +164,7 @@ class TradingApp(tk.Tk):
         self.summary_labels: dict[str, ttk.Label] = {}
         self.symbols_text: tk.Text | None = None
         self._last_config: LiveAppConfig | None = None
+        self._live_display_equity_baseline: float | None = None
         self._log_file_path = Path("logs") / f"gui_{datetime.now().date().isoformat()}.log"
 
         self._build_vars()
@@ -150,6 +182,11 @@ class TradingApp(tk.Tk):
             self._window_icon = None
 
     def _build_vars(self) -> None:
+        self.execution_mode = tk.StringVar(
+            value=EXECUTION_MODE_DRY_RUN
+        )
+        self.execution_mode_summary = tk.StringVar()
+        self.safety_note = tk.StringVar()
         self.environment = tk.StringVar()
         self.dry_run = tk.BooleanVar()
         self.api_key_env = tk.StringVar()
@@ -179,6 +216,8 @@ class TradingApp(tk.Tk):
         self.min_profit_after_cost = tk.StringVar()
         self.min_available = tk.StringVar()
         self.mainnet_confirmation = tk.StringVar()
+        self.live_armed = tk.BooleanVar(value=False)
+        self.live_confirmation = tk.StringVar()
         self.strategy_mode = tk.StringVar(value=STRATEGY_MODE_MTF_RESET)
         self.strategy_mode_summary = tk.StringVar(value=STRATEGY_MODE_SUMMARIES[STRATEGY_MODE_MTF_RESET])
         self.strategy_indicator_enabled = tk.BooleanVar(value=True)
@@ -278,6 +317,40 @@ class TradingApp(tk.Tk):
         style.configure("Loss.CardValue.TLabel", background=c["card"], foreground=c["loss"], font=("Consolas", 17, "bold"))
         style.configure("Info.CardValue.TLabel", background=c["card"], foreground=c["info"], font=("Consolas", 17, "bold"))
         style.configure("Status.TLabel", background=c["accent_soft"], foreground=c["accent_text"], padding=(14, 8), font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure(
+            "Dry.Status.TLabel",
+            background=c["success_soft"],
+            foreground=c["success_text"],
+            padding=(14, 8),
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        style.configure(
+            "Live.Status.TLabel",
+            background=c["live_soft"],
+            foreground=c["live_text"],
+            padding=(14, 8),
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        style.configure(
+            "ModeValue.TLabel",
+            background=c["card"],
+            foreground=c["title"],
+            font=("Microsoft YaHei UI", 12, "bold"),
+        )
+        style.configure(
+            "Pill.TLabel",
+            background=c["accent_soft"],
+            foreground=c["accent_text"],
+            padding=(9, 4),
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        style.configure(
+            "DisabledPill.TLabel",
+            background=c["card_alt"],
+            foreground=c["muted"],
+            padding=(9, 4),
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
         style.configure("TButton", padding=(13, 7), background=c["button"], foreground=c["text"], bordercolor=c["border"], focusthickness=0)
         style.map("TButton", background=[("active", c["button_active"]), ("disabled", c["panel"])], foreground=[("disabled", c["muted"])])
         style.configure("Accent.TButton", background=c["accent"], foreground="#ffffff", bordercolor=c["accent"])
@@ -315,32 +388,40 @@ class TradingApp(tk.Tk):
         style.configure("Vertical.TScrollbar", background=c["button"], troughcolor=c["field"], bordercolor=c["border"], arrowcolor=c["muted"])
 
     def _build_ui(self) -> None:
-        outer = ttk.Frame(self, style="Root.TFrame", padding=14)
+        outer = ttk.Frame(self, style="Root.TFrame", padding=16)
         outer.pack(fill=tk.BOTH, expand=True)
 
-        toolbar = ttk.Frame(outer, style="Header.TFrame", padding=(14, 12))
+        toolbar = ttk.Frame(
+            outer, style="Header.TFrame", padding=(18, 14)
+        )
         toolbar.pack(fill=tk.X)
         title_block = ttk.Frame(toolbar, style="Header.TFrame")
-        title_block.pack(side=tk.LEFT, padx=(0, 18))
-        ttk.Label(title_block, text="Crypto Scalper", style="HeaderTitle.TLabel").pack(anchor=tk.W)
-        ttk.Label(title_block, text="Binance Futures 30m Console", style="HeaderSubtitle.TLabel").pack(anchor=tk.W, pady=(2, 0))
+        title_block.pack(side=tk.LEFT)
+        ttk.Label(
+            title_block,
+            text="V8 / V6 Trading Console",
+            style="HeaderTitle.TLabel",
+        ).pack(anchor=tk.W)
+        ttk.Label(
+            title_block,
+            text="Breakout v8 + Grid v6  ·  Binance Futures Mainnet",
+            style="HeaderSubtitle.TLabel",
+        ).pack(anchor=tk.W, pady=(3, 0))
 
-        ttk.Label(toolbar, text="配置文件", style="HeaderLabel.TLabel").pack(side=tk.LEFT)
-        ttk.Entry(toolbar, textvariable=self.config_path, width=42).pack(side=tk.LEFT, padx=(8, 6))
-        ttk.Button(toolbar, text="加载", command=self.load_config).pack(side=tk.LEFT, padx=2)
-        ttk.Button(toolbar, text="保存", command=self.save_config).pack(side=tk.LEFT, padx=2)
-        ttk.Button(toolbar, text="检查账户", command=self.check_account, style="Accent.TButton").pack(side=tk.LEFT, padx=(14, 2))
-        ttk.Button(toolbar, text="刷新持仓", command=self.refresh_account).pack(side=tk.LEFT, padx=2)
-        ttk.Button(toolbar, text="成交统计", command=self.show_trade_history).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            toolbar,
+            text="刷新账户",
+            command=self.refresh_account,
+        ).pack(side=tk.RIGHT)
 
         main = ttk.Frame(outer, style="Root.TFrame")
-        main.pack(fill=tk.BOTH, expand=True, pady=(14, 0))
-        main.columnconfigure(0, weight=0, minsize=405)
+        main.pack(fill=tk.BOTH, expand=True, pady=(16, 0))
+        main.columnconfigure(0, weight=0, minsize=320)
         main.columnconfigure(1, weight=1)
         main.rowconfigure(0, weight=1)
 
-        left = ttk.Frame(main, style="Panel.TFrame", padding=12)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        left = ttk.Frame(main, style="Panel.TFrame", padding=16)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
         left.rowconfigure(0, weight=1)
         left.rowconfigure(1, weight=0)
         left.rowconfigure(2, weight=0)
@@ -354,11 +435,123 @@ class TradingApp(tk.Tk):
 
         settings_area = ttk.Frame(left, style="Panel.TFrame")
         settings_area.grid(row=0, column=0, sticky="nsew")
-        self._build_scrollable_settings(settings_area)
+        self._build_simple_settings(settings_area)
         self._build_controls(left)
         self._build_dashboard(right)
         self._build_positions(right)
         self._build_log(right)
+
+    def _build_simple_settings(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            parent,
+            text="运行设置",
+            style="SectionTitle.TLabel",
+        ).grid(row=0, column=0, sticky=tk.W, pady=(0, 10))
+
+        mode_card = ttk.Frame(
+            parent, style="Card.TFrame", padding=(14, 13)
+        )
+        mode_card.grid(row=1, column=0, sticky="ew")
+        mode_card.columnconfigure(0, weight=1)
+        ttk.Label(
+            mode_card,
+            text="环境 / 模式",
+            style="CardTitle.TLabel",
+        ).grid(row=0, column=0, sticky=tk.W)
+        mode_combo = ttk.Combobox(
+            mode_card,
+            textvariable=self.execution_mode,
+            values=EXECUTION_MODE_VALUES,
+            state="readonly",
+            width=18,
+        )
+        mode_combo.grid(
+            row=1, column=0, sticky="ew", pady=(8, 8)
+        )
+        mode_combo.bind(
+            "<<ComboboxSelected>>",
+            self._on_execution_mode_selected,
+        )
+        ttk.Label(
+            mode_card,
+            textvariable=self.execution_mode_summary,
+            style="CardBody.TLabel",
+            wraplength=270,
+            justify=tk.LEFT,
+        ).grid(row=2, column=0, sticky="ew")
+
+        strategy_card = ttk.Frame(
+            parent, style="Card.TFrame", padding=(14, 13)
+        )
+        strategy_card.grid(
+            row=2, column=0, sticky="ew", pady=(12, 0)
+        )
+        strategy_card.columnconfigure(0, weight=1)
+        ttk.Label(
+            strategy_card,
+            text="当前冻结策略",
+            style="CardTitle.TLabel",
+        ).grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(
+            strategy_card,
+            text="Breakout v8 + Grid v6",
+            style="ModeValue.TLabel",
+        ).grid(row=1, column=0, sticky=tk.W, pady=(7, 9))
+        pill_row = ttk.Frame(strategy_card, style="Card.TFrame")
+        pill_row.grid(row=2, column=0, sticky=tk.W)
+        ttk.Label(
+            pill_row, text="50 币", style="Pill.TLabel"
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(
+            pill_row, text="最多 2 仓", style="Pill.TLabel"
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(
+            pill_row, text="10x", style="Pill.TLabel"
+        ).pack(side=tk.LEFT)
+
+        macro_card = ttk.Frame(
+            parent, style="Card.TFrame", padding=(14, 13)
+        )
+        macro_card.grid(
+            row=3, column=0, sticky="ew", pady=(12, 0)
+        )
+        macro_card.columnconfigure(0, weight=1)
+        ttk.Label(
+            macro_card,
+            text="附加策略",
+            style="CardTitle.TLabel",
+        ).grid(row=0, column=0, sticky=tk.W)
+        macro_row = ttk.Frame(macro_card, style="Card.TFrame")
+        macro_row.grid(row=1, column=0, sticky="ew", pady=(7, 4))
+        macro_row.columnconfigure(0, weight=1)
+        ttk.Checkbutton(
+            macro_row,
+            text="非农策略",
+            variable=self.macro_enabled,
+            state=tk.DISABLED,
+        ).grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(
+            macro_row,
+            text="待调试",
+            style="DisabledPill.TLabel",
+        ).grid(row=0, column=1, sticky=tk.E)
+        ttk.Label(
+            macro_card,
+            text="当前不会启用，也不会参与 DRY-RUN 或 LIVE。",
+            style="CardBody.TLabel",
+            wraplength=270,
+            justify=tk.LEFT,
+        ).grid(row=2, column=0, sticky="ew")
+
+        ttk.Label(
+            parent,
+            textvariable=self.safety_note,
+            style="Muted.TLabel",
+            wraplength=280,
+            justify=tk.LEFT,
+        ).grid(row=4, column=0, sticky="ew", pady=(14, 0))
 
     def _build_scrollable_settings(self, parent: ttk.Frame) -> None:
         parent.rowconfigure(0, weight=1)
@@ -431,7 +624,7 @@ class TradingApp(tk.Tk):
         notebook.add(macro, text="非农")
         notebook.add(advanced, text="高级")
 
-        self._combo(execution, "环境", self.environment, ("testnet", "mainnet"), 0)
+        self._combo(execution, "环境", self.environment, ("mainnet",), 0)
         ttk.Checkbutton(execution, text="Dry-run 不真实下单", variable=self.dry_run).grid(row=1, column=1, sticky=tk.W, pady=(4, 8))
         self._entry(execution, "周期", self.timeframe, 2)
         self._entry(execution, "持仓监控秒", self.poll_seconds, 3)
@@ -518,62 +711,89 @@ class TradingApp(tk.Tk):
         self._entry(advanced, "API Key变量", self.api_key_env, 0)
         self._entry(advanced, "API Secret变量", self.api_secret_env, 1)
         self._entry(advanced, "主网确认文本", self.mainnet_confirmation, 2)
-        self._entry(advanced, "首单比例", self.initial_entry_fraction, 3)
-        self._entry(advanced, "盈利补仓比例", self.scale_in_entry_fraction, 4)
-        self._entry(advanced, "盈利触发", self.scale_in_min_profit_pct, 5)
-        self._entry(advanced, "最多补仓", self.max_scale_ins_per_symbol, 6)
-        self._entry(advanced, "补仓冷却秒", self.scale_in_cooldown_seconds, 7)
-        ttk.Checkbutton(advanced, text="允许亏损补仓", variable=self.allow_loss_scale_in).grid(row=8, column=1, sticky=tk.W, pady=5)
-        self._entry(advanced, "亏损触发", self.loss_scale_in_trigger_pct, 9)
-        self._entry(advanced, "亏损补仓比例", self.loss_scale_in_entry_fraction, 10)
+        ttk.Checkbutton(
+            advanced,
+            text="ARM v8/v6 LIVE（仅实盘配置）",
+            variable=self.live_armed,
+        ).grid(row=3, column=1, sticky=tk.W, pady=5)
+        self._entry(
+            advanced,
+            "v8/v6实盘确认",
+            self.live_confirmation,
+            4,
+        )
+        self._entry(advanced, "首单比例", self.initial_entry_fraction, 5)
+        self._entry(advanced, "盈利补仓比例", self.scale_in_entry_fraction, 6)
+        self._entry(advanced, "盈利触发", self.scale_in_min_profit_pct, 7)
+        self._entry(advanced, "最多补仓", self.max_scale_ins_per_symbol, 8)
+        self._entry(advanced, "补仓冷却秒", self.scale_in_cooldown_seconds, 9)
+        ttk.Checkbutton(advanced, text="允许亏损补仓", variable=self.allow_loss_scale_in).grid(row=10, column=1, sticky=tk.W, pady=5)
+        self._entry(advanced, "亏损触发", self.loss_scale_in_trigger_pct, 11)
+        self._entry(advanced, "亏损补仓比例", self.loss_scale_in_entry_fraction, 12)
         ttk.Label(
             advanced,
-            text="实盘前必须是 One-way 单向持仓；主网真实下单还需要取消 Dry-run 并填写 CONFIRM_MAINNET。",
+            text=(
+                "v8/v6 实盘必须加载独立 LIVE 配置、使用 One-way 专用账户，"
+                "同时 ARM，并填写 CONFIRM_MAINNET 与 "
+                "CONFIRM_BREAKOUT_V8_GRID_V6_LIVE；点击启动后还会再次要求 RUN_LIVE_NOW。"
+            ),
             style="Muted.TLabel",
             wraplength=330,
             justify=tk.LEFT,
-        ).grid(row=11, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ).grid(row=13, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
     def _build_controls(self, parent: ttk.Frame) -> None:
         frame = ttk.Frame(parent, style="Panel.TFrame")
-        frame.grid(row=1, column=0, sticky="ew", pady=(12, 0))
-        self.start_button = ttk.Button(frame, text="启动", command=self.start_trader, style="Accent.TButton")
-        self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
-        self.stop_button = ttk.Button(frame, text="停止", command=self.stop_trader, style="Danger.TButton", state=tk.DISABLED)
-        self.stop_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        ttk.Label(
-            parent,
-            text="Hedge Mode 双向持仓下会阻止真实下单。先改成 One-way 单向，再考虑取消 Dry-run。",
-            style="Muted.TLabel",
-            wraplength=340,
-            justify=tk.LEFT,
-        ).grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        frame.grid(row=1, column=0, sticky="ew", pady=(16, 0))
+        self.start_button = ttk.Button(
+            frame,
+            text="启动 DRY-RUN",
+            command=self.start_trader,
+            style="Accent.TButton",
+        )
+        self.start_button.pack(fill=tk.X, pady=(0, 8))
+        self.stop_button = ttk.Button(
+            frame,
+            text="停止运行",
+            command=self.stop_trader,
+            style="Danger.TButton",
+            state=tk.DISABLED,
+        )
+        self.stop_button.pack(fill=tk.X)
 
     def _build_dashboard(self, parent: ttk.Frame) -> None:
         panel = ttk.Frame(parent, style="Root.TFrame")
         panel.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         panel.columnconfigure(0, weight=1)
 
-        self.status_var = tk.StringVar(value="未连接")
-        ttk.Label(panel, textvariable=self.status_var, style="Status.TLabel").grid(row=0, column=0, sticky="ew")
+        self.status_var = tk.StringVar(value="正在载入配置")
+        self.status_label = ttk.Label(
+            panel,
+            textvariable=self.status_var,
+            style="Dry.Status.TLabel",
+        )
+        self.status_label.grid(row=0, column=0, sticky="ew")
 
         cards = ttk.Frame(panel, style="Root.TFrame")
         cards.grid(row=1, column=0, sticky="ew", pady=(12, 0))
-        for index in range(7):
+        for index in range(6):
             cards.columnconfigure(index, weight=1, uniform="summary")
 
         self._summary_card(cards, "账户权益", "equity", "0.00 U", 0)
         self._summary_card(cards, "可用余额", "available", "0.00 U", 1)
         self._summary_card(cards, "未实现盈亏", "unrealized", "0.00 U", 2)
         self._summary_card(cards, "相对本金盈亏", "capital_pnl", "0.00 U", 3)
-        self._summary_card(cards, "强平保证金率", "maintenance_margin_ratio", "0.00%", 4)
-        self._summary_card(cards, "仓位占用", "initial_margin_usage", "0.00%", 5)
-        self._summary_card(cards, "持仓数量", "position_count", "0", 6)
+        self._summary_card(cards, "仓位占用", "initial_margin_usage", "0.00%", 4)
+        self._summary_card(cards, "持仓数量", "position_count", "0", 5)
 
     def _summary_card(self, parent: ttk.Frame, title: str, key: str, default: str, column: int) -> None:
         frame = ttk.Frame(parent, style="Card.TFrame", padding=(12, 11))
-        frame.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 5, 0 if column == 6 else 5))
+        frame.grid(
+            row=0,
+            column=column,
+            sticky="nsew",
+            padx=(0 if column == 0 else 5, 0 if column == 5 else 5),
+        )
         ttk.Label(frame, text=title, style="CardTitle.TLabel").pack(anchor=tk.W)
         var = tk.StringVar(value=default)
         label = ttk.Label(frame, textvariable=var, style="CardValue.TLabel")
@@ -589,7 +809,9 @@ class TradingApp(tk.Tk):
 
         ttk.Label(panel, text="持仓与币种盈亏", style="SectionTitle.TLabel").grid(row=0, column=0, sticky=tk.W)
         columns = ("symbol", "side", "strategy", "size_usdt", "leverage", "entry", "mark", "margin", "pnl", "roe")
-        self.positions = ttk.Treeview(panel, columns=columns, show="headings", height=9)
+        self.positions = ttk.Treeview(
+            panel, columns=columns, show="headings", height=6
+        )
         headings = {
             "symbol": "币种",
             "side": "方向",
@@ -634,7 +856,7 @@ class TradingApp(tk.Tk):
         ttk.Label(panel, text="运行日志", style="SectionTitle.TLabel").grid(row=0, column=0, sticky=tk.W)
         self.log_text = tk.Text(
             panel,
-            height=10,
+            height=6,
             wrap=tk.WORD,
             bg=THEME["log"],
             fg=THEME["soft"],
@@ -661,6 +883,77 @@ class TradingApp(tk.Tk):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, pady=5, padx=(0, 8))
         ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=18).grid(row=row, column=1, sticky=tk.EW, pady=5)
         parent.columnconfigure(1, weight=1)
+
+    def _on_execution_mode_selected(
+        self, _event: tk.Event | None = None
+    ) -> None:
+        current_mode = _execution_mode_for_config(self._last_config)
+        if self.worker and self.worker.is_alive():
+            self.execution_mode.set(current_mode)
+            messagebox.showwarning(
+                "正在运行",
+                "请先停止当前运行，再切换 DRY-RUN / LIVE。",
+            )
+            return
+
+        selected = self.execution_mode.get().strip().upper()
+        path = Path(
+            LIVE_GUI_CONFIG_PATH
+            if selected == EXECUTION_MODE_LIVE
+            else ACTIVE_GUI_CONFIG_PATH
+        )
+        try:
+            config = load_live_config(path)
+        except Exception as exc:
+            self.execution_mode.set(current_mode)
+            messagebox.showerror("模式切换失败", str(exc))
+            return
+
+        self.config_path.set(str(path))
+        self._apply_config(config)
+        self._render_empty_positions(config)
+        if selected == EXECUTION_MODE_LIVE:
+            self.log(
+                "已切换到 LIVE；当前尚未启动，不会发送订单。"
+            )
+        else:
+            self.log(
+                "已切换到 DRY-RUN；读取主网实时行情，仅本地模拟。"
+            )
+
+    def _update_execution_mode_ui(self) -> None:
+        mode = self.execution_mode.get().strip().upper()
+        if mode == EXECUTION_MODE_LIVE:
+            self.execution_mode_summary.set(
+                "主网实时账户与真实订单。点击启动后只再确认一次。"
+            )
+            self.safety_note.set(
+                "LIVE 使用专用 One-way 合约账户。停止程序不会自动平仓，"
+                "已有交易所保护单会继续保留。"
+            )
+            self.start_button.configure(
+                text="启动 LIVE 实盘",
+                style="Danger.TButton",
+            )
+            self.status_label.configure(style="Live.Status.TLabel")
+            if not (self.worker and self.worker.is_alive()):
+                self.status_var.set("MAINNET  /  LIVE 已选择  /  等待启动确认")
+            return
+
+        self.execution_mode_summary.set(
+            "主网实时行情，本地模拟资金与成交，不发送真实订单。"
+        )
+        self.safety_note.set(
+            "DRY-RUN 与实盘使用相同的 v8/v6 信号源，"
+            "但资金、仓位和成交只保存在本地模拟账本。"
+        )
+        self.start_button.configure(
+            text="启动 DRY-RUN",
+            style="Accent.TButton",
+        )
+        self.status_label.configure(style="Dry.Status.TLabel")
+        if not (self.worker and self.worker.is_alive()):
+            self.status_var.set("MAINNET  /  DRY-RUN  /  等待启动")
 
     def _build_strategy_selector(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -711,8 +1004,40 @@ class TradingApp(tk.Tk):
         return mode if mode in STRATEGY_MODE_VALUES else STRATEGY_MODE_MANUAL
 
     def _apply_selected_strategy_to_form(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning(
+                "策略正在运行",
+                "请先停止交易线程，等待状态恢复后再切换策略。",
+            )
+            return
         mode = self._selected_strategy_mode()
         self._update_strategy_mode_summary()
+        if mode == STRATEGY_MODE_COMBINED_LIVE:
+            path = Path(LIVE_GUI_CONFIG_PATH)
+            if not path.exists():
+                messagebox.showerror(
+                    "LIVE配置缺失", f"找不到独立配置：{path}"
+                )
+                return
+            self.config_path.set(str(path))
+            self._apply_config(load_live_config(path))
+            self._render_empty_positions(self._last_config)
+            self.log(
+                "已切换到独立 v8/v6 LIVE 配置；当前默认未ARM，"
+                "不会发送订单。"
+            )
+            return
+        if (
+            mode == STRATEGY_MODE_COMBINED_SHADOW
+            and self._last_config is not None
+            and self._last_config.combined_breakout_v8_grid_v6_live.enabled
+        ):
+            path = Path(ACTIVE_GUI_CONFIG_PATH)
+            self.config_path.set(str(path))
+            self._apply_config(load_live_config(path))
+            self._render_empty_positions(self._last_config)
+            self.log("已切回 v8/v6 DRY-RUN；真实订单路径已关闭。")
+            return
         self.initial_entry_fraction.set("1.0")
         self.max_scale_ins_per_symbol.set("0")
         self.allow_loss_scale_in.set(False)
@@ -725,7 +1050,7 @@ class TradingApp(tk.Tk):
             self.symbol_margin.set("0.95")
             self.max_drawdown.set("0.60")
             self.dry_run.set(True)
-            self.log("已应用 Breakout v7 + Grid v5 shadow参数：50币、共享账户最多2仓、每策略1仓、强制dry-run。")
+            self.log("已应用 Breakout v8 + Grid v6 shadow参数：50币、共享账户最多2仓、每策略1仓、强制dry-run。")
         elif mode == STRATEGY_MODE_DUAL_THRUST_SHADOW:
             self.starting_capital.set("2000.0")
             self.max_open_positions.set("1")
@@ -758,6 +1083,12 @@ class TradingApp(tk.Tk):
         self._render_empty_positions(config)
 
     def load_config(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning(
+                "策略正在运行",
+                "请先停止交易线程，等待状态恢复后再加载配置。",
+            )
+            return
         try:
             config = load_live_config(self.config_path.get())
             self._apply_config(config)
@@ -767,8 +1098,24 @@ class TradingApp(tk.Tk):
             messagebox.showerror("加载失败", str(exc))
 
     def save_config(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning(
+                "策略正在运行",
+                "运行期间不保存配置；请先停止交易线程。",
+            )
+            return
         try:
-            write_live_config(self.config_path.get(), self._read_config())
+            config = _lock_live_authorization_for_persistence(
+                self._read_config()
+            )
+            if config.combined_breakout_v8_grid_v6_live.enabled:
+                self.live_armed.set(False)
+                self.live_confirmation.set("")
+                self.mainnet_confirmation.set("")
+                self.log(
+                    "LIVE配置已按锁定状态保存；ARM与两项确认文本不会持久化。"
+                )
+            write_live_config(self.config_path.get(), config)
             self.log(f"已保存配置 {self.config_path.get()}")
         except Exception as exc:
             messagebox.showerror("保存失败", str(exc))
@@ -796,6 +1143,23 @@ class TradingApp(tk.Tk):
         try:
             client = self._client_for_config(config)
             self.log_from_thread(f"API Key: {mask_secret(client.api_key)}")
+            if config.combined_breakout_v8_grid_v6_live.enabled:
+                trader = CombinedBreakoutV8GridV6LiveTrader(
+                    config, client, logger=self.log_from_thread
+                )
+                snapshot = trader.snapshot_account()
+                self.account_from_thread(
+                    snapshot,
+                    reset_live_display_baseline=True,
+                )
+                live = config.combined_breakout_v8_grid_v6_live
+                self.log_from_thread(
+                    f"v8/v6 LIVE账户只读检查: 权益={snapshot.equity:.2f}U "
+                    f"持仓={len(snapshot.position_rows)}/2 "
+                    f"状态={'ARMED' if live.armed else 'LOCKED'} "
+                    f"账本={trader.state_path}"
+                )
+                return
             if config.combined_volatility_trend_grid_shadow.enabled:
                 trader = _combined_shadow_trader_class(config)(
                     config, client, logger=self.log_from_thread
@@ -929,12 +1293,41 @@ class TradingApp(tk.Tk):
             return
         try:
             config = self._read_config()
-            if config.exchange.environment == "mainnet" and not config.trading.dry_run:
-                if config.trading.mainnet_confirmation_text != "CONFIRM_MAINNET":
-                    messagebox.showerror("主网确认缺失", "真实主网下单前，主网确认文本必须填写 CONFIRM_MAINNET")
+            live_config = config.combined_breakout_v8_grid_v6_live
+            if live_config.enabled:
+                if not messagebox.askyesno(
+                    "确认启动 LIVE 实盘",
+                    "Breakout v8 + Grid v6 将在 Binance 主网真实下单。\n\n"
+                    "50 币、10x 全仓、全局最多 2 仓；停止程序不会自动平仓。\n\n"
+                    "仅当这是专用 One-way 合约账户，并且你接受真实资金风险时，"
+                    "才选择“是”。",
+                    icon="warning",
+                ):
                     return
+                config = _authorize_live_gui_session(config)
+                live_config = (
+                    config.combined_breakout_v8_grid_v6_live
+                )
+                self.mainnet_confirmation.set("CONFIRM_MAINNET")
+                self.live_armed.set(True)
+                self.live_confirmation.set(
+                    live_config.live_confirmation_text
+                )
             client = self._client_for_config(config)
-            if config.combined_volatility_trend_grid_shadow.enabled:
+            if live_config.enabled:
+                trader = CombinedBreakoutV8GridV6LiveTrader(
+                    config,
+                    client,
+                    logger=self.log_from_thread,
+                    account_callback=self.account_from_thread,
+                )
+                try:
+                    trader.validate_startup_settings_only()
+                except Exception as exc:
+                    self._clear_live_runtime_authorization()
+                    messagebox.showerror("LIVE启动检查失败", str(exc))
+                    return
+            elif config.combined_volatility_trend_grid_shadow.enabled:
                 trader = _combined_shadow_trader_class(config)(
                     config,
                     client,
@@ -960,8 +1353,20 @@ class TradingApp(tk.Tk):
             self.worker.start()
             self.start_button.configure(state=tk.DISABLED)
             self.stop_button.configure(state=tk.NORMAL)
+            if live_config.enabled:
+                self.status_var.set("MAINNET  /  LIVE  /  正在启动")
+                self.status_label.configure(
+                    style="Live.Status.TLabel"
+                )
+            else:
+                self.status_var.set("MAINNET  /  DRY-RUN  /  正在启动")
+                self.status_label.configure(
+                    style="Dry.Status.TLabel"
+                )
             self.log("已请求启动")
         except Exception as exc:
+            if self.execution_mode.get() == EXECUTION_MODE_LIVE:
+                self._clear_live_runtime_authorization()
             messagebox.showerror("启动失败", str(exc))
 
     def _run_trader_worker(self, trader: Any, stop_event: threading.Event) -> None:
@@ -969,6 +1374,21 @@ class TradingApp(tk.Tk):
             trader.run_forever(stop_event)
         except Exception as exc:
             self.log_from_thread(f"交易循环启动失败: {type(exc).__name__}: {exc}")
+        finally:
+            self.after(0, self._trader_worker_stopped)
+
+    def _trader_worker_stopped(self) -> None:
+        self.start_button.configure(state=tk.NORMAL)
+        self.stop_button.configure(state=tk.DISABLED)
+        if self.execution_mode.get() == EXECUTION_MODE_LIVE:
+            self._clear_live_runtime_authorization()
+            self.log("LIVE运行授权已从界面清除；再次启动需重新确认。")
+        self._update_execution_mode_ui()
+
+    def _clear_live_runtime_authorization(self) -> None:
+        self.live_armed.set(False)
+        self.live_confirmation.set("")
+        self.mainnet_confirmation.set("")
 
     def stop_trader(self) -> None:
         if self.stop_event:
@@ -980,16 +1400,31 @@ class TradingApp(tk.Tk):
     def _client_for_config(self, config: LiveAppConfig) -> BinanceFuturesClient:
         api_key = read_secret(config.exchange.api_key_env)
         api_secret = read_secret(config.exchange.api_secret_env)
+        live = config.combined_breakout_v8_grid_v6_live
         return BinanceFuturesClient(
             api_key=api_key,
             api_secret=api_secret,
             environment=config.exchange.environment,
             recv_window=config.exchange.recv_window,
             timeout_seconds=config.exchange.timeout_seconds,
+            request_weight_budget=RequestWeightBudget(
+                limit=live.request_weight_limit,
+                soft_limit_ratio=(
+                    live.request_weight_soft_limit_ratio
+                ),
+                default_cooldown_seconds=(
+                    live.rate_limit_default_cooldown_seconds
+                ),
+            ),
         )
 
     def _apply_config(self, config: LiveAppConfig) -> None:
+        previous_mode = _execution_mode_for_config(self._last_config)
+        next_mode = _execution_mode_for_config(config)
+        if previous_mode != next_mode:
+            self._live_display_equity_baseline = None
         self._last_config = config
+        self.execution_mode.set(next_mode)
         self.environment.set(config.exchange.environment)
         self.dry_run.set(config.trading.dry_run)
         self.api_key_env.set(config.exchange.api_key_env)
@@ -1019,6 +1454,11 @@ class TradingApp(tk.Tk):
         self.min_profit_after_cost.set(str(config.risk.min_profit_after_cost_pct))
         self.min_available.set(str(config.risk.min_available_balance_usdt))
         self.mainnet_confirmation.set(config.trading.mainnet_confirmation_text)
+        live_config = config.combined_breakout_v8_grid_v6_live
+        self.live_armed.set(live_config.armed)
+        self.live_confirmation.set(
+            live_config.live_confirmation_text
+        )
         self.fast_ema.set(str(config.strategy.fast_ema))
         self.slow_ema.set(str(config.strategy.slow_ema))
         self.atr_period.set(str(config.strategy.atr_period))
@@ -1065,7 +1505,7 @@ class TradingApp(tk.Tk):
         self.allow_loss_scale_in.set(config.trading.allow_loss_scale_in)
         self.loss_scale_in_trigger_pct.set(str(config.trading.loss_scale_in_trigger_pct))
         self.loss_scale_in_entry_fraction.set(str(config.trading.loss_scale_in_entry_fraction))
-        self.macro_enabled.set(config.macro_events.enabled)
+        self.macro_enabled.set(False)
         self.macro_events_path.set(config.macro_events.events_path)
         self.macro_symbols.set(",".join(config.macro_events.symbols))
         self.macro_primary_symbol.set(config.macro_events.primary_symbol)
@@ -1085,21 +1525,47 @@ class TradingApp(tk.Tk):
         self.strategy_vbp_enabled.set(False)
         self.mtf_allow_long.set(bool(getattr(config.strategy, "mtf_allow_long", True)))
         self.mtf_allow_short.set(False)
-        if config.combined_volatility_trend_grid_shadow.enabled:
+        if live_config.enabled:
+            self.mtf_core_parameters.set(
+                "Breakout v8 + Grid v6 50币  |  真实交易所执行\n"
+                "全局最多 2 仓  |  每策略最多 1 仓  |  同币互斥\n"
+                f"研究风险缩放 {live_config.risk_scale * 100:.0f}%  |  "
+                f"总名义上限 {live_config.max_gross_notional_multiple:.2f}x\n"
+                f"日亏损熔断 {live_config.max_daily_loss_pct * 100:.1f}%  |  "
+                f"峰值回撤熔断 {live_config.max_drawdown_pct * 100:.1f}%\n"
+                "幂等订单 + 启动/循环对账 + reduceOnly退出 + "
+                "交易所STOP_MARKET保护\n"
+                f"当前：{'ARMED（仍需双重确认）' if live_config.armed else 'LOCKED，不会下单'}"
+            )
+        elif config.combined_volatility_trend_grid_shadow.enabled:
             combined = config.combined_volatility_trend_grid_shadow
             breakout = config.dual_thrust_shadow
+            is_v8_grid_v6 = combined.strategy_name == COMBINED_V8_GRID_V6_NAME
             is_v7_grid_v5 = combined.strategy_name == COMBINED_V7_GRID_V5_NAME
             is_v5_grid_v3 = combined.strategy_name == COMBINED_V5_GRID_V3_NAME
             combined_label = (
-                "Breakout v7 + Grid v5"
-                if is_v7_grid_v5
+                "Breakout v8 + Grid v6"
+                if is_v8_grid_v6
                 else (
-                    "Hybrid v5 + Grid v3"
-                    if is_v5_grid_v3
-                    else "Breakout + Dynamic Trend Grid"
+                    "Breakout v7 + Grid v5"
+                    if is_v7_grid_v5
+                    else (
+                        "Hybrid v5 + Grid v3"
+                        if is_v5_grid_v3
+                        else "Breakout + Dynamic Trend Grid"
+                    )
                 )
             )
-            if is_v7_grid_v5:
+            if is_v8_grid_v6:
+                breakout_line = (
+                    f"Breakout v8: 已收盘{breakout.timeframe_minutes}m 多空 / "
+                    f"分数凸性动态风险 / {breakout.stop_atr_multiple:.2f}ATR止损"
+                )
+                grid_line = (
+                    "Grid v6: 已收盘60m / 仅做空 / 两层网格 / "
+                    "弱信号拒绝 + campaign风险保护"
+                )
+            elif is_v7_grid_v5:
                 breakout_line = (
                     f"Breakout v7: 已收盘{breakout.timeframe_minutes}m 多空 / "
                     f"置信度动态风险 / {breakout.stop_atr_multiple:.2f}ATR止损"
@@ -1126,7 +1592,7 @@ class TradingApp(tk.Tk):
                 f"{grid_line}\n"
                 f"总名义上限 {combined.max_gross_notional_multiple:.1f}x  |  "
                 f"硬回撤停止新开仓 {combined.hard_drawdown_stop_pct * 100:.0f}%\n"
-                "主网公开行情 + full-cost共享撮合  |  强制DRY-RUN"
+                "主网实时行情 + API连接 + full-cost共享撮合  |  当前强制DRY-RUN"
             )
         elif config.dual_thrust_shadow.enabled:
             shadow = config.dual_thrust_shadow
@@ -1158,7 +1624,7 @@ class TradingApp(tk.Tk):
                 f"OI {'开启' if getattr(config.strategy, 'mtf_use_oi_filter', False) else '关闭'}"
             )
         self._update_strategy_mode_summary()
-        self.status_var.set(f"{config.exchange.environment.upper()} / {'DRY-RUN' if config.trading.dry_run else 'LIVE'}")
+        self._update_execution_mode_ui()
 
     def _read_config(self) -> LiveAppConfig:
         base = self._last_config or default_live_config()
@@ -1273,6 +1739,11 @@ class TradingApp(tk.Tk):
             nfp_min_surprise_k=read_float(self.macro_nfp_min_surprise_k, base.macro_events.nfp_min_surprise_k),
             cpi_min_surprise_pct=read_float(self.macro_cpi_min_surprise_pct, base.macro_events.cpi_min_surprise_pct),
         )
+        combined_live = replace(
+            base.combined_breakout_v8_grid_v6_live,
+            armed=bool(self.live_armed.get()),
+            live_confirmation_text=self.live_confirmation.get().strip(),
+        )
         config = LiveAppConfig(
             exchange=exchange,
             trading=trading,
@@ -1289,8 +1760,15 @@ class TradingApp(tk.Tk):
             mtpc=base.mtpc,
             dual_thrust_shadow=base.dual_thrust_shadow,
             combined_volatility_trend_grid_shadow=base.combined_volatility_trend_grid_shadow,
+            combined_breakout_v8_grid_v6_live=combined_live,
         )
-        selected_mode = self._selected_strategy_mode()
+        selected_mode = (
+            STRATEGY_MODE_COMBINED_LIVE
+            if self.execution_mode.get().strip().upper()
+            == EXECUTION_MODE_LIVE
+            else STRATEGY_MODE_COMBINED_SHADOW
+        )
+        self.strategy_mode.set(selected_mode)
         config = _config_with_strategy_mode(config, selected_mode)
         if selected_mode == STRATEGY_MODE_MTF_RESET:
             config = replace(
@@ -1368,7 +1846,12 @@ class TradingApp(tk.Tk):
         for symbol in config.trading.symbols:
             self.positions.insert("", tk.END, values=(symbol, "空仓", "-", "0.00", "-", "-", "-", "0.00", "0.00", "0.00%"), tags=("flat",))
 
-    def _render_account(self, snapshot: AccountSnapshot, sync_starting_capital: bool = False) -> None:
+    def _render_account(
+        self,
+        snapshot: AccountSnapshot,
+        sync_starting_capital: bool = False,
+        reset_live_display_baseline: bool = False,
+    ) -> None:
         if sync_starting_capital:
             previous = _safe_float(self.starting_capital.get())
             self.starting_capital.set(f"{snapshot.equity:.2f}")
@@ -1377,20 +1860,47 @@ class TradingApp(tk.Tk):
                 self.log(f"本金U已同步: {before} -> {snapshot.equity:.2f}U")
 
         config = self._read_config()
-        capital_pnl = snapshot.equity - config.risk.starting_capital_usdt
+        execution_mode = _execution_mode_for_config(config)
+        live_baseline_was_reset = (
+            reset_live_display_baseline
+            and execution_mode == EXECUTION_MODE_LIVE
+        )
+        if live_baseline_was_reset:
+            self._live_display_equity_baseline = snapshot.equity
+            self.log(
+                "LIVE界面盈亏基准已重置为"
+                f"{snapshot.equity:.2f}U；本次刷新后相对盈亏为0。"
+            )
+        display_baseline = _account_display_equity_baseline(
+            config,
+            self._live_display_equity_baseline,
+        )
+        capital_pnl = snapshot.equity - display_baseline
         self.summary_vars["equity"].set(f"{snapshot.equity:.2f} U")
         self.summary_vars["available"].set(f"{snapshot.available_balance:.2f} U")
         self.summary_vars["unrealized"].set(f"{snapshot.total_unrealized_pnl:+.2f} U")
         self.summary_vars["capital_pnl"].set(f"{capital_pnl:+.2f} U")
-        self.summary_vars["maintenance_margin_ratio"].set(f"{snapshot.maintenance_margin_ratio_pct * 100:.2f}%")
         self.summary_vars["initial_margin_usage"].set(f"{snapshot.initial_margin_usage_pct * 100:.2f}%")
         self.summary_vars["position_count"].set(str(len(snapshot.position_rows)))
         self._set_summary_value_style("unrealized", snapshot.total_unrealized_pnl)
         self._set_summary_value_style("capital_pnl", capital_pnl)
         self.summary_labels["equity"].configure(style="Info.CardValue.TLabel")
+        self.status_label.configure(
+            style=(
+                "Live.Status.TLabel"
+                if execution_mode == EXECUTION_MODE_LIVE
+                else "Dry.Status.TLabel"
+            )
+        )
+        if live_baseline_was_reset:
+            account_status = "LIVE盈亏已归零"
+        elif sync_starting_capital:
+            account_status = "本金已同步"
+        else:
+            account_status = "账户已更新"
         self.status_var.set(
-            f"{config.exchange.environment.upper()} / {'DRY-RUN' if config.trading.dry_run else 'LIVE'} / "
-            f"{snapshot.position_mode} / {'本金已同步' if sync_starting_capital else '更新完成'}"
+            f"{config.exchange.environment.upper()}  /  {execution_mode}  /  "
+            f"{snapshot.position_mode}  /  {account_status}"
         )
 
         self.positions.delete(*self.positions.get_children())
@@ -1442,27 +1952,47 @@ class TradingApp(tk.Tk):
     def log_from_thread(self, message: str) -> None:
         self.log_queue.put(message)
 
-    def account_from_thread(self, snapshot: AccountSnapshot, sync_starting_capital: bool = False) -> None:
-        self.account_queue.put((snapshot, sync_starting_capital))
+    def account_from_thread(
+        self,
+        snapshot: AccountSnapshot,
+        sync_starting_capital: bool = False,
+        reset_live_display_baseline: bool = False,
+    ) -> None:
+        self.account_queue.put(
+            (
+                snapshot,
+                sync_starting_capital,
+                reset_live_display_baseline,
+            )
+        )
 
     def log(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamped_message = f"[{timestamp}] {message}"
         try:
             self._log_file_path.parent.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with self._log_file_path.open("a", encoding="utf-8") as handle:
-                handle.write(f"[{timestamp}] {message}\n")
+                handle.write(f"{timestamped_message}\n")
         except OSError:
             pass
-        self.log_text.insert(tk.END, f"{message}\n")
+        self.log_text.insert(tk.END, f"{timestamped_message}\n")
         self.log_text.see(tk.END)
 
     def _drain_queues(self) -> None:
         while True:
             try:
-                snapshot, sync_starting_capital = self.account_queue.get_nowait()
+                (
+                    snapshot,
+                    sync_starting_capital,
+                    reset_live_display_baseline,
+                ) = self.account_queue.get_nowait()
             except queue.Empty:
                 break
-            self._render_account(snapshot, sync_starting_capital)
+            self._render_account(
+                snapshot,
+                sync_starting_capital,
+                reset_live_display_baseline,
+            )
 
         while True:
             try:
@@ -1677,6 +2207,44 @@ def _config_with_strategy_selection(
     indicator_enabled: bool,
     vbp_enabled: bool,
 ) -> LiveAppConfig:
+    if config.combined_breakout_v8_grid_v6_live.enabled:
+        return replace(
+            config,
+            trading=replace(
+                config.trading,
+                dry_run=False,
+                max_open_positions=2,
+                max_new_entries_per_cycle=2,
+                max_scale_ins_per_symbol=0,
+                allow_loss_scale_in=False,
+                profit_exit_enabled=False,
+            ),
+            dual_thrust_shadow=replace(
+                config.dual_thrust_shadow, enabled=False
+            ),
+            combined_volatility_trend_grid_shadow=replace(
+                config.combined_volatility_trend_grid_shadow,
+                enabled=False,
+            ),
+            filters=replace(
+                config.filters,
+                enabled=False,
+                extreme_reversal_entry_enabled=False,
+                pre_cross_entry_enabled=False,
+            ),
+            vbp_strategy=replace(config.vbp_strategy, enabled=False),
+            portfolio_control=replace(
+                config.portfolio_control, enabled=False
+            ),
+            regime_score=replace(config.regime_score, enabled=False),
+            reversal_alpha=replace(
+                config.reversal_alpha, enabled=False
+            ),
+            cmipr=replace(config.cmipr, enabled=False),
+            mtper=replace(config.mtper, enabled=False),
+            mtpc=replace(config.mtpc, enabled=False),
+            macro_events=replace(config.macro_events, enabled=False),
+        )
     if config.combined_volatility_trend_grid_shadow.enabled:
         return replace(
             config,
@@ -1794,7 +2362,79 @@ def _vbp_strategy_symbols(config: LiveAppConfig) -> tuple[str, ...]:
     return tuple(config.trading.entry_symbols or config.trading.symbols)
 
 
+def _lock_live_authorization_for_persistence(
+    config: LiveAppConfig,
+) -> LiveAppConfig:
+    if not config.combined_breakout_v8_grid_v6_live.enabled:
+        return config
+    return replace(
+        config,
+        trading=replace(
+            config.trading, mainnet_confirmation_text=""
+        ),
+        combined_breakout_v8_grid_v6_live=replace(
+            config.combined_breakout_v8_grid_v6_live,
+            armed=False,
+            live_confirmation_text="",
+        ),
+    )
+
+
+def _execution_mode_for_config(
+    config: LiveAppConfig | None,
+) -> str:
+    if (
+        config is not None
+        and config.combined_breakout_v8_grid_v6_live.enabled
+    ):
+        return EXECUTION_MODE_LIVE
+    return EXECUTION_MODE_DRY_RUN
+
+
+def _account_display_equity_baseline(
+    config: LiveAppConfig,
+    live_refresh_baseline: float | None,
+) -> float:
+    """Return the GUI-only baseline without changing strategy risk capital."""
+
+    if config.combined_breakout_v8_grid_v6_live.enabled:
+        if live_refresh_baseline is not None:
+            return live_refresh_baseline
+        return config.risk.starting_capital_usdt
+    shadow = config.combined_volatility_trend_grid_shadow
+    if (
+        shadow.enabled
+        and shadow.strategy_name == COMBINED_V8_GRID_V6_NAME
+    ):
+        return V8_V6_DRY_RUN_DISPLAY_BASELINE_USDT
+    return config.risk.starting_capital_usdt
+
+
+def _authorize_live_gui_session(
+    config: LiveAppConfig,
+) -> LiveAppConfig:
+    """Apply non-persistent authorization after the single GUI warning."""
+
+    live = config.combined_breakout_v8_grid_v6_live
+    return replace(
+        config,
+        trading=replace(
+            config.trading,
+            mainnet_confirmation_text="CONFIRM_MAINNET",
+        ),
+        combined_breakout_v8_grid_v6_live=replace(
+            live,
+            armed=True,
+            live_confirmation_text=(
+                live.required_live_confirmation_text
+            ),
+        ),
+    )
+
+
 def _detect_strategy_mode(config: LiveAppConfig) -> str:
+    if config.combined_breakout_v8_grid_v6_live.enabled:
+        return STRATEGY_MODE_COMBINED_LIVE
     if config.combined_volatility_trend_grid_shadow.enabled:
         return STRATEGY_MODE_COMBINED_SHADOW
     if config.dual_thrust_shadow.enabled:
@@ -1828,11 +2468,15 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
 
     strategy = config.strategy
     filters = config.filters
+    exchange = config.exchange
     trading = config.trading
     risk = config.risk
     dual_thrust_shadow = replace(config.dual_thrust_shadow, enabled=False)
     combined_shadow = replace(
         config.combined_volatility_trend_grid_shadow, enabled=False
+    )
+    combined_live = replace(
+        config.combined_breakout_v8_grid_v6_live, enabled=False
     )
     disable_legacy_breakout = {
         "super_volume_breakout_enabled": False,
@@ -1845,7 +2489,52 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
         "mtf_momentum_reset_enabled": False,
     }
 
-    if mode == STRATEGY_MODE_COMBINED_SHADOW:
+    if mode == STRATEGY_MODE_COMBINED_LIVE:
+        exchange = replace(
+            exchange,
+            environment="mainnet",
+            api_key_env="BINANCE_FUTURES_API_KEY",
+            api_secret_env="BINANCE_FUTURES_API_SECRET",
+        )
+        strategy = replace(
+            strategy,
+            **disable_legacy_breakout,
+            mtf_4h_rsi_regime_enabled=False,
+            mtf_disable_legacy_strategies=True,
+            oi_flush_reversal_enabled=False,
+            allow_short=False,
+        )
+        filters = replace(
+            filters,
+            enabled=False,
+            extreme_reversal_entry_enabled=False,
+            pre_cross_entry_enabled=False,
+        )
+        trading = replace(
+            trading,
+            timeframe="1m",
+            poll_seconds=15,
+            entry_scan_seconds=60,
+            dry_run=False,
+            leverage=10,
+            margin_type="CROSSED",
+            max_open_positions=2,
+            max_new_entries_per_cycle=2,
+            initial_entry_fraction=1.0,
+            scale_in_entry_fraction=0.0,
+            super_volume_extra_slot_enabled=False,
+            max_scale_ins_per_symbol=0,
+            allow_loss_scale_in=False,
+            profit_exit_enabled=False,
+        )
+        combined_live = replace(combined_live, enabled=True)
+    elif mode == STRATEGY_MODE_COMBINED_SHADOW:
+        exchange = replace(
+            exchange,
+            environment="mainnet",
+            api_key_env="BINANCE_FUTURES_API_KEY",
+            api_secret_env="BINANCE_FUTURES_API_SECRET",
+        )
         strategy = replace(
             strategy,
             **disable_legacy_breakout,
@@ -2145,15 +2834,18 @@ def _config_with_strategy_mode(config: LiveAppConfig, mode: str) -> LiveAppConfi
 
     updated = replace(
         config,
+        exchange=exchange,
         trading=trading,
         strategy=strategy,
         filters=filters,
         risk=risk,
         dual_thrust_shadow=dual_thrust_shadow,
         combined_volatility_trend_grid_shadow=combined_shadow,
+        combined_breakout_v8_grid_v6_live=combined_live,
     )
     if mode in {
         STRATEGY_MODE_COMBINED_SHADOW,
+        STRATEGY_MODE_COMBINED_LIVE,
         STRATEGY_MODE_DUAL_THRUST_SHADOW,
         STRATEGY_MODE_MTF_RESET,
         STRATEGY_MODE_MTF,

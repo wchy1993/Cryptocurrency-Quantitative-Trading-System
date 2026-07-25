@@ -17,7 +17,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
-from .binance_client import BinanceApiError, BinanceFuturesClient, SymbolRules
+from .binance_client import (
+    BinanceApiError,
+    BinanceFuturesClient,
+    BinanceRateLimitError,
+    SymbolRules,
+)
 from .combined_volatility_trend_grid_backtest import (
     BREAKOUT_KEY,
     COMBINED_STRATEGY_NAME,
@@ -428,6 +433,18 @@ class CombinedVolatilityTrendGridShadowTrader:
                 started = time.time()
                 try:
                     self.run_once(stop_event=stop_event)
+                except BinanceRateLimitError as exc:
+                    self.log(
+                        "Binance 公开行情进入强制冷却 "
+                        f"{exc.retry_after_seconds:.1f}s"
+                    )
+                    remaining = exc.retry_after_seconds
+                    while remaining > 0.0 and not stop_event.is_set():
+                        waited_at = time.monotonic()
+                        stop_event.wait(min(30.0, remaining))
+                        remaining -= max(
+                            0.0, time.monotonic() - waited_at
+                        )
                 except BinanceApiError as exc:
                     self.log(f"Binance 公开行情错误: {exc}")
                 except Exception as exc:
@@ -745,6 +762,8 @@ class CombinedVolatilityTrendGridShadowTrader:
                 closed = _closed_candles(rows, 60, now)
                 if len(closed) >= 150:
                     candles_by_symbol[symbol] = closed
+            except BinanceRateLimitError:
+                raise
             except Exception as exc:
                 self.log(f"{symbol}: 组合shadow 1h数据不可用 ({type(exc).__name__}: {exc})")
                 if isinstance(exc, BinanceApiError) and "symbol" in str(exc).lower():

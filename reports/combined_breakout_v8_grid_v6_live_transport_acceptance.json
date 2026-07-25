@@ -1,0 +1,124 @@
+{
+  "schema_version": 2,
+  "transport_version": "binance_usdm_ws_weighted_v1",
+  "started_at": "2026-07-25T03:13:53.254604",
+  "completed_at": "2026-07-25T03:14:38.750503",
+  "duration_seconds": 45.495768537,
+  "mode": "MAINNET_DRY_RUN_NO_ORDER_WITH_USER_STREAM",
+  "environment": "mainnet",
+  "user_stream_required": true,
+  "passed": true,
+  "failure": "",
+  "criteria": {
+    "dry_run_config": true,
+    "guarded_order_surface": true,
+    "websocket_ready": true,
+    "market_stream_active": true,
+    "user_stream_connected": true,
+    "broad_symbol_coverage": true,
+    "cache_exercised": true,
+    "cache_replay_no_rest": true,
+    "stress_cycles_completed": true,
+    "consolidated_reconciliation": true,
+    "no_exchange_rate_limit": true,
+    "below_soft_request_weight": true,
+    "strategy_sources_unchanged": true,
+    "no_sample_integrity_errors": true
+  },
+  "cycles": 815,
+  "live_config_hash": "529d07e96925bfa798ff6fa94b4bba21354529a153915039501ea8aa17d6b85d",
+  "strategy_source_hashes": {
+    "combined": "67c8e704ef201367cf444c6e41c7593b64f5aa7a0f5e2a1f4b7b6795dada3049",
+    "volatility_breakout": "04cca8d0747e84fdfbb4173ebb3397c22b83583efc267c331c00a148baf259f2",
+    "dynamic_trend_following_grid": "e238e1904ca460026bdce051620663f19a51d351d9497b9336d8d12bd6a68fae"
+  },
+  "transport_code_hashes": {
+    "crypto_scalper/binance_rate_limit.py": "89533d88dc9cf91fc1cdfbfb4236269cf08d68483f0dbe055642454b231e2ebd",
+    "crypto_scalper/binance_streams.py": "ab42b71867b1d14f3337af3b6207bbfa8b7da98060e7fbc4119be57c6fd1adb3",
+    "crypto_scalper/binance_client.py": "40b5c01fcc26859e9d9af6d1eb3543d5a055af667033d9e83df5bb27d57b991d",
+    "crypto_scalper/combined_breakout_v8_grid_v6_live.py": "51731fb520c6e1ddc2d74ed071bba416f9813bba62ebc46c20547d7215c14c0c",
+    "crypto_scalper/combined_breakout_v8_grid_v6_live_acceptance.py": "1e994c4a79ca1a322bfe54af9787059ed2fa26e57e293bf07b04c4de010ad291"
+  },
+  "stream_health": {
+    "market_connected": true,
+    "market_subscription_acknowledged": true,
+    "market_subscription_error": "",
+    "market_healthy": true,
+    "user_connected": true,
+    "last_market_event_at": 1784949278.452794,
+    "last_user_event_at": null,
+    "market_event_age_seconds": 0.14545011520385742,
+    "user_event_age_seconds": null,
+    "market_event_count": 4307,
+    "user_event_count": 0,
+    "user_revision": 0,
+    "seeded_series": 50,
+    "symbols_with_stream_data": 50,
+    "cache_hits": 50,
+    "cache_misses": 50,
+    "rest_seed_count": 50,
+    "market_reconnects": 0,
+    "user_reconnects": 0,
+    "last_market_error": "",
+    "last_user_error": "",
+    "listen_key_active": true
+  },
+  "cache_replay": {
+    "symbols_requested": 50,
+    "symbols_returned": 50,
+    "rest_requests_before": 52,
+    "rest_requests_after": 52,
+    "rest_request_delta": 0
+  },
+  "reconciliation_probe": {
+    "completed": true,
+    "position_count": 0,
+    "operational_halt": false,
+    "halt_reason": "",
+    "account_call_delta": 1,
+    "open_orders_call_delta": 1,
+    "open_algo_orders_call_delta": 1
+  },
+  "rate_limit": {
+    "limit": 2400,
+    "soft_limit": 1440,
+    "window_epoch_minute": 29749154,
+    "estimated_used_weight": 136,
+    "observed_used_weight": 106,
+    "effective_used_weight": 136,
+    "cooldown_until_epoch": 0.0,
+    "cooldown_remaining_seconds": 0.0,
+    "request_count": 56,
+    "response_count": 56,
+    "rate_limit_count": 0,
+    "proactive_cooldown_count": 0,
+    "endpoint_counts": {
+      "POST /fapi/v1/listenKey": 1,
+      "GET /fapi/v1/ping": 1,
+      "GET /fapi/v1/klines": 50,
+      "GET /fapi/v1/openOrders": 1,
+      "GET /fapi/v1/openAlgoOrders": 1,
+      "GET /fapi/v2/account": 1,
+      "DELETE /fapi/v1/listenKey": 1
+    },
+    "endpoint_estimated_weight": {
+      "POST /fapi/v1/listenKey": 1,
+      "GET /fapi/v1/ping": 1,
+      "GET /fapi/v1/klines": 250,
+      "GET /fapi/v1/openOrders": 40,
+      "GET /fapi/v1/openAlgoOrders": 40,
+      "GET /fapi/v2/account": 5,
+      "DELETE /fapi/v1/listenKey": 1
+    }
+  },
+  "forbidden_requests": {},
+  "strategy_observation": {
+    "candidate_count_by_strategy": {
+      "volatility_breakout": 0,
+      "dynamic_trend_following_grid": 0
+    },
+    "open_positions": 0,
+    "trade_count": 0,
+    "sample_integrity_errors": []
+  }
+}

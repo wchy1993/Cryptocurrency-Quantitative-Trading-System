@@ -1,0 +1,71 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v8_score_convex_plus_dynamic_trend_following_grid_v6_profit_protected_max2",
+  "status": "gui_dry_run_frozen",
+  "initial_equity": 200.0,
+  "symbols": [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "ZECUSDT", "HYPEUSDT",
+    "XRPUSDT", "DOGEUSDT", "BNBUSDT", "SIRENUSDT", "1000PEPEUSDT",
+    "TAOUSDT", "NEARUSDT", "WLDUSDT", "SUIUSDT", "ADAUSDT",
+    "TONUSDT", "AVAXUSDT", "ENAUSDT", "LINKUSDT", "FILUSDT",
+    "XLMUSDT", "BCHUSDT", "ONDOUSDT", "TRUMPUSDT", "AAVEUSDT",
+    "DOTUSDT", "PENGUUSDT", "LTCUSDT", "TRXUSDT", "FETUSDT",
+    "UNIUSDT", "INJUSDT", "DASHUSDT", "BUSDT", "ARBUSDT",
+    "1000SHIBUSDT", "APEUSDT", "XMRUSDT", "APTUSDT", "WIFUSDT",
+    "ICPUSDT", "ETCUSDT", "VIRTUALUSDT", "HBARUSDT", "RENDERUSDT",
+    "CRVUSDT", "JTOUSDT", "OPUSDT", "CHZUSDT", "1000BONKUSDT"
+  ],
+  "source_configs": {
+    "volatility_breakout": {
+      "path": "config.volatility-breakout.v8-score-convex-refined-50.json",
+      "sha256": "04cca8d0747e84fdfbb4173ebb3397c22b83583efc267c331c00a148baf259f2"
+    },
+    "dynamic_trend_following_grid": {
+      "path": "config.trend-grid.v6-profit-protected-50.json",
+      "sha256": "e238e1904ca460026bdce051620663f19a51d351d9497b9336d8d12bd6a68fae"
+    }
+  },
+  "portfolio": {
+    "max_open_positions": 2,
+    "max_gross_notional_multiple": 9.0,
+    "hard_drawdown_stop_pct": 0.6,
+    "allow_same_symbol_across_strategies": false,
+    "entry_priority": [
+      "volatility_breakout",
+      "dynamic_trend_following_grid"
+    ]
+  },
+  "execution_rules": {
+    "global_max_open_positions": 2,
+    "breakout_max_open_positions": 1,
+    "grid_max_open_campaigns": 1,
+    "allow_same_symbol_across_strategies": false,
+    "old_exits_before_new_entries": true,
+    "same_bar_conflict": "adverse stop first",
+    "entry_priority": [
+      "volatility_breakout",
+      "dynamic_trend_following_grid"
+    ],
+    "breakout_entry_profile": "v8 score allocation frozen at entry",
+    "grid_entry_profile": "v6 campaign policy frozen at entry",
+    "grid_ranking": "extension_asc",
+    "weak_grid_tier": "rejected",
+    "dry_run_only": true
+  },
+  "historical_reference": {
+    "warning": "Historical research only. New GUI observations start from a fresh dry-run state and do not authorize live trading.",
+    "three_month": {
+      "trade_count": 67,
+      "net_profit_usdt": 23479.80155720648,
+      "profit_factor": 10.522541778720843,
+      "win_rate": 0.6119402985074627,
+      "max_drawdown_pct": 0.2738811154832596
+    },
+    "six_month": {
+      "trade_count": 121,
+      "net_profit_usdt": 132798.19044041372,
+      "profit_factor": 10.194860838768093,
+      "win_rate": 0.5537190082644629,
+      "max_drawdown_pct": 0.3115916341537943
+    }
+  }
+}

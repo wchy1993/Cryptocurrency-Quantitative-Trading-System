@@ -1,0 +1,54 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v8_score_convex_plus_dynamic_trend_following_grid_v6_profit_protected_max2",
+  "deployment_scope": "gui_dry_run_only",
+  "frozen_version": "breakout_v8_grid_v6_max2_shadow_20260724",
+  "active_gui_config": "config.gui.breakout-v8-grid-v6-max2-shadow.json",
+  "initial_equity_usdt": 200.0,
+  "portfolio_limits": {
+    "global_max_open_positions": 2,
+    "max_open_positions_per_strategy": 1,
+    "max_gross_notional_multiple": 9.0,
+    "allow_same_symbol_across_strategies": false,
+    "entry_priority": [
+      "volatility_breakout",
+      "dynamic_trend_following_grid"
+    ]
+  },
+  "execution_alignment": [
+    "dry_run_true_is_mandatory",
+    "api_authenticated_mainnet_client",
+    "no_order_endpoint",
+    "closed_1m_only",
+    "both_source_exits_before_new_entries",
+    "adverse_stop_first_on_same_bar",
+    "full_fee_slippage_and_funding",
+    "breakout_v8_score_allocation_frozen_at_entry",
+    "grid_v6_campaign_policy_frozen_at_entry",
+    "grid_extension_ascending_priority"
+  ],
+  "fresh_sample": {
+    "state": "logs/combined_breakout_v8_grid_v6_max2_20260724_shadow_state.json",
+    "events": "logs/combined_breakout_v8_grid_v6_max2_20260724_shadow_events.jsonl",
+    "report": "reports/combined_breakout_v8_grid_v6_max2_20260724_shadow_acceptance.json",
+    "preserves_previous_samples": true
+  },
+  "backtest_reference": "reports/combined_breakout_v8_grid_v6_max2_3m_6m.json",
+  "hashes": {
+    "crypto_scalper/combined_breakout_v8_grid_v6_shadow.py": "660471a908229de76e315f99f0370fb1232ee3d0611fc6e4083f15eb7d2ee3ce",
+    "crypto_scalper/gui.py": "9d56f769331bc0eabfb0ec9eb8cbcbb39ad0ed499458870719a51fddaf693f7c",
+    "config.gui.breakout-v8-grid-v6-max2-shadow.json": "1cdc041a40a95967a221a5134b07d615952ac3c790f58042cb35e3572ed8208a",
+    "config.combined-breakout-v8-grid-v6-max2.json": "67c8e704ef201367cf444c6e41c7593b64f5aa7a0f5e2a1f4b7b6795dada3049",
+    "config.volatility-breakout.v8-score-convex-refined-50.json": "04cca8d0747e84fdfbb4173ebb3397c22b83583efc267c331c00a148baf259f2",
+    "config.trend-grid.v6-profit-protected-50.json": "e238e1904ca460026bdce051620663f19a51d351d9497b9336d8d12bd6a68fae",
+    "crypto_scalper/volatility_breakout_v8.py": "faa0ef8bb8e9e5accd194c70435b976583090d5342bb902002331a4241e38d7d",
+    "crypto_scalper/trend_grid_v6.py": "118f12309a94db042bdb475c721cba0bb0f3c4708bba881d03b455d1bbcc572a",
+    "tests/test_combined_breakout_v8_grid_v6_shadow.py": "c6587093f4239d233c4f5d053d13412792a1e75c07f9a523e73ce1a86ea3cc5f",
+    "reports/combined_breakout_v8_grid_v6_max2_3m_6m.json": "162f9f0ce4004f744f941d9a7402d60e33631bd55abaaa36e6a902777c499b54"
+  },
+  "preserved": {
+    "breakout_v7_grid_v5_gui_config": "unchanged_and_available_for_rollback",
+    "apt_grid": "unchanged",
+    "previous_dry_run_samples": "unchanged",
+    "real_order_paths": "disabled"
+  }
+}

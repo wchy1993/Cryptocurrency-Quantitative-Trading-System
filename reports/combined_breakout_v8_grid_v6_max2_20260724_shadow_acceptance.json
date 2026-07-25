@@ -1,0 +1,167 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v8_score_convex_plus_dynamic_trend_following_grid_v6_profit_protected_max2",
+  "frozen_version": "breakout_v8_grid_v6_max2_shadow_20260724",
+  "config_hash": "0f45b0ed19da1fd6110790d2fcc249a7a5f78493bed4b78e9b2a423a24604474",
+  "source_config_hashes": {
+    "combined": "67c8e704ef201367cf444c6e41c7593b64f5aa7a0f5e2a1f4b7b6795dada3049",
+    "volatility_breakout": "04cca8d0747e84fdfbb4173ebb3397c22b83583efc267c331c00a148baf259f2",
+    "dynamic_trend_following_grid": "e238e1904ca460026bdce051620663f19a51d351d9497b9336d8d12bd6a68fae"
+  },
+  "status": "collecting_new_combined_shadow_data",
+  "important_note": "Breakout v8 and Grid v6 historical results are frozen research references. This report contains only new dry-run observations and cannot authorize live trading.",
+  "historical_reference": {
+    "warning": "Historical research only. New GUI observations start from a fresh dry-run state and do not authorize live trading.",
+    "three_month": {
+      "trade_count": 67,
+      "net_profit_usdt": 23479.80155720648,
+      "profit_factor": 10.522541778720843,
+      "win_rate": 0.6119402985074627,
+      "max_drawdown_pct": 0.2738811154832596
+    },
+    "six_month": {
+      "trade_count": 121,
+      "net_profit_usdt": 132798.19044041372,
+      "profit_factor": 10.194860838768093,
+      "win_rate": 0.5537190082644629,
+      "max_drawdown_pct": 0.3115916341537943
+    }
+  },
+  "started_at": "2026-07-24T00:09:45.784184",
+  "updated_at": "2026-07-24T05:22:20.319949",
+  "elapsed_days": 0.21706638563657407,
+  "universe_size": 50,
+  "global_max_open_positions": 2,
+  "per_strategy_max_open_positions": 1,
+  "max_observed_concurrent_positions": 0,
+  "open_positions": 0,
+  "open_by_strategy": {
+    "volatility_breakout": 0,
+    "dynamic_trend_following_grid": 0
+  },
+  "candidate_count_by_strategy": {
+    "volatility_breakout": 0,
+    "dynamic_trend_following_grid": 0
+  },
+  "trade_count": 0,
+  "initial_equity": 200.0,
+  "current_equity": 200.0,
+  "closed_net_pnl": 0,
+  "win_rate": 0.0,
+  "profit_factor": 0.0,
+  "expectancy_usdt": 0.0,
+  "max_drawdown_pct": 0.0,
+  "fee": 0,
+  "slippage": 0,
+  "funding": 0,
+  "full_cost": 0,
+  "funding_complete": true,
+  "sample_integrity_errors": [],
+  "rejected": {
+    "volatility_breakout": {},
+    "dynamic_trend_following_grid": {}
+  },
+  "criteria": {
+    "minimum_30_calendar_days": false,
+    "minimum_30_closed_trades": false,
+    "full_cost_funding_complete": true,
+    "sample_integrity_clean": true,
+    "profit_factor_above_1_10": false,
+    "positive_expectancy": false,
+    "drawdown_below_frozen_hard_limit": true
+  },
+  "by_strategy": {},
+  "by_symbol": {},
+  "by_exit_reason": {},
+  "trades": [],
+  "source_configs": {
+    "breakout_v8": "/Users/wangchenyu/Downloads/New project copy 20260604-122748 2/config.volatility-breakout.v8-score-convex-refined-50.json",
+    "grid_v6": "/Users/wangchenyu/Downloads/New project copy 20260604-122748 2/config.trend-grid.v6-profit-protected-50.json",
+    "shared_account": "/Users/wangchenyu/Downloads/New project copy 20260604-122748 2/config.combined-breakout-v8-grid-v6-max2.json"
+  },
+  "breakout_v8_policy": {
+    "confidence": {
+      "long_max_quality_score": 2.4,
+      "long_min_body_atr": 2.8,
+      "long_min_volume_ratio": 2.0,
+      "long_max_breakout_extension_atr": 2.6,
+      "long_max_directional_breadth": 0.84,
+      "short_min_quality_score": 1.05,
+      "short_min_body_atr": 0.5,
+      "short_min_volume_ratio": 2.0,
+      "short_max_breakout_extension_atr": 0.32,
+      "short_max_directional_breadth": 0.86,
+      "strong_score": 4,
+      "weak_score": 1,
+      "strong_risk_multiplier": 1.3,
+      "weak_risk_multiplier": 0.45,
+      "long_risk_multiplier": 1.05,
+      "short_risk_multiplier": 0.9,
+      "reject_score_at_or_below": -1,
+      "maximum_risk_multiplier": 2.0
+    },
+    "score_allocation": {
+      "minimum_score": 0,
+      "score_0_long_factor": 1.0,
+      "score_0_short_factor": 1.0,
+      "score_1_long_factor": 1.0,
+      "score_1_short_factor": 0.5,
+      "score_2_long_factor": 1.0,
+      "score_2_short_factor": 1.0,
+      "score_3_long_factor": 1.0,
+      "score_3_short_factor": 0.85,
+      "score_4_long_factor": 1.0,
+      "score_4_short_factor": 1.1,
+      "score_5_long_factor": 1.0,
+      "score_5_short_factor": 2.6,
+      "maximum_adjusted_multiplier": 3.0
+    }
+  },
+  "grid_v6_policy": {
+    "confidence": {
+      "min_quality_score": 0.45,
+      "min_alignment_atr": 0.52,
+      "min_extension_atr": 0.2,
+      "max_extension_atr": 0.45,
+      "max_volume_ratio": 1.1,
+      "max_regime_score": 0.3,
+      "strong_score": 6,
+      "weak_score": 2,
+      "strong_risk_multiplier": 1.12,
+      "standard_risk_multiplier": 0.92,
+      "weak_risk_multiplier": 0.35,
+      "strong_target_spacing": 1.85,
+      "standard_target_spacing": 1.85,
+      "weak_target_spacing": 1.85,
+      "strong_loss_limit_r": 0.7,
+      "standard_loss_limit_r": 0.7,
+      "weak_loss_limit_r": 0.7,
+      "strong_max_campaign_minutes": 4320,
+      "standard_max_campaign_minutes": 4320,
+      "weak_max_campaign_minutes": 4320,
+      "maximum_campaign_risk_pct": 0.11,
+      "reject_weak_tier": true
+    },
+    "campaign": {
+      "minimum_score": 0,
+      "minimum_actual_extension_atr": 0.05,
+      "maximum_actual_extension_atr": 999.0,
+      "maximum_actual_volume_ratio": 999.0,
+      "score_0_risk_factor": 1.0,
+      "score_1_risk_factor": 1.0,
+      "score_2_risk_factor": 1.0,
+      "score_3_risk_factor": 1.0,
+      "score_4_risk_factor": 1.0,
+      "score_5_risk_factor": 1.0,
+      "score_6_risk_factor": 1.0,
+      "maximum_campaign_risk_pct": 0.11,
+      "target_spacing": 1.85,
+      "campaign_loss_limit_r": 0.7,
+      "max_campaign_minutes": 4320,
+      "campaign_take_profit_r": 0.0,
+      "profit_lock_activation_r": 0.0,
+      "profit_giveback_r": 0.0
+    }
+  },
+  "by_breakout_v8_lane": {},
+  "by_grid_v6_tier": {}
+}
