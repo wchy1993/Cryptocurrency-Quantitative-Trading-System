@@ -423,6 +423,135 @@ def clear_verified_rate_limit_halt(
     }
 
 
+def recover_verified_flat_emergency_round_trip(
+    *,
+    live_config_path: str | Path = DEFAULT_LIVE_CONFIG,
+    expected_entry_client_id: str,
+    expected_emergency_client_id: str | None = None,
+) -> dict[str, Any]:
+    """Recover one reviewed, fully closed entry/emergency-exit incident.
+
+    The runtime lock makes this command refuse to touch the ledger while a
+    GUI/LIVE worker is still running.  The current build must also have passed
+    the full authenticated mainnet DRY-RUN transport acceptance.
+    """
+
+    config = load_live_config(live_config_path)
+    if config.exchange.environment != "mainnet":
+        raise RuntimeError(
+            "flat emergency recovery is restricted to the mainnet ledger"
+        )
+    client = _mainnet_client(config, guarded=False)
+    trader = CombinedBreakoutV8GridV6LiveTrader(config, client)
+    trader._acquire_runtime_lock()
+    try:
+        trader.validate_transport_acceptance()
+        result = trader.recover_verified_flat_emergency_round_trip(
+            expected_entry_client_id=expected_entry_client_id,
+            expected_emergency_client_id=(
+                expected_emergency_client_id
+            ),
+        )
+        account = trader.snapshot_account()
+        standard_orders = client.open_orders()
+        algo_orders = client.open_algo_orders()
+        if account.positions or standard_orders or algo_orders:
+            trader._halt(
+                "post-recovery exchange account is no longer flat"
+            )
+            trader._persist_state()
+            raise RuntimeError(
+                "post-recovery exchange account is no longer flat"
+            )
+        result["post_recovery"] = {
+            "equity": account.equity,
+            "position_count": 0,
+            "standard_order_count": 0,
+            "algo_order_count": 0,
+            "operational_halt": bool(
+                trader.state["operational_halt"]
+            ),
+            "state_path": str(trader.state_path),
+        }
+        return result
+    finally:
+        trader._release_runtime_lock()
+
+
+def recover_verified_flat_protective_stop_incident(
+    *,
+    live_config_path: str | Path = DEFAULT_LIVE_CONFIG,
+    expected_symbol: str,
+    expected_event_id: str,
+    expected_entry_client_ids: list[str],
+    expected_primary_stop_client_id: str,
+    expected_residual_stop_client_id: str,
+    expected_take_profit_client_ids: list[str],
+) -> dict[str, Any]:
+    """Recover one audited stop/residual incident using only GET calls."""
+
+    config = load_live_config(live_config_path)
+    if config.exchange.environment != "mainnet":
+        raise RuntimeError(
+            "protective-stop recovery is restricted to the mainnet ledger"
+        )
+    # The guarded client makes an accidental order/margin mutation impossible
+    # even if this operational recovery is changed later.
+    client = _mainnet_client(config, guarded=True)
+    trader = CombinedBreakoutV8GridV6LiveTrader(config, client)
+    trader._acquire_runtime_lock()
+    try:
+        trader.validate_transport_acceptance()
+        result = (
+            trader.recover_verified_flat_protective_stop_incident(
+                expected_symbol=expected_symbol,
+                expected_event_id=expected_event_id,
+                expected_entry_client_ids=expected_entry_client_ids,
+                expected_primary_stop_client_id=(
+                    expected_primary_stop_client_id
+                ),
+                expected_residual_stop_client_id=(
+                    expected_residual_stop_client_id
+                ),
+                expected_take_profit_client_ids=(
+                    expected_take_profit_client_ids
+                ),
+            )
+        )
+        account = trader.snapshot_account()
+        standard_orders = client.open_orders()
+        algo_orders = client.open_algo_orders()
+        if (
+            account.positions
+            or standard_orders
+            or algo_orders
+            or trader.state.get("operational_halt")
+            or trader.state.get("circuit_breaker")
+        ):
+            trader._halt(
+                "post-recovery protective-stop audit is not clean"
+            )
+            trader._persist_state()
+            raise RuntimeError(
+                "post-recovery protective-stop audit is not clean"
+            )
+        result["post_recovery"] = {
+            "equity": account.equity,
+            "position_count": 0,
+            "standard_order_count": 0,
+            "algo_order_count": 0,
+            "operational_halt": False,
+            "circuit_breaker": False,
+            "guarded_mutation_attempts": dict(
+                client.blocked_mutation_attempts
+            ),
+            "state_path": str(trader.state_path),
+        }
+        return result
+    finally:
+        trader._release_runtime_lock()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -449,8 +578,101 @@ def main() -> int:
     parser.add_argument(
         "--clear-rate-limit-halt", action="store_true"
     )
+    parser.add_argument(
+        "--recover-flat-emergency-entry-client-id",
+        default="",
+    )
+    parser.add_argument(
+        "--expected-emergency-client-id",
+        default="",
+    )
+    parser.add_argument(
+        "--recover-flat-protective-stop-symbol",
+        default="",
+    )
+    parser.add_argument("--expected-grid-event-id", default="")
+    parser.add_argument("--expected-entry-client-ids", default="")
+    parser.add_argument(
+        "--expected-primary-stop-client-id", default=""
+    )
+    parser.add_argument(
+        "--expected-residual-stop-client-id", default=""
+    )
+    parser.add_argument(
+        "--expected-take-profit-client-ids", default=""
+    )
     args = parser.parse_args()
-    if args.clear_rate_limit_halt:
+    recovery_modes = sum(
+        (
+            bool(args.clear_rate_limit_halt),
+            bool(args.recover_flat_emergency_entry_client_id),
+            bool(args.recover_flat_protective_stop_symbol),
+        )
+    )
+    if recovery_modes > 1:
+        raise RuntimeError(
+            "choose exactly one recovery mode"
+        )
+    if args.recover_flat_protective_stop_symbol:
+        required = {
+            "expected_grid_event_id": args.expected_grid_event_id,
+            "expected_entry_client_ids": (
+                args.expected_entry_client_ids
+            ),
+            "expected_primary_stop_client_id": (
+                args.expected_primary_stop_client_id
+            ),
+            "expected_residual_stop_client_id": (
+                args.expected_residual_stop_client_id
+            ),
+            "expected_take_profit_client_ids": (
+                args.expected_take_profit_client_ids
+            ),
+        }
+        missing = [
+            name for name, value in required.items() if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "protective-stop recovery is missing: "
+                + ",".join(missing)
+            )
+        report = recover_verified_flat_protective_stop_incident(
+            live_config_path=args.live_config,
+            expected_symbol=(
+                args.recover_flat_protective_stop_symbol
+            ),
+            expected_event_id=args.expected_grid_event_id,
+            expected_entry_client_ids=[
+                value.strip()
+                for value in args.expected_entry_client_ids.split(",")
+                if value.strip()
+            ],
+            expected_primary_stop_client_id=(
+                args.expected_primary_stop_client_id
+            ),
+            expected_residual_stop_client_id=(
+                args.expected_residual_stop_client_id
+            ),
+            expected_take_profit_client_ids=[
+                value.strip()
+                for value in (
+                    args.expected_take_profit_client_ids.split(",")
+                )
+                if value.strip()
+            ],
+        )
+    elif args.recover_flat_emergency_entry_client_id:
+        report = recover_verified_flat_emergency_round_trip(
+            live_config_path=args.live_config,
+            expected_entry_client_id=(
+                args.recover_flat_emergency_entry_client_id
+            ),
+            expected_emergency_client_id=(
+                args.expected_emergency_client_id or None
+            ),
+        )
+    elif args.clear_rate_limit_halt:
         report = clear_verified_rate_limit_halt(args.live_config)
     else:
         report = run_mainnet_dry_run_stress(

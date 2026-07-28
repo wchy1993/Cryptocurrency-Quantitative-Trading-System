@@ -9,12 +9,14 @@ import threading
 import time
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Callable
 
 from .binance_client import (
     BinanceFuturesClient,
     BinanceRateLimitError,
+    SymbolRules,
 )
 from .binance_streams import BinanceFuturesStreamCache
 from .combined_breakout_v7_grid_v5_shadow import (
@@ -92,7 +94,7 @@ from .volatility_breakout_v8 import (
 
 
 BREAKOUT_V8_GRID_V6_LIVE_VERSION = (
-    "breakout_v8_grid_v6_max2_live_20260724"
+    "breakout_v8_grid_v6_max2_live_risk1_20260728"
 )
 BREAKOUT_V8_GRID_V6_TRANSPORT_VERSION = (
     "binance_usdm_ws_weighted_v1"
@@ -100,6 +102,14 @@ BREAKOUT_V8_GRID_V6_TRANSPORT_VERSION = (
 LIVE_TRANSPORT_ACCEPTANCE_MIN_SECONDS = 45.0
 LIVE_TRANSPORT_ACCEPTANCE_MIN_CYCLES = 200
 LIVE_STATE_SCHEMA_VERSION = 1
+MARKET_FILL_CONFIRM_ATTEMPTS = 5
+MARKET_FILL_CONFIRM_DELAY_SECONDS = 0.20
+FLAT_EMERGENCY_RECOVERY_VERSION = (
+    "verified_flat_emergency_round_trip_v1"
+)
+PROTECTIVE_STOP_INCIDENT_RECOVERY_VERSION = (
+    "verified_flat_protective_stop_incident_v1"
+)
 LIVE_REASON_TOKEN = "combined_breakout_v8_grid_v6_live"
 _TRANSPORT_ONLY_CONFIG_KEYS = {
     "transport_version",
@@ -122,6 +132,7 @@ _TERMINAL_ORDER_STATUSES = {
     "REJECTED",
     "EXPIRED",
     "EXPIRED_IN_MATCH",
+    "FINISHED",
 }
 
 
@@ -177,6 +188,52 @@ def _float(value: Any, fallback: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _decimal_string(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _round_reduce_only_quantity(
+    rules: SymbolRules,
+    quantity: float,
+) -> str:
+    """Round an exchange position without losing a float-artifact step.
+
+    Entry sizing must always round down.  A reduce-only order is different:
+    its input should already be an exchange-valid position quantity.  Sums of
+    valid float lots can land infinitesimally below a step (for example,
+    30.9 * 3 -> 92.69999999999999).  Snap only that microscopic artifact to
+    the nearest step; genuinely off-step quantities still round down.
+    """
+
+    value = Decimal(str(quantity))
+    if value <= 0:
+        return "0"
+    step = rules.quantity_step
+    units = value / step
+    nearest = units.to_integral_value(rounding=ROUND_HALF_UP)
+    tolerance = max(
+        Decimal("1e-9"),
+        abs(units) * Decimal("1e-15"),
+    )
+    if abs(units - nearest) <= tolerance:
+        rounded_units = nearest
+    else:
+        rounded_units = units.to_integral_value(rounding=ROUND_DOWN)
+    return _decimal_string(rounded_units * step)
+
+
+def _exact_quantity_sum(values: Any) -> float:
+    return float(
+        sum(
+            (Decimal(str(value)) for value in values),
+            Decimal("0"),
+        )
+    )
 
 
 def _order_client_id(order: dict[str, Any]) -> str:
@@ -344,6 +401,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             state.setdefault("rate_limit_cooldown_until", None)
             state.setdefault("last_stream_health", {})
             state.setdefault("transport_acceptance", {})
+            state.setdefault("recovery_journal", [])
             return state
         now = _utc_now().isoformat()
         return {
@@ -386,6 +444,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             "protective_orders": {},
             "pending_orders": {},
             "order_journal": [],
+            "recovery_journal": [],
             "trades": [],
             "candidate_count": {BREAKOUT_KEY: 0, GRID_KEY: 0},
             "rejected": {BREAKOUT_KEY: {}, GRID_KEY: {}},
@@ -996,6 +1055,994 @@ class CombinedBreakoutV8GridV6LiveTrader(
         self._persist_state()
         self._write_status(account)
 
+    def recover_verified_flat_emergency_round_trip(
+        self,
+        *,
+        expected_entry_client_id: str,
+        expected_emergency_client_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Clear one reviewed entry/emergency-exit incident while flat.
+
+        This recovery is intentionally narrower than a generic "unlock".
+        It requires one pending initial-entry intent, deterministic and fully
+        filled entry/exit orders, matching exchange trade history, two flat
+        account snapshots, and no open orders or unrelated halt reason.  The
+        incident remains permanently recorded in both the trade ledger and a
+        dedicated recovery journal before the pending intent is removed.
+        """
+
+        existing_recovery = next(
+            (
+                row
+                for row in self.state.get("recovery_journal", [])
+                if row.get("entry_client_id")
+                == expected_entry_client_id
+            ),
+            None,
+        )
+        if existing_recovery is not None:
+            if (
+                expected_entry_client_id
+                not in self.state.get("pending_orders", {})
+                and not self.state.get("operational_halt")
+            ):
+                return {
+                    "cleared": True,
+                    "already_recovered": True,
+                    "record": existing_recovery,
+                }
+            raise RuntimeError(
+                "recovery record exists but LIVE ledger is not clean"
+            )
+        if not self.state.get("operational_halt"):
+            raise RuntimeError(
+                "flat emergency recovery requires an operational halt"
+            )
+        if self.state.get("circuit_breaker"):
+            raise RuntimeError(
+                "flat emergency recovery refuses an active circuit breaker"
+            )
+        pending_orders = self.state.get("pending_orders", {})
+        if set(pending_orders) != {expected_entry_client_id}:
+            raise RuntimeError(
+                "flat emergency recovery requires exactly the reviewed "
+                "pending entry intent"
+            )
+        pending = pending_orders[expected_entry_client_id]
+        if "model" not in pending or pending.get("role") == "grid_level":
+            raise RuntimeError(
+                "reviewed pending order is not an initial entry intent"
+            )
+        strategy = str(pending.get("strategy", ""))
+        if strategy not in {BREAKOUT_KEY, GRID_KEY}:
+            raise RuntimeError("pending entry strategy is unknown")
+        symbol = str(pending.get("symbol", "")).upper()
+        event_id = str(pending.get("event_id", ""))
+        direction_name = str(pending.get("direction", ""))
+        try:
+            direction = Direction[direction_name]
+        except KeyError as exc:
+            raise RuntimeError(
+                "pending entry direction is invalid"
+            ) from exc
+        if not symbol or not event_id:
+            raise RuntimeError("pending entry identity is incomplete")
+        emergency_client_id = self._client_id(
+            strategy, event_id, "emerg", 0
+        )
+        if (
+            expected_emergency_client_id is not None
+            and expected_emergency_client_id != emergency_client_id
+        ):
+            raise RuntimeError(
+                "emergency client ID differs from deterministic ledger ID"
+            )
+
+        reason_rows = [
+            row.strip()
+            for row in str(self.state.get("halt_reason", "")).split("|")
+            if row.strip()
+        ]
+        allowed_reason_tokens = (
+            "entry fill was not final",
+            "entry fill confirmation failed",
+            "protective stop placement failed",
+            "filled entry has no exchange position",
+        )
+        if not reason_rows or any(
+            not row.startswith(symbol)
+            or not any(token in row.lower() for token in allowed_reason_tokens)
+            for row in reason_rows
+        ):
+            raise RuntimeError(
+                "operational halt contains an unrelated recovery reason"
+            )
+        if (
+            self._local_positions()
+            or self.state.get("protective_orders")
+        ):
+            raise RuntimeError(
+                "flat emergency recovery found local position/protection data"
+            )
+
+        first_account = self.snapshot_account()
+        first_standard = self.client.open_orders()
+        first_algo = self.client.open_algo_orders()
+        if first_account.positions or first_standard or first_algo:
+            raise RuntimeError(
+                "flat emergency recovery requires a globally flat account "
+                "with no open orders"
+            )
+
+        entry_order = self.client.query_order(
+            symbol,
+            orig_client_order_id=expected_entry_client_id,
+        )
+        emergency_order = self.client.query_order(
+            symbol,
+            orig_client_order_id=emergency_client_id,
+        )
+        entry_quantity, entry_price = self._filled_order(entry_order)
+        exit_quantity, exit_price = self._filled_order(emergency_order)
+        rules = self.client.symbol_rules(symbol)
+        tolerance = max(_float(rules.quantity_step) / 2.0, 1e-12)
+        if abs(entry_quantity - exit_quantity) > tolerance:
+            raise RuntimeError(
+                "entry and emergency exit quantities do not match"
+            )
+
+        def exchange_bool(value: Any) -> bool:
+            return value is True or str(value).strip().lower() == "true"
+
+        entry_side = "BUY" if direction == Direction.LONG else "SELL"
+        exit_side = "SELL" if direction == Direction.LONG else "BUY"
+        if (
+            str(entry_order.get("symbol", "")).upper() != symbol
+            or _order_client_id(entry_order)
+            != expected_entry_client_id
+            or str(entry_order.get("side", "")).upper() != entry_side
+            or exchange_bool(entry_order.get("reduceOnly"))
+        ):
+            raise RuntimeError("entry order does not match pending intent")
+        if (
+            str(emergency_order.get("symbol", "")).upper() != symbol
+            or _order_client_id(emergency_order)
+            != emergency_client_id
+            or str(emergency_order.get("side", "")).upper() != exit_side
+            or not exchange_bool(emergency_order.get("reduceOnly"))
+        ):
+            raise RuntimeError(
+                "emergency order is not the matching reduce-only exit"
+            )
+        entry_order_id = str(entry_order.get("orderId", ""))
+        emergency_order_id = str(emergency_order.get("orderId", ""))
+        if (
+            not entry_order_id
+            or not emergency_order_id
+            or entry_order_id == emergency_order_id
+        ):
+            raise RuntimeError("exchange order IDs are missing or duplicated")
+
+        update_times = [
+            int(_float(row.get("updateTime")))
+            for row in (entry_order, emergency_order)
+            if _float(row.get("updateTime")) > 0.0
+        ]
+        start_time = (
+            max(0, min(update_times) - 300_000)
+            if update_times
+            else None
+        )
+        end_time = (
+            max(update_times) + 300_000
+            if update_times
+            else None
+        )
+        exchange_trades = self.client.user_trades(
+            symbol=symbol,
+            limit=1000,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        entry_fills = [
+            row
+            for row in exchange_trades
+            if str(row.get("orderId", "")) == entry_order_id
+        ]
+        exit_fills = [
+            row
+            for row in exchange_trades
+            if str(row.get("orderId", "")) == emergency_order_id
+        ]
+        if not entry_fills or not exit_fills:
+            raise RuntimeError(
+                "exchange trade history does not contain both reviewed orders"
+            )
+
+        def fill_totals(
+            rows: list[dict[str, Any]],
+            required_side: str,
+        ) -> tuple[float, float]:
+            if any(
+                str(row.get("side", "")).upper() != required_side
+                for row in rows
+            ):
+                raise RuntimeError("exchange trade side differs from order")
+            quantity = sum(_float(row.get("qty")) for row in rows)
+            quote = sum(_float(row.get("quoteQty")) for row in rows)
+            if quantity <= 0.0 or quote <= 0.0:
+                raise RuntimeError(
+                    "exchange trade history has invalid quantity/quote"
+                )
+            return quantity, quote / quantity
+
+        entry_trade_quantity, entry_trade_price = fill_totals(
+            entry_fills, entry_side
+        )
+        exit_trade_quantity, exit_trade_price = fill_totals(
+            exit_fills, exit_side
+        )
+        if (
+            abs(entry_trade_quantity - entry_quantity) > tolerance
+            or abs(exit_trade_quantity - exit_quantity) > tolerance
+        ):
+            raise RuntimeError(
+                "exchange trade quantities do not reconcile to orders"
+            )
+        commission_by_asset: dict[str, float] = {}
+        reviewed_fills = entry_fills + exit_fills
+        for row in reviewed_fills:
+            asset = str(row.get("commissionAsset", "UNKNOWN")).upper()
+            commission_by_asset[asset] = (
+                commission_by_asset.get(asset, 0.0)
+                + _float(row.get("commission"))
+            )
+        realized_pnl = sum(
+            _float(row.get("realizedPnl")) for row in reviewed_fills
+        )
+        usdt_commission = commission_by_asset.get("USDT", 0.0)
+        net_pnl_usdt = (
+            realized_pnl - usdt_commission
+            if set(commission_by_asset).issubset({"USDT"})
+            else None
+        )
+
+        second_account = self.snapshot_account()
+        second_standard = self.client.open_orders()
+        second_algo = self.client.open_algo_orders()
+        if second_account.positions or second_standard or second_algo:
+            raise RuntimeError(
+                "account changed during flat emergency recovery review"
+            )
+
+        def exchange_datetime(order: dict[str, Any]) -> datetime:
+            milliseconds = _float(order.get("updateTime"))
+            if milliseconds <= 0.0:
+                return _utc_now()
+            return datetime.fromtimestamp(
+                milliseconds / 1000.0,
+                tz=timezone.utc,
+            ).replace(tzinfo=None)
+
+        entry_time = exchange_datetime(entry_order)
+        exit_time = exchange_datetime(emergency_order)
+        recovery_id = hashlib.sha256(
+            (
+                f"{self.config_hash}|{expected_entry_client_id}|"
+                f"{emergency_client_id}|{entry_order_id}|"
+                f"{emergency_order_id}"
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+        record = {
+            "recovery_version": FLAT_EMERGENCY_RECOVERY_VERSION,
+            "recovery_id": recovery_id,
+            "recovered_at": _utc_now().isoformat(),
+            "strategy": strategy,
+            "symbol": symbol,
+            "event_id": event_id,
+            "direction": direction.name,
+            "entry_client_id": expected_entry_client_id,
+            "entry_order_id": entry_order_id,
+            "entry_time": entry_time.isoformat(),
+            "entry_quantity": entry_quantity,
+            "entry_price": entry_trade_price or entry_price,
+            "emergency_client_id": emergency_client_id,
+            "emergency_order_id": emergency_order_id,
+            "exit_time": exit_time.isoformat(),
+            "exit_quantity": exit_quantity,
+            "exit_price": exit_trade_price or exit_price,
+            "realized_pnl": realized_pnl,
+            "commission_by_asset": commission_by_asset,
+            "net_pnl_usdt": net_pnl_usdt,
+            "position_count": 0,
+            "standard_order_count": 0,
+            "algo_order_count": 0,
+        }
+        self.state.setdefault("recovery_journal", []).append(record)
+        if len(self.state["recovery_journal"]) > 200:
+            del self.state["recovery_journal"][:-200]
+        self.state["trades"].append(
+            {
+                "time": exit_time.isoformat(),
+                "strategy": strategy,
+                "symbol": symbol,
+                "event_id": event_id,
+                "exit_reason": (
+                    "emergency_flatten_after_fill_confirmation_fault"
+                ),
+                "quantity": entry_quantity,
+                "entry_price": record["entry_price"],
+                "exit_price": record["exit_price"],
+                "realized_pnl": realized_pnl,
+                "commission_by_asset": commission_by_asset,
+                "net_pnl": net_pnl_usdt,
+                "entry_client_id": expected_entry_client_id,
+                "exit_client_id": emergency_client_id,
+                "pnl_source": "verified_exchange_trade_history",
+            }
+        )
+        self.state["seen_events"][strategy][event_id] = {
+            "time": exit_time.isoformat(),
+            "status": "emergency_flattened_after_execution_fault",
+        }
+        self._record_entry(strategy, symbol, entry_time)
+        cooldown_minutes = (
+            self.breakout_portfolio_config.symbol_cooldown_minutes
+            if strategy == BREAKOUT_KEY
+            else self.grid_portfolio_config.symbol_cooldown_minutes
+        )
+        self._set_cooldown(
+            strategy,
+            symbol,
+            minute_token(exit_time),
+            cooldown_minutes,
+        )
+        self.state["pending_orders"].pop(
+            expected_entry_client_id, None
+        )
+        self.state["operational_halt"] = False
+        self.state["halt_reason"] = ""
+        self.state["reconcile_failures"] = 0
+        self.state["consecutive_api_failures"] = 0
+        self.state["rate_limit_cooldown_until"] = None
+        self.state["last_reconciled_at"] = _utc_now().isoformat()
+        self._last_account = second_account
+        self._last_full_reconcile_monotonic = time.monotonic()
+        self._force_reconcile = True
+        self._append_event(
+            "flat_emergency_round_trip_recovered",
+            **record,
+        )
+        self._persist_state()
+        self._write_status(second_account)
+        return {
+            "cleared": True,
+            "already_recovered": False,
+            "record": record,
+        }
+
+    def recover_verified_flat_protective_stop_incident(
+        self,
+        *,
+        expected_symbol: str,
+        expected_event_id: str,
+        expected_entry_client_ids: list[str],
+        expected_primary_stop_client_id: str,
+        expected_residual_stop_client_id: str,
+        expected_take_profit_client_ids: list[str],
+    ) -> dict[str, Any]:
+        """Clear one fully reviewed stop/residual incident while flat.
+
+        This is deliberately incident-specific.  It never places or cancels
+        an order.  It proves the complete entry/stop trade history, income
+        ledger, two globally flat account snapshots, and the exact historical
+        halt reasons before replacing the generic local trade row with an
+        exchange-sourced audit record and clearing only this execution halt.
+        """
+
+        symbol = expected_symbol.strip().upper()
+        event_id = expected_event_id.strip()
+        entry_client_ids = [
+            value.strip() for value in expected_entry_client_ids
+            if value.strip()
+        ]
+        take_profit_client_ids = [
+            value.strip() for value in expected_take_profit_client_ids
+            if value.strip()
+        ]
+        primary_stop_id = expected_primary_stop_client_id.strip()
+        residual_stop_id = expected_residual_stop_client_id.strip()
+        if (
+            not symbol
+            or not event_id
+            or not entry_client_ids
+            or len(set(entry_client_ids)) != len(entry_client_ids)
+            or not primary_stop_id
+            or not residual_stop_id
+            or primary_stop_id == residual_stop_id
+        ):
+            raise RuntimeError(
+                "protective-stop recovery identity is incomplete"
+            )
+
+        existing_recovery = next(
+            (
+                row
+                for row in self.state.get("recovery_journal", [])
+                if row.get("recovery_version")
+                == PROTECTIVE_STOP_INCIDENT_RECOVERY_VERSION
+                and row.get("symbol") == symbol
+                and row.get("event_id") == event_id
+            ),
+            None,
+        )
+        if existing_recovery is not None:
+            if (
+                not self.state.get("operational_halt")
+                and not self.state.get("circuit_breaker")
+                and not self._local_positions()
+                and not self.state.get("pending_orders")
+                and not self.state.get("protective_orders")
+            ):
+                return {
+                    "cleared": True,
+                    "already_recovered": True,
+                    "record": existing_recovery,
+                }
+            raise RuntimeError(
+                "protective-stop recovery record exists but ledger is "
+                "not clean"
+            )
+        if not self.state.get("operational_halt"):
+            raise RuntimeError(
+                "protective-stop recovery requires an operational halt"
+            )
+        if not self.state.get("circuit_breaker"):
+            raise RuntimeError(
+                "protective-stop recovery requires the reviewed API circuit"
+            )
+        if (
+            self._local_positions()
+            or self.state.get("pending_orders")
+            or self.state.get("protective_orders")
+        ):
+            raise RuntimeError(
+                "protective-stop recovery requires an empty local ledger"
+            )
+
+        halt_rows = [
+            row.strip()
+            for row in str(self.state.get("halt_reason", "")).split("|")
+            if row.strip()
+        ]
+        allowed_halt = (
+            "quantity differs:",
+            "reconciliation failed",
+            "order would immediately trigger",
+            "unknown order sent",
+        )
+        if (
+            not halt_rows
+            or not any(
+                row.startswith(f"{symbol} quantity differs:")
+                for row in halt_rows
+            )
+            or any(
+                not any(token in row.lower() for token in allowed_halt)
+                for row in halt_rows
+            )
+        ):
+            raise RuntimeError(
+                "operational halt contains an unrelated recovery reason"
+            )
+        circuit_reason = str(
+            self.state.get("circuit_reason", "")
+        ).lower()
+        if (
+            "api failures=" not in circuit_reason
+            or not any(
+                token in circuit_reason
+                for token in (
+                    "order would immediately trigger",
+                    "unknown order sent",
+                )
+            )
+        ):
+            raise RuntimeError(
+                "circuit breaker is unrelated to the reviewed incident"
+            )
+
+        generic_trades = [
+            row
+            for row in self.state.get("trades", [])
+            if row.get("strategy") == GRID_KEY
+            and str(row.get("symbol", "")).upper() == symbol
+            and row.get("exit_reason")
+            == "exchange_closed_or_protection_triggered"
+        ]
+        if len(generic_trades) != 1:
+            raise RuntimeError(
+                "expected exactly one generic stopped Grid trade"
+            )
+        journal_rows = [
+            row
+            for row in self.state.get("order_journal", [])
+            if str(row.get("symbol", "")).upper() == symbol
+        ]
+        journal_client_ids = {
+            str(row.get("client_id", "")) for row in journal_rows
+        }
+        reviewed_client_ids = set(
+            entry_client_ids
+            + take_profit_client_ids
+            + [primary_stop_id, residual_stop_id]
+        )
+        if not reviewed_client_ids.issubset(journal_client_ids):
+            raise RuntimeError(
+                "local order journal is missing reviewed incident IDs"
+            )
+        deterministic_entries = [
+            self._client_id(GRID_KEY, event_id, "entry", 0)
+        ] + [
+            self._client_id(GRID_KEY, event_id, f"ge{index}", 0)
+            for index in range(1, len(entry_client_ids))
+        ]
+        if entry_client_ids != deterministic_entries:
+            raise RuntimeError(
+                "entry IDs differ from deterministic Grid event IDs"
+            )
+        deterministic_take_profits = [
+            self._client_id(
+                GRID_KEY, event_id, f"tp{index}", 0
+            )
+            for index in range(len(entry_client_ids))
+        ]
+        if take_profit_client_ids != deterministic_take_profits:
+            raise RuntimeError(
+                "take-profit IDs differ from deterministic Grid event IDs"
+            )
+        if (
+            primary_stop_id
+            != self._client_id(
+                GRID_KEY,
+                event_id,
+                "stop",
+                len(entry_client_ids),
+            )
+            or residual_stop_id
+            != self._client_id(
+                GRID_KEY,
+                event_id,
+                "stop",
+                len(entry_client_ids) + 1,
+            )
+        ):
+            raise RuntimeError(
+                "stop IDs differ from deterministic Grid generations"
+            )
+
+        first_account = self.snapshot_account()
+        first_standard = self.client.open_orders()
+        first_algo = self.client.open_algo_orders()
+        if first_account.positions or first_standard or first_algo:
+            raise RuntimeError(
+                "protective-stop recovery requires a globally flat account "
+                "with no open orders"
+            )
+
+        def exchange_bool(value: Any) -> bool:
+            return value is True or str(value).strip().lower() == "true"
+
+        entry_orders = [
+            self.client.query_order(
+                symbol, orig_client_order_id=client_id
+            )
+            for client_id in entry_client_ids
+        ]
+        entry_order_ids: list[str] = []
+        entry_quantities: list[float] = []
+        for client_id, order in zip(
+            entry_client_ids, entry_orders
+        ):
+            quantity, _price = self._filled_order(order)
+            if (
+                str(order.get("symbol", "")).upper() != symbol
+                or _order_client_id(order) != client_id
+                or str(order.get("side", "")).upper() != "SELL"
+                or exchange_bool(order.get("reduceOnly"))
+            ):
+                raise RuntimeError(
+                    "reviewed Grid entry order identity differs"
+                )
+            order_id = str(order.get("orderId", ""))
+            if not order_id:
+                raise RuntimeError(
+                    "reviewed Grid entry order ID is missing"
+                )
+            entry_order_ids.append(order_id)
+            entry_quantities.append(quantity)
+        if len(set(entry_order_ids)) != len(entry_order_ids):
+            raise RuntimeError("reviewed Grid entry order IDs repeat")
+
+        take_profit_orders = [
+            self.client.query_order(
+                symbol, orig_client_order_id=client_id
+            )
+            for client_id in take_profit_client_ids
+        ]
+        for client_id, order in zip(
+            take_profit_client_ids, take_profit_orders
+        ):
+            if (
+                str(order.get("symbol", "")).upper() != symbol
+                or _order_client_id(order) != client_id
+                or str(order.get("side", "")).upper() != "BUY"
+                or not exchange_bool(order.get("reduceOnly"))
+                or str(order.get("status", "")).upper()
+                not in _TERMINAL_ORDER_STATUSES
+                or _float(order.get("executedQty")) > 0.0
+            ):
+                raise RuntimeError(
+                    "reviewed Grid take-profit order is not terminal/unfilled"
+                )
+
+        stop_pairs: list[
+            tuple[str, dict[str, Any], dict[str, Any]]
+        ] = []
+        for stop_client_id in (
+            primary_stop_id,
+            residual_stop_id,
+        ):
+            stop_order = self.client.query_algo_order(
+                client_algo_id=stop_client_id
+            )
+            stop_status = str(
+                stop_order.get(
+                    "algoStatus", stop_order.get("status", "")
+                )
+            ).upper()
+            actual_order_id = stop_order.get("actualOrderId")
+            if (
+                str(stop_order.get("symbol", "")).upper() != symbol
+                or _algo_client_id(stop_order) != stop_client_id
+                or str(stop_order.get("side", "")).upper() != "BUY"
+                or not exchange_bool(stop_order.get("reduceOnly"))
+                or stop_status != "FINISHED"
+                or actual_order_id in (None, "")
+            ):
+                raise RuntimeError(
+                    "reviewed protective stop is not a finished BUY exit"
+                )
+            actual_order = self.client.query_order(
+                symbol, order_id=actual_order_id
+            )
+            actual_quantity, _actual_price = self._filled_order(
+                actual_order
+            )
+            if (
+                str(actual_order.get("symbol", "")).upper() != symbol
+                or str(actual_order.get("orderId", ""))
+                != str(actual_order_id)
+                or str(actual_order.get("side", "")).upper() != "BUY"
+                or not exchange_bool(actual_order.get("reduceOnly"))
+                or not math.isclose(
+                    _float(stop_order.get("quantity")),
+                    actual_quantity,
+                    rel_tol=1e-12,
+                    abs_tol=1e-12,
+                )
+            ):
+                raise RuntimeError(
+                    "protective stop child fill does not match algo order"
+                )
+            stop_pairs.append(
+                (stop_client_id, stop_order, actual_order)
+            )
+        exit_order_ids = [
+            str(actual.get("orderId", ""))
+            for _client_id_value, _stop, actual in stop_pairs
+        ]
+        if (
+            not all(exit_order_ids)
+            or len(set(exit_order_ids)) != len(exit_order_ids)
+            or set(exit_order_ids).intersection(entry_order_ids)
+        ):
+            raise RuntimeError(
+                "reviewed protective stop child order IDs are invalid"
+            )
+
+        rules = self.client.symbol_rules(symbol)
+        tolerance = max(
+            _float(rules.quantity_step) / 2.0, 1e-12
+        )
+        entry_quantity = _exact_quantity_sum(entry_quantities)
+        exit_quantities = [
+            self._filled_order(actual)[0]
+            for _client_id_value, _stop, actual in stop_pairs
+        ]
+        exit_quantity = _exact_quantity_sum(exit_quantities)
+        if abs(entry_quantity - exit_quantity) > tolerance:
+            raise RuntimeError(
+                "reviewed entries and protective exits do not flatten"
+            )
+
+        update_times = [
+            int(_float(order.get("updateTime")))
+            for order in entry_orders
+            + [actual for _client_id_value, _stop, actual in stop_pairs]
+            if _float(order.get("updateTime")) > 0.0
+        ]
+        start_time = (
+            max(0, min(update_times) - 300_000)
+            if update_times
+            else None
+        )
+        end_time = (
+            max(update_times) + 300_000
+            if update_times
+            else None
+        )
+        exchange_trades = self.client.user_trades(
+            symbol=symbol,
+            limit=1000,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        expected_order_ids = set(entry_order_ids + exit_order_ids)
+        actual_trade_order_ids = {
+            str(row.get("orderId", ""))
+            for row in exchange_trades
+            if _float(row.get("qty")) > 0.0
+        }
+        if actual_trade_order_ids != expected_order_ids:
+            raise RuntimeError(
+                "trade history contains missing or unrelated order IDs"
+            )
+
+        def trade_totals(
+            order_ids: list[str],
+            required_side: str,
+        ) -> tuple[float, float, float, float]:
+            rows = [
+                row
+                for row in exchange_trades
+                if str(row.get("orderId", "")) in order_ids
+            ]
+            if (
+                {str(row.get("orderId", "")) for row in rows}
+                != set(order_ids)
+                or any(
+                    str(row.get("side", "")).upper()
+                    != required_side
+                    for row in rows
+                )
+                or any(
+                    str(row.get("commissionAsset", "")).upper()
+                    != "USDT"
+                    for row in rows
+                )
+            ):
+                raise RuntimeError(
+                    "trade fills differ from reviewed order identities"
+                )
+            quantity = _exact_quantity_sum(
+                _float(row.get("qty")) for row in rows
+            )
+            quote = _exact_quantity_sum(
+                _float(row.get("quoteQty")) for row in rows
+            )
+            commission = _exact_quantity_sum(
+                _float(row.get("commission")) for row in rows
+            )
+            realized = _exact_quantity_sum(
+                _float(row.get("realizedPnl")) for row in rows
+            )
+            if quantity <= 0.0 or quote <= 0.0:
+                raise RuntimeError(
+                    "reviewed trade fills have invalid quantity/quote"
+                )
+            return quantity, quote, commission, realized
+
+        (
+            entry_trade_quantity,
+            entry_quote,
+            entry_commission,
+            entry_realized,
+        ) = trade_totals(entry_order_ids, "SELL")
+        (
+            exit_trade_quantity,
+            exit_quote,
+            exit_commission,
+            realized_pnl,
+        ) = trade_totals(exit_order_ids, "BUY")
+        if (
+            abs(entry_trade_quantity - entry_quantity) > tolerance
+            or abs(exit_trade_quantity - exit_quantity) > tolerance
+            or abs(entry_realized) > 1e-10
+        ):
+            raise RuntimeError(
+                "reviewed trade quantities/PnL do not match orders"
+            )
+        commission = entry_commission + exit_commission
+
+        income_rows = self.client.income_history(
+            symbol=symbol,
+            limit=1000,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        allowed_income_types = {
+            "COMMISSION",
+            "FUNDING_FEE",
+            "REALIZED_PNL",
+        }
+        nonzero_unrelated_income = [
+            row
+            for row in income_rows
+            if str(row.get("incomeType", "")).upper()
+            not in allowed_income_types
+            and abs(_float(row.get("income"))) > 1e-12
+        ]
+        if nonzero_unrelated_income:
+            raise RuntimeError(
+                "income history contains unrelated nonzero rows"
+            )
+        commission_income = _exact_quantity_sum(
+            _float(row.get("income"))
+            for row in income_rows
+            if str(row.get("incomeType", "")).upper()
+            == "COMMISSION"
+        )
+        realized_income = _exact_quantity_sum(
+            _float(row.get("income"))
+            for row in income_rows
+            if str(row.get("incomeType", "")).upper()
+            == "REALIZED_PNL"
+        )
+        funding_pnl = _exact_quantity_sum(
+            _float(row.get("income"))
+            for row in income_rows
+            if str(row.get("incomeType", "")).upper()
+            == "FUNDING_FEE"
+        )
+        if (
+            not math.isclose(
+                commission_income,
+                -commission,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
+            or not math.isclose(
+                realized_income,
+                realized_pnl,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
+        ):
+            raise RuntimeError(
+                "income ledger does not reconcile to trade fills"
+            )
+
+        second_account = self.snapshot_account()
+        second_standard = self.client.open_orders()
+        second_algo = self.client.open_algo_orders()
+        if second_account.positions or second_standard or second_algo:
+            raise RuntimeError(
+                "account changed during protective-stop recovery review"
+            )
+
+        def exchange_datetime(order: dict[str, Any]) -> datetime:
+            milliseconds = _float(order.get("updateTime"))
+            if milliseconds <= 0.0:
+                return _utc_now()
+            return datetime.fromtimestamp(
+                milliseconds / 1000.0,
+                tz=timezone.utc,
+            ).replace(tzinfo=None)
+
+        entry_time = min(
+            exchange_datetime(order) for order in entry_orders
+        )
+        exit_time = max(
+            exchange_datetime(actual)
+            for _client_id_value, _stop, actual in stop_pairs
+        )
+        entry_price = entry_quote / entry_trade_quantity
+        exit_price = exit_quote / exit_trade_quantity
+        net_pnl_usdt = (
+            realized_pnl - commission + funding_pnl
+        )
+        recovery_id = hashlib.sha256(
+            (
+                f"{self.config_hash}|{symbol}|{event_id}|"
+                + "|".join(
+                    entry_order_ids
+                    + exit_order_ids
+                    + [primary_stop_id, residual_stop_id]
+                )
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+        record = {
+            "recovery_version": (
+                PROTECTIVE_STOP_INCIDENT_RECOVERY_VERSION
+            ),
+            "recovery_id": recovery_id,
+            "recovered_at": _utc_now().isoformat(),
+            "strategy": GRID_KEY,
+            "symbol": symbol,
+            "event_id": event_id,
+            "direction": Direction.SHORT.name,
+            "entry_client_ids": entry_client_ids,
+            "entry_order_ids": entry_order_ids,
+            "entry_time": entry_time.isoformat(),
+            "entry_quantity": entry_quantity,
+            "entry_price": entry_price,
+            "take_profit_client_ids": take_profit_client_ids,
+            "primary_stop_client_id": primary_stop_id,
+            "residual_stop_client_id": residual_stop_id,
+            "exit_order_ids": exit_order_ids,
+            "exit_time": exit_time.isoformat(),
+            "exit_quantity": exit_quantity,
+            "exit_price": exit_price,
+            "realized_pnl": realized_pnl,
+            "commission_usdt": commission,
+            "funding_pnl_usdt": funding_pnl,
+            "net_pnl_usdt": net_pnl_usdt,
+            "position_count": 0,
+            "standard_order_count": 0,
+            "algo_order_count": 0,
+        }
+        generic_trades[0].update(
+            {
+                "time": exit_time.isoformat(),
+                "event_id": event_id,
+                "direction": Direction.SHORT.name,
+                "exit_reason": (
+                    "verified_protective_stop_with_residual_close"
+                ),
+                "quantity": entry_quantity,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "realized_pnl": realized_pnl,
+                "commission_usdt": commission,
+                "funding_pnl_usdt": funding_pnl,
+                "net_pnl": net_pnl_usdt,
+                "entry_client_ids": entry_client_ids,
+                "exit_client_ids": [
+                    primary_stop_id,
+                    residual_stop_id,
+                ],
+                "pnl_source": (
+                    "verified_exchange_trades_and_income_history"
+                ),
+            }
+        )
+        self.state.setdefault("recovery_journal", []).append(record)
+        if len(self.state["recovery_journal"]) > 200:
+            del self.state["recovery_journal"][:-200]
+        self.state["operational_halt"] = False
+        self.state["halt_reason"] = ""
+        self.state["circuit_breaker"] = False
+        self.state["circuit_reason"] = ""
+        self.state["reconcile_failures"] = 0
+        self.state["consecutive_api_failures"] = 0
+        self.state["rate_limit_cooldown_until"] = None
+        self.state["last_reconciled_at"] = _utc_now().isoformat()
+        self._last_account = second_account
+        self._last_full_reconcile_monotonic = time.monotonic()
+        self._force_reconcile = True
+        self._append_event(
+            "flat_protective_stop_incident_recovered",
+            **record,
+        )
+        self._persist_state()
+        self._write_status(second_account)
+        return {
+            "cleared": True,
+            "already_recovered": False,
+            "record": record,
+        }
+
     def _preflight_test_order(self) -> None:
         """Validate signed trade permission without reaching the matcher."""
 
@@ -1140,6 +2187,20 @@ class CombinedBreakoutV8GridV6LiveTrader(
         try:
             return self.client.query_order(
                 symbol, orig_client_order_id=client_id
+            )
+        except BinanceRateLimitError:
+            raise
+        except Exception:
+            return None
+
+    def _query_standard_by_order_id_safely(
+        self,
+        symbol: str,
+        order_id: int | str,
+    ) -> dict[str, Any] | None:
+        try:
+            return self.client.query_order(
+                symbol, order_id=order_id
             )
         except BinanceRateLimitError:
             raise
@@ -1306,23 +2367,17 @@ class CombinedBreakoutV8GridV6LiveTrader(
         self._force_reconcile = True
         return response
 
+    @staticmethod
     def _filled_order(
-        self,
         response: dict[str, Any],
-        fallback_quantity: float,
-        fallback_price: float,
     ) -> tuple[float, float]:
         status = str(response.get("status", "")).upper()
-        quantity = _float(
-            response.get("executedQty") or response.get("origQty"),
-            fallback_quantity,
-        )
-        price = _float(
-            response.get("avgPrice")
-            or response.get("price")
-            or response.get("activatePrice"),
-            fallback_price,
-        )
+        quantity = _float(response.get("executedQty"))
+        price = _float(response.get("avgPrice"))
+        if price <= 0.0 and quantity > 0.0:
+            cumulative_quote = _float(response.get("cumQuote"))
+            if cumulative_quote > 0.0:
+                price = cumulative_quote / quantity
         if status != "FILLED":
             raise RuntimeError(
                 f"entry market order is not fully filled: {status or 'EMPTY'}"
@@ -1330,6 +2385,64 @@ class CombinedBreakoutV8GridV6LiveTrader(
         if quantity <= 0.0 or price <= 0.0:
             raise RuntimeError("market order returned no executed quantity/price")
         return quantity, price
+
+    def _confirm_market_fill(
+        self,
+        *,
+        symbol: str,
+        client_id: str,
+        response: dict[str, Any],
+        expected_quantity: float,
+    ) -> tuple[dict[str, Any], float, float]:
+        """Require exchange-final quantity and price for a market order.
+
+        Binance can acknowledge a FILLED futures market order with avgPrice
+        still zero even though a subsequent order query contains the final
+        fill.  A modeled or ticker fallback is never accepted as execution
+        truth.  Only a final order response (or a bounded idempotent query by
+        client ID) can release the pending entry intent.
+        """
+
+        current = dict(response)
+        last_error: Exception | None = None
+        for attempt in range(1, MARKET_FILL_CONFIRM_ATTEMPTS + 1):
+            try:
+                quantity, price = self._filled_order(current)
+                tolerance = max(
+                    abs(float(expected_quantity)) * 1e-9,
+                    1e-12,
+                )
+                if (
+                    expected_quantity > 0.0
+                    and abs(quantity - expected_quantity) > tolerance
+                ):
+                    raise RuntimeError(
+                        "market fill quantity differs from submitted "
+                        f"quantity: filled={quantity:.12g} "
+                        f"submitted={expected_quantity:.12g}"
+                    )
+                if attempt > 1:
+                    self._append_event(
+                        "market_fill_confirmed_after_query",
+                        symbol=symbol,
+                        client_id=client_id,
+                        attempts=attempt,
+                        quantity=quantity,
+                        price=price,
+                    )
+                return current, quantity, price
+            except RuntimeError as exc:
+                last_error = exc
+            if attempt >= MARKET_FILL_CONFIRM_ATTEMPTS:
+                break
+            time.sleep(MARKET_FILL_CONFIRM_DELAY_SECONDS)
+            queried = self._query_standard_safely(symbol, client_id)
+            if queried is not None:
+                current = queried
+        raise RuntimeError(
+            "market fill confirmation failed after "
+            f"{MARKET_FILL_CONFIRM_ATTEMPTS} attempts: {last_error}"
+        )
 
     def _handle_unconfirmed_entry_fill(
         self,
@@ -1372,12 +2485,26 @@ class CombinedBreakoutV8GridV6LiveTrader(
             direction=direction,
             quantity=position.quantity,
             error=error,
+            failure_context="entry fill confirmation",
         )
         self._persist_state()
 
     def _safe_cancel_standard(
         self, symbol: str, client_id: str
     ) -> None:
+        existing = self._query_standard_safely(symbol, client_id)
+        if existing is not None:
+            status = str(existing.get("status", "")).upper()
+            if status in _TERMINAL_ORDER_STATUSES:
+                self._journal(
+                    "terminal_order_cancel_skipped",
+                    order_surface="standard",
+                    symbol=symbol,
+                    client_id=client_id,
+                    status=status,
+                )
+                self._force_reconcile = True
+                return
         try:
             self.client.cancel_order(
                 symbol, orig_client_order_id=client_id
@@ -1394,6 +2521,20 @@ class CombinedBreakoutV8GridV6LiveTrader(
             self._force_reconcile = True
 
     def _safe_cancel_algo(self, client_id: str) -> None:
+        existing = self._query_algo_safely(client_id)
+        if existing is not None:
+            status = str(
+                existing.get("algoStatus", existing.get("status", ""))
+            ).upper()
+            if status in _TERMINAL_ORDER_STATUSES:
+                self._journal(
+                    "terminal_order_cancel_skipped",
+                    order_surface="algo",
+                    client_id=client_id,
+                    status=status,
+                )
+                self._force_reconcile = True
+                return
         try:
             self.client.cancel_algo_order(client_algo_id=client_id)
             self._force_reconcile = True
@@ -1424,7 +2565,9 @@ class CombinedBreakoutV8GridV6LiveTrader(
         force_replace: bool = False,
     ) -> None:
         rules = self.client.symbol_rules(symbol)
-        rounded_quantity = rules.round_quantity(quantity)
+        rounded_quantity = _round_reduce_only_quantity(
+            rules, quantity
+        )
         if _float(rounded_quantity) <= 0.0:
             raise RuntimeError("protective order quantity rounded to zero")
         exit_side = "SELL" if direction == Direction.LONG else "BUY"
@@ -1519,22 +2662,65 @@ class CombinedBreakoutV8GridV6LiveTrader(
         direction: Direction,
         quantity: float,
         error: Exception,
+        failure_context: str = "protective stop placement",
     ) -> None:
         self._halt(
-            f"{symbol} protective stop placement failed: "
+            f"{symbol} {failure_context} failed: "
             f"{type(error).__name__}: {error}"
         )
         rules = self.client.symbol_rules(symbol)
         client_id = self._client_id(
             strategy, event_id, "emerg", 0
         )
-        self._market_order_idempotent(
+        submitted_quantity = _round_reduce_only_quantity(
+            rules, quantity
+        )
+        response = self._market_order_idempotent(
             symbol=symbol,
             side="SELL" if direction == Direction.LONG else "BUY",
-            quantity=rules.round_quantity(quantity),
+            quantity=submitted_quantity,
             reduce_only=True,
             client_id=client_id,
         )
+        try:
+            response, filled_quantity, fill_price = (
+                self._confirm_market_fill(
+                    symbol=symbol,
+                    client_id=client_id,
+                    response=response,
+                    expected_quantity=float(submitted_quantity),
+                )
+            )
+        except Exception as close_error:
+            self._halt(
+                f"{symbol} emergency reduce-only fill was not final: "
+                f"{type(close_error).__name__}: {close_error}"
+            )
+            self._persist_state()
+            raise
+        verified = self.snapshot_account()
+        residual = verified.positions.get(symbol)
+        tolerance = max(_float(rules.quantity_step) / 2.0, 1e-12)
+        if residual is not None and residual.quantity > tolerance:
+            self._halt(
+                f"{symbol} emergency reduce-only exit left residual "
+                f"{residual.quantity:.12g}"
+            )
+            self._persist_state()
+            raise RuntimeError(
+                f"{symbol} emergency close did not flatten exchange position"
+            )
+        self._append_event(
+            "emergency_flatten_confirmed",
+            strategy=strategy,
+            event_id=event_id,
+            symbol=symbol,
+            client_id=client_id,
+            order_id=response.get("orderId"),
+            quantity=filled_quantity,
+            price=fill_price,
+        )
+        self._persist_state()
 
     # ------------------------------------------------------------------
     # Entries
@@ -1617,16 +2803,20 @@ class CombinedBreakoutV8GridV6LiveTrader(
         }
         self.state["pending_orders"][client_id] = pending
         self._persist_state()
+        submitted_quantity = rules.round_quantity(position.quantity)
         response = self._market_order_idempotent(
             symbol=signal.symbol,
             side=side,
-            quantity=rules.round_quantity(position.quantity),
+            quantity=submitted_quantity,
             reduce_only=False,
             client_id=client_id,
         )
         try:
-            quantity, fill_price = self._filled_order(
-                response, position.quantity, raw
+            response, quantity, fill_price = self._confirm_market_fill(
+                symbol=signal.symbol,
+                client_id=client_id,
+                response=response,
+                expected_quantity=float(submitted_quantity),
             )
         except Exception as exc:
             self._handle_unconfirmed_entry_fill(
@@ -1780,16 +2970,20 @@ class CombinedBreakoutV8GridV6LiveTrader(
             "profile": _grid_profile_to_dict(profile),
         }
         self._persist_state()
+        submitted_quantity = rules.round_quantity(first.quantity)
         response = self._market_order_idempotent(
             symbol=signal.symbol,
             side=side,
-            quantity=rules.round_quantity(first.quantity),
+            quantity=submitted_quantity,
             reduce_only=False,
             client_id=client_id,
         )
         try:
-            quantity, fill_price = self._filled_order(
-                response, first.quantity, raw
+            response, quantity, fill_price = self._confirm_market_fill(
+                symbol=signal.symbol,
+                client_id=client_id,
+                response=response,
+                expected_quantity=float(submitted_quantity),
             )
         except Exception as exc:
             self._handle_unconfirmed_entry_fill(
@@ -1906,7 +3100,9 @@ class CombinedBreakoutV8GridV6LiveTrader(
         response = self._limit_order_idempotent(
             symbol=signal.symbol,
             side="SELL" if signal.direction == Direction.LONG else "BUY",
-            quantity=rules.round_quantity(lot.quantity),
+            quantity=_round_reduce_only_quantity(
+                rules, lot.quantity
+            ),
             price=rules.round_price(lot.target_price),
             reduce_only=True,
             client_id=client_id,
@@ -2067,6 +3263,10 @@ class CombinedBreakoutV8GridV6LiveTrader(
                 "level_index": level_index,
                 "created_at": now.isoformat(),
             }
+            submitted_quantity = rules.round_quantity(
+                _float(metadata["quantity"])
+            )
+            pending["submitted_quantity"] = submitted_quantity
             self.state["pending_orders"][client_id] = pending
             self._persist_state()
             response = self._market_order_idempotent(
@@ -2076,9 +3276,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
                     if signal.direction == Direction.LONG
                     else "SELL"
                 ),
-                quantity=rules.round_quantity(
-                    _float(metadata["quantity"])
-                ),
+                quantity=submitted_quantity,
                 reduce_only=False,
                 client_id=client_id,
             )
@@ -2109,10 +3307,20 @@ class CombinedBreakoutV8GridV6LiveTrader(
             self._persist_state()
             return
         try:
-            quantity, fill_price = self._filled_order(
-                response,
-                _float(metadata["quantity"]),
-                _float(metadata["price"]),
+            pending = self.state["pending_orders"].get(
+                client_id, {}
+            )
+            response, quantity, fill_price = self._confirm_market_fill(
+                symbol=signal.symbol,
+                client_id=client_id,
+                response=response,
+                expected_quantity=_float(
+                    pending.get("submitted_quantity"),
+                    _float(
+                        response.get("origQty"),
+                        _float(metadata["quantity"]),
+                    ),
+                ),
             )
         except Exception as exc:
             self._handle_unconfirmed_entry_fill(
@@ -2155,7 +3363,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
         self.state["pending_orders"].pop(client_id, None)
         self._persist_state()
         # New exposure is protected before its take-profit is submitted.
-        total_quantity = sum(
+        total_quantity = _exact_quantity_sum(
             lot.quantity for lot in campaign.lots.values()
         )
         self._ensure_protection(
@@ -2208,7 +3416,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             self._process_grid_order_updates(standard)
             if account is None:
                 account = self.snapshot_account()
-            self._reconcile_truth(
+            account = self._reconcile_truth(
                 account,
                 standard,
                 algo,
@@ -2331,6 +3539,171 @@ class CombinedBreakoutV8GridV6LiveTrader(
                     f"{symbol} grid level order ended as {status}"
                 )
 
+    def _close_confirmed_protective_stop_residual(
+        self,
+        *,
+        strategy: str,
+        symbol: str,
+        direction: Direction,
+        modeled_quantity: float,
+        exchange_position: LivePosition,
+    ) -> AccountSnapshot | None:
+        """Flatten only a residual proven to follow our finished stop.
+
+        A stale model/exchange mismatch is not enough authority to trade.
+        Recovery requires the owned protective algo to be final, its actual
+        reduce-only child order to be fully filled in the expected direction,
+        and the child fill plus the current residual to reconcile to the
+        modeled position within half a quantity step.
+        """
+
+        protection = self.state.get("protective_orders", {}).get(
+            strategy, {}
+        )
+        stop_client_id = str(protection.get("stop_client_id", ""))
+        if not stop_client_id:
+            return None
+        stop_order = self._query_algo_safely(stop_client_id)
+        if stop_order is None:
+            return None
+        stop_status = str(
+            stop_order.get("algoStatus", stop_order.get("status", ""))
+        ).upper()
+        if stop_status not in {"FINISHED", "FILLED"}:
+            return None
+        actual_order_id = stop_order.get("actualOrderId")
+        if actual_order_id in (None, ""):
+            return None
+        actual_order = self._query_standard_by_order_id_safely(
+            symbol, actual_order_id
+        )
+        if actual_order is None:
+            return None
+
+        expected_side = (
+            "SELL" if direction == Direction.LONG else "BUY"
+        )
+
+        def exchange_bool(value: Any) -> bool:
+            return value is True or str(value).strip().lower() == "true"
+
+        if (
+            str(stop_order.get("symbol", "")).upper() != symbol
+            or str(stop_order.get("side", "")).upper()
+            != expected_side
+            or not exchange_bool(stop_order.get("reduceOnly"))
+            or str(actual_order.get("orderId", ""))
+            != str(actual_order_id)
+            or str(actual_order.get("symbol", "")).upper() != symbol
+            or str(actual_order.get("side", "")).upper()
+            != expected_side
+            or not exchange_bool(actual_order.get("reduceOnly"))
+        ):
+            return None
+        try:
+            stop_fill_quantity, stop_fill_price = self._filled_order(
+                actual_order
+            )
+        except RuntimeError:
+            return None
+        rules = self.client.symbol_rules(symbol)
+        tolerance = max(
+            _float(rules.quantity_step) / 2.0, 1e-12
+        )
+        stop_requested_quantity = _float(
+            stop_order.get("quantity")
+        )
+        expected_residual = max(
+            0.0, modeled_quantity - stop_fill_quantity
+        )
+        if (
+            exchange_position.quantity <= tolerance
+            or stop_fill_quantity <= tolerance
+            or stop_requested_quantity <= tolerance
+            or abs(
+                stop_requested_quantity - stop_fill_quantity
+            )
+            > tolerance
+            or stop_fill_quantity >= modeled_quantity
+            or abs(
+                expected_residual - exchange_position.quantity
+            )
+            > tolerance
+        ):
+            return None
+
+        event_id, _stop_price, _target = self._protection_model(
+            strategy
+        )
+        if not event_id:
+            return None
+        generation = int(protection.get("generation", 0))
+        residual_client_id = self._client_id(
+            strategy, event_id, "resid", generation
+        )
+        submitted_quantity = _round_reduce_only_quantity(
+            rules, exchange_position.quantity
+        )
+        if _float(submitted_quantity) <= 0.0:
+            raise RuntimeError(
+                f"{symbol} protective-stop residual rounded to zero"
+            )
+        self.state["pending_orders"][residual_client_id] = {
+            "strategy": strategy,
+            "symbol": symbol,
+            "event_id": event_id,
+            "role": "protective_stop_residual_exit",
+            "stop_client_id": stop_client_id,
+            "stop_actual_order_id": actual_order_id,
+            "created_at": _utc_now().isoformat(),
+        }
+        self._persist_state()
+        response = self._market_order_idempotent(
+            symbol=symbol,
+            side=expected_side,
+            quantity=submitted_quantity,
+            reduce_only=True,
+            client_id=residual_client_id,
+        )
+        response, filled_quantity, fill_price = (
+            self._confirm_market_fill(
+                symbol=symbol,
+                client_id=residual_client_id,
+                response=response,
+                expected_quantity=_float(submitted_quantity),
+            )
+        )
+        verified = self.snapshot_account()
+        remaining = verified.positions.get(symbol)
+        if remaining is not None and remaining.quantity > tolerance:
+            self._halt(
+                f"{symbol} confirmed protective-stop residual close "
+                f"left {remaining.quantity:.12g}"
+            )
+            self._persist_state()
+            raise RuntimeError(
+                f"{symbol} protective-stop residual did not flatten"
+            )
+        self.state["pending_orders"].pop(
+            residual_client_id, None
+        )
+        self._append_event(
+            "protective_stop_residual_closed",
+            strategy=strategy,
+            symbol=symbol,
+            event_id=event_id,
+            stop_client_id=stop_client_id,
+            stop_actual_order_id=actual_order_id,
+            stop_fill_quantity=stop_fill_quantity,
+            stop_fill_price=stop_fill_price,
+            residual_client_id=residual_client_id,
+            residual_order_id=response.get("orderId"),
+            residual_quantity=filled_quantity,
+            residual_fill_price=fill_price,
+        )
+        self._persist_state()
+        return verified
+
     def _reconcile_truth(
         self,
         account: AccountSnapshot,
@@ -2338,7 +3711,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
         algo_orders: list[dict[str, Any]],
         *,
         expected_algo_before: set[str] | None = None,
-    ) -> None:
+    ) -> AccountSnapshot:
         prefix = f"{self.live.order_id_prefix}-"
         known_standard_before = set(self._grid_order_book())
         owned_standard = {
@@ -2371,8 +3744,10 @@ class CombinedBreakoutV8GridV6LiveTrader(
                 # protective stop from being repaired.
 
         local = self._local_positions()
+        reconciled_account = account
+        exchange_closed_reasons: dict[str, str] = {}
         direction_mismatches: set[str] = set()
-        for symbol, position in account.positions.items():
+        for symbol, position in list(account.positions.items()):
             managed = local.get(symbol)
             if managed is None:
                 pending = self._pending_for_symbol(symbol)
@@ -2392,6 +3767,21 @@ class CombinedBreakoutV8GridV6LiveTrader(
                 direction_mismatches.add(symbol)
                 self._halt(f"{symbol} direction differs from live ledger")
             elif abs(expected - position.quantity) > tolerance:
+                verified = (
+                    self._close_confirmed_protective_stop_residual(
+                        strategy=strategy,
+                        symbol=symbol,
+                        direction=direction,
+                        modeled_quantity=expected,
+                        exchange_position=position,
+                    )
+                )
+                if verified is not None:
+                    reconciled_account = verified
+                    exchange_closed_reasons[symbol] = (
+                        "protective_stop_residual_closed"
+                    )
+                    continue
                 self._halt(
                     f"{symbol} quantity differs: "
                     f"ledger={expected:.12g} exchange={position.quantity:.12g}"
@@ -2411,10 +3801,18 @@ class CombinedBreakoutV8GridV6LiveTrader(
                     f"{position.margin_type}"
                 )
 
+        account = reconciled_account
         for symbol, (strategy, _direction, _quantity) in local.items():
             if symbol in account.positions:
                 continue
-            self._handle_exchange_closed(strategy, symbol)
+            self._handle_exchange_closed(
+                strategy,
+                symbol,
+                exit_reason=exchange_closed_reasons.get(
+                    symbol,
+                    "exchange_closed_or_protection_triggered",
+                ),
+            )
 
         for pending in self.state["pending_orders"].values():
             if "model" not in pending:
@@ -2493,6 +3891,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
                 "stale strategy algo orders canceled: "
                 + ",".join(sorted(stale_algo_ids)[:3])
             )
+        return account
 
     def _pending_for_symbol(
         self, symbol: str
@@ -2590,7 +3989,9 @@ class CombinedBreakoutV8GridV6LiveTrader(
             output[campaign.candidate.signal.symbol] = (
                 GRID_KEY,
                 campaign.candidate.signal.direction,
-                sum(lot.quantity for lot in campaign.lots.values()),
+                _exact_quantity_sum(
+                    lot.quantity for lot in campaign.lots.values()
+                ),
             )
         return output
 
@@ -2689,7 +4090,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
                 campaign
             )
             self._ensure_grid_entry_orders(campaign, profile)
-            quantity = sum(
+            quantity = _exact_quantity_sum(
                 lot.quantity for lot in campaign.lots.values()
             )
             if quantity > 0.0:
@@ -2706,7 +4107,11 @@ class CombinedBreakoutV8GridV6LiveTrader(
         self._persist_state()
 
     def _handle_exchange_closed(
-        self, strategy: str, symbol: str
+        self,
+        strategy: str,
+        symbol: str,
+        *,
+        exit_reason: str = "exchange_closed_or_protection_triggered",
     ) -> None:
         self._cancel_owned_symbol_orders(symbol)
         if strategy == BREAKOUT_KEY:
@@ -2722,7 +4127,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
                 "time": _utc_now().isoformat(),
                 "strategy": strategy,
                 "symbol": symbol,
-                "exit_reason": "exchange_closed_or_protection_triggered",
+                "exit_reason": exit_reason,
                 "pnl_source": "exchange_trade_history",
             }
         )
@@ -2730,6 +4135,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             "exchange_position_closed",
             strategy=strategy,
             symbol=symbol,
+            exit_reason=exit_reason,
         )
         self._persist_state()
 
@@ -2943,7 +4349,9 @@ class CombinedBreakoutV8GridV6LiveTrader(
         self._market_order_idempotent(
             symbol=symbol,
             side="SELL" if direction == Direction.LONG else "BUY",
-            quantity=rules.round_quantity(position.quantity),
+            quantity=_round_reduce_only_quantity(
+                rules, position.quantity
+            ),
             reduce_only=True,
             client_id=client_id,
         )

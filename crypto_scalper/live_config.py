@@ -306,7 +306,9 @@ class CombinedBreakoutV8GridV6LiveConfig:
         "dual_thrust_volatility_breakout_v8_score_convex_plus_"
         "dynamic_trend_following_grid_v6_profit_protected_max2"
     )
-    frozen_version: str = "breakout_v8_grid_v6_max2_live_20260724"
+    frozen_version: str = (
+        "breakout_v8_grid_v6_max2_live_risk1_20260728"
+    )
     live_confirmation_text: str = ""
     required_live_confirmation_text: str = "CONFIRM_BREAKOUT_V8_GRID_V6_LIVE"
     runtime_confirmation_text: str = "RUN_LIVE_NOW"
@@ -322,13 +324,12 @@ class CombinedBreakoutV8GridV6LiveConfig:
         "volatility_breakout",
         "dynamic_trend_following_grid",
     )
-    # Start with one tenth of the frozen research risk.  Raising this value is
-    # an explicit live-risk decision and never happens through strategy mode
-    # selection.
-    risk_scale: float = 0.10
-    max_gross_notional_multiple: float = 0.90
-    max_daily_loss_pct: float = 0.05
-    max_drawdown_pct: float = 0.10
+    # Explicit full-risk deployment requested for research/LIVE sizing parity.
+    # Authorization remains locked by default and is never persisted by GUI.
+    risk_scale: float = 1.0
+    max_gross_notional_multiple: float = 9.0
+    max_daily_loss_pct: float = 1.0
+    max_drawdown_pct: float = 0.60
     max_consecutive_api_failures: int = 3
     max_reconcile_failures: int = 2
     pending_order_resolution_seconds: int = 60
@@ -349,20 +350,24 @@ class CombinedBreakoutV8GridV6LiveConfig:
     rate_limit_default_cooldown_seconds: int = 65
     transport_acceptance_required: bool = True
     transport_acceptance_report_path: str = (
-        "reports/combined_breakout_v8_grid_v6_live_transport_acceptance.json"
+        "reports/"
+        "combined_breakout_v8_grid_v6_live_risk1_transport_acceptance.json"
     )
     strict_dedicated_account: bool = True
     require_protective_stop: bool = True
     grid_deeper_entry_mode: str = "software_market_after_touch"
-    order_id_prefix: str = "b8g6"
+    order_id_prefix: str = "b8g6r1"
     state_path: str = (
-        "logs/combined_breakout_v8_grid_v6_max2_{environment}_live_state.json"
+        "logs/combined_breakout_v8_grid_v6_max2_risk1_"
+        "{environment}_live_state.json"
     )
     event_log_path: str = (
-        "logs/combined_breakout_v8_grid_v6_max2_{environment}_live_events.jsonl"
+        "logs/combined_breakout_v8_grid_v6_max2_risk1_"
+        "{environment}_live_events.jsonl"
     )
     report_path: str = (
-        "reports/combined_breakout_v8_grid_v6_max2_{environment}_live_status.json"
+        "reports/combined_breakout_v8_grid_v6_max2_risk1_"
+        "{environment}_live_status.json"
     )
 
     @property

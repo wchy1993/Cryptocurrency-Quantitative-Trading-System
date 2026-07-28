@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "transport_version": "binance_usdm_ws_weighted_v1",
-  "started_at": "2026-07-26T12:57:08.527232",
-  "completed_at": "2026-07-26T12:57:54.153232",
-  "duration_seconds": 45.626668895,
+  "started_at": "2026-07-27T15:19:57.158225",
+  "completed_at": "2026-07-27T15:20:43.126962",
+  "duration_seconds": 45.9681901,
   "mode": "MAINNET_DRY_RUN_NO_ORDER_WITH_USER_STREAM",
   "environment": "mainnet",
   "user_stream_required": true,
@@ -25,8 +25,8 @@
     "strategy_sources_unchanged": true,
     "no_sample_integrity_errors": true
   },
-  "cycles": 779,
-  "live_config_hash": "529d07e96925bfa798ff6fa94b4bba21354529a153915039501ea8aa17d6b85d",
+  "cycles": 775,
+  "live_config_hash": "cf2c2eb73bcff4c119e249675d9132452304d390e4c1ce95d42007b4d858c218",
   "strategy_source_hashes": {
     "combined": "67c8e704ef201367cf444c6e41c7593b64f5aa7a0f5e2a1f4b7b6795dada3049",
     "volatility_breakout": "04cca8d0747e84fdfbb4173ebb3397c22b83583efc267c331c00a148baf259f2",
@@ -36,7 +36,7 @@
     "crypto_scalper/binance_rate_limit.py": "89533d88dc9cf91fc1cdfbfb4236269cf08d68483f0dbe055642454b231e2ebd",
     "crypto_scalper/binance_streams.py": "ab42b71867b1d14f3337af3b6207bbfa8b7da98060e7fbc4119be57c6fd1adb3",
     "crypto_scalper/binance_client.py": "dd338a42ba596ac7c6b35d75c6568c8070c773ad58d9fb36b53686d83cacc79e",
-    "crypto_scalper/combined_breakout_v8_grid_v6_live.py": "1c1ec00026ae3dfad0f2a460e38dde8ab99bb44aec66e995dd12594600ae9ae3",
+    "crypto_scalper/combined_breakout_v8_grid_v6_live.py": "f49f91441767efdfd4094c1edae892a6c638f8f68a3effc1fecacca69188fb2c",
     "crypto_scalper/combined_breakout_v8_grid_v6_live_acceptance.py": "24048e120b5e3cc6128cc9dddacd03c7fa1eab22abbfc53ec5ba7d4a87bada85"
   },
   "stream_health": {
@@ -45,11 +45,11 @@
     "market_subscription_error": "",
     "market_healthy": true,
     "user_connected": true,
-    "last_market_event_at": 1785070673.9576252,
+    "last_market_event_at": 1785165642.874965,
     "last_user_event_at": null,
-    "market_event_age_seconds": 0.0018508434295654297,
+    "market_event_age_seconds": 0.0013461112976074219,
     "user_event_age_seconds": null,
-    "market_event_count": 4744,
+    "market_event_count": 6973,
     "user_event_count": 0,
     "user_revision": 0,
     "seeded_series": 50,
@@ -82,10 +82,10 @@
   "rate_limit": {
     "limit": 2400,
     "soft_limit": 1440,
-    "window_epoch_minute": 29751177,
-    "estimated_used_weight": 338,
-    "observed_used_weight": 188,
-    "effective_used_weight": 338,
+    "window_epoch_minute": 29752760,
+    "estimated_used_weight": 261,
+    "observed_used_weight": 180,
+    "effective_used_weight": 261,
     "cooldown_until_epoch": 0.0,
     "cooldown_remaining_seconds": 0.0,
     "request_count": 56,
@@ -114,8 +114,8 @@
   "forbidden_requests": {},
   "strategy_observation": {
     "candidate_count_by_strategy": {
-      "volatility_breakout": 0,
-      "dynamic_trend_following_grid": 1
+      "volatility_breakout": 2,
+      "dynamic_trend_following_grid": 0
     },
     "open_positions": 0,
     "trade_count": 0,

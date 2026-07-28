@@ -18,10 +18,12 @@ from crypto_scalper.binance_client import (
 )
 from crypto_scalper.combined_breakout_v8_grid_v6_live import (
     CombinedBreakoutV8GridV6LiveTrader,
+    _round_reduce_only_quantity,
     _transport_code_hashes,
 )
 from crypto_scalper.combined_volatility_trend_grid_backtest import (
     BREAKOUT_KEY,
+    GRID_KEY,
 )
 from crypto_scalper.combined_volatility_trend_grid_shadow import _utc_now
 from crypto_scalper.gui import (
@@ -227,8 +229,17 @@ class FakeExchange:
         order_id: int | str | None = None,
         orig_client_order_id: str | None = None,
     ) -> dict[str, Any]:
-        del order_id
-        row = self.orders.get(str(orig_client_order_id))
+        if order_id is not None:
+            row = next(
+                (
+                    candidate
+                    for candidate in self.orders.values()
+                    if str(candidate.get("orderId")) == str(order_id)
+                ),
+                None,
+            )
+        else:
+            row = self.orders.get(str(orig_client_order_id))
         if row is None or row["symbol"] != symbol:
             raise RuntimeError("order not found")
         return dict(row)
@@ -258,15 +269,27 @@ class FakeExchange:
             return dict(self.orders[client_id])
         qty = float(quantity)
         amount = self.position_amounts.get(symbol, 0.0)
-        signed = qty if side.upper() == "BUY" else -qty
+        fill_ratio = (
+            self.reduce_only_fill_ratio
+            if reduce_only
+            else self.entry_fill_ratio
+        )
+        executed_qty = float(
+            self.symbol_rules(symbol).round_quantity(
+                qty * fill_ratio
+            )
+        )
+        signed = (
+            executed_qty
+            if side.upper() == "BUY"
+            else -executed_qty
+        )
         if reduce_only:
-            signed *= self.reduce_only_fill_ratio
             if amount > 0.0:
                 amount = max(0.0, amount + signed)
             elif amount < 0.0:
                 amount = min(0.0, amount + signed)
         else:
-            signed *= self.entry_fill_ratio
             amount += signed
             self.entry_prices[symbol] = 100.0
         self.position_amounts[symbol] = amount
@@ -282,14 +305,7 @@ class FakeExchange:
                 else "PARTIALLY_FILLED"
             ),
             "origQty": quantity,
-            "executedQty": str(
-                qty
-                * (
-                    self.reduce_only_fill_ratio
-                    if reduce_only
-                    else self.entry_fill_ratio
-                )
-            ),
+            "executedQty": str(executed_qty),
             "avgPrice": "100",
             "reduceOnly": reduce_only,
         }
@@ -449,7 +465,11 @@ class FakeExchange:
     ) -> None:
         row = self.orders[client_id]
         assert row["status"] == "NEW"
-        qty = float(row["origQty"]) * executed_fraction
+        qty = float(
+            self.symbol_rules(row["symbol"]).round_quantity(
+                float(row["origQty"]) * executed_fraction
+            )
+        )
         row["status"] = "PARTIALLY_FILLED"
         row["executedQty"] = str(qty)
         row["avgPrice"] = row["price"]
@@ -609,7 +629,7 @@ def test_live_candidate_gate_maps_the_live_drawdown_limit(
     assert (
         trader.live.hard_drawdown_stop_pct
         == trader.live.max_drawdown_pct
-        == 0.10
+        == 0.60
     )
     assert (
         trader._candidate_reject_reason(
@@ -621,7 +641,7 @@ def test_live_candidate_gate_maps_the_live_drawdown_limit(
     )
 
     trader.state["peak_equity"] = 200.0
-    exchange.equity = 179.0
+    exchange.equity = 79.0
     assert (
         trader._candidate_reject_reason(
             BREAKOUT_KEY,
@@ -702,6 +722,60 @@ def test_live_manifest_hashes_match_frozen_files() -> None:
     for relative, expected in manifest["hashes"].items():
         actual = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
         assert actual == expected, relative
+
+
+def test_live_risk_profile_matches_frozen_backtest_envelope() -> None:
+    config = load_live_config(LIVE_CONFIG)
+    live = config.combined_breakout_v8_grid_v6_live
+    combined = json.loads(
+        (ROOT / live.source_combined_config_path).read_text(
+            encoding="utf-8"
+        )
+    )
+    breakout = json.loads(
+        (
+            ROOT
+            / combined["source_configs"]["volatility_breakout"]["path"]
+        ).read_text(encoding="utf-8")
+    )
+    grid = json.loads(
+        (
+            ROOT
+            / combined["source_configs"][
+                "dynamic_trend_following_grid"
+            ]["path"]
+        ).read_text(encoding="utf-8")
+    )
+
+    assert live.risk_scale == 1.0
+    assert (
+        live.max_gross_notional_multiple
+        == combined["portfolio"]["max_gross_notional_multiple"]
+        == 9.0
+    )
+    assert (
+        live.max_drawdown_pct
+        == combined["portfolio"]["hard_drawdown_stop_pct"]
+        == 0.60
+    )
+    assert live.max_daily_loss_pct == 1.0
+    assert config.risk.max_account_margin_usage_pct == 1.0
+    assert config.risk.max_symbol_margin_pct == 1.0
+    assert config.risk.min_available_balance_usdt == 0.0
+    assert (
+        breakout["operational_portfolio"]["max_notional_multiple"]
+        * live.risk_scale
+        == 9.0
+    )
+    assert (
+        grid["portfolio"]["max_notional_multiple"]
+        * live.risk_scale
+        == 5.0
+    )
+    assert live.order_id_prefix == "b8g6r1"
+    assert "risk1" in live.state_path
+    assert "risk1" in live.event_log_path
+    assert "risk1" in live.report_path
 
 
 def test_dry_run_and_live_use_distinct_mainnet_ledgers() -> None:
@@ -1042,6 +1116,11 @@ def test_binance_client_supports_idempotent_query_cancel_and_test_order() -> Non
         "0.1",
         new_client_order_id="b8g6-test-order",
     )
+    client.income_history(
+        "btcusdt",
+        start_time=1000,
+        end_time=2000,
+    )
 
     assert client.calls[0] == (
         "GET",
@@ -1059,6 +1138,16 @@ def test_binance_client_supports_idempotent_query_cancel_and_test_order() -> Non
     assert client.calls[4][2]["newClientOrderId"] == "b8g6-tp"
     assert client.calls[5][2]["clientAlgoId"] == "b8g6-stop"
     assert client.calls[6][0:2] == ("POST", "/fapi/v1/order/test")
+    assert client.calls[7] == (
+        "GET",
+        "/fapi/v1/income",
+        {
+            "limit": 1000,
+            "symbol": "BTCUSDT",
+            "startTime": 1000,
+            "endTime": 2000,
+        },
+    )
 
 
 def test_canceled_algo_order_cannot_masquerade_as_live_protection(
@@ -1140,6 +1229,700 @@ def test_breakout_live_entry_is_idempotent_protected_and_restart_safe(
     restored.validate_startup()
     assert restored.state["breakout_exchange"]["symbol"] == "BTCUSDT"
     assert restored.state["operational_halt"] is False
+
+
+def test_filled_market_response_with_zero_fill_fields_is_requeried(
+    tmp_path: Path,
+) -> None:
+    class DelayedFinalFillExchange(FakeExchange):
+        def new_market_order(
+            self,
+            symbol: str,
+            side: str,
+            quantity: str,
+            reduce_only: bool = False,
+            new_client_order_id: str | None = None,
+        ) -> dict[str, Any]:
+            final = super().new_market_order(
+                symbol,
+                side,
+                quantity,
+                reduce_only=reduce_only,
+                new_client_order_id=new_client_order_id,
+            )
+            if reduce_only:
+                return final
+            immediate = dict(final)
+            immediate["executedQty"] = "0"
+            immediate["avgPrice"] = "0"
+            return immediate
+
+    now = _utc_now().replace(second=0, microsecond=0)
+    exchange = DelayedFinalFillExchange(now)
+    trader = CombinedBreakoutV8GridV6LiveTrader(
+        _armed_config(tmp_path), exchange
+    )
+    trader.validate_startup()
+    trader.state["started_at"] = (
+        now - timedelta(minutes=1)
+    ).isoformat()
+    _install_context(trader, now, "BTCUSDT")
+
+    assert trader._open_breakout_candidate(
+        _breakout_candidate("BTCUSDT", now), now
+    )
+
+    assert trader.state["operational_halt"] is False
+    assert trader.state["breakout_exchange"]["entry_price"] == 100.0
+    assert len(
+        [row for row in exchange.market_calls if not row["reduceOnly"]]
+    ) == 1
+    events = [
+        json.loads(line)
+        for line in trader.event_log_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    confirmation = [
+        row
+        for row in events
+        if row["event_type"]
+        == "market_fill_confirmed_after_query"
+    ]
+    assert len(confirmation) == 1
+    assert confirmation[0]["attempts"] == 2
+
+
+def test_filled_market_response_can_derive_price_from_cumulative_quote(
+    tmp_path: Path,
+) -> None:
+    trader = CombinedBreakoutV8GridV6LiveTrader(
+        _armed_config(tmp_path), FakeExchange()
+    )
+
+    quantity, price = trader._filled_order(
+        {
+            "status": "FILLED",
+            "executedQty": "5",
+            "avgPrice": "0",
+            "cumQuote": "501.25",
+        }
+    )
+
+    assert quantity == 5.0
+    assert price == pytest.approx(100.25)
+
+
+def test_reduce_only_quantity_snaps_only_float_step_artifact() -> None:
+    rules = SymbolRules("TRUMPUSDT", "0.01", "0.01", "0.001", "5")
+    artifact = 30.9 + 30.9 + 30.9
+
+    assert artifact == 92.69999999999999
+    assert rules.round_quantity(artifact) == "92.69"
+    assert _round_reduce_only_quantity(rules, artifact) == "92.7"
+    assert _round_reduce_only_quantity(rules, 92.699) == "92.69"
+
+
+def test_terminal_standard_and_finished_algo_cancel_are_idempotent(
+    tmp_path: Path,
+) -> None:
+    class TerminalCancelExchange(FakeExchange):
+        def __init__(self) -> None:
+            super().__init__()
+            self.standard_cancel_calls = 0
+            self.algo_cancel_calls = 0
+
+        def cancel_order(
+            self,
+            symbol: str,
+            *,
+            order_id: int | str | None = None,
+            orig_client_order_id: str | None = None,
+        ) -> dict[str, Any]:
+            del symbol, order_id, orig_client_order_id
+            self.standard_cancel_calls += 1
+            raise RuntimeError("Unknown order sent")
+
+        def cancel_algo_order(
+            self,
+            *,
+            algo_id: int | str | None = None,
+            client_algo_id: str | None = None,
+        ) -> dict[str, Any]:
+            del algo_id, client_algo_id
+            self.algo_cancel_calls += 1
+            raise RuntimeError("Unknown order sent")
+
+    exchange = TerminalCancelExchange()
+    exchange.orders["terminal-standard"] = {
+        "symbol": "TRUMPUSDT",
+        "side": "BUY",
+        "clientOrderId": "terminal-standard",
+        "orderId": 101,
+        "status": "EXPIRED",
+        "origQty": "1",
+        "executedQty": "0",
+        "avgPrice": "0",
+        "reduceOnly": True,
+    }
+    exchange.algo_orders["terminal-algo"] = {
+        "symbol": "TRUMPUSDT",
+        "side": "BUY",
+        "clientAlgoId": "terminal-algo",
+        "algoId": 102,
+        "algoStatus": "FINISHED",
+        "orderType": "STOP_MARKET",
+        "quantity": "1",
+        "triggerPrice": "1.59",
+        "reduceOnly": True,
+    }
+    trader = CombinedBreakoutV8GridV6LiveTrader(
+        _armed_config(tmp_path), exchange
+    )
+
+    trader._safe_cancel_standard(
+        "TRUMPUSDT", "terminal-standard"
+    )
+    trader._safe_cancel_algo("terminal-algo")
+
+    assert exchange.standard_cancel_calls == 0
+    assert exchange.algo_cancel_calls == 0
+    skipped = [
+        row
+        for row in trader.state["order_journal"]
+        if row["action"] == "terminal_order_cancel_skipped"
+    ]
+    assert {row["status"] for row in skipped} == {
+        "EXPIRED",
+        "FINISHED",
+    }
+
+
+def test_finished_protective_stop_residual_is_verified_and_flattened(
+    tmp_path: Path,
+) -> None:
+    class CentStepExchange(FakeExchange):
+        def symbol_rules(self, symbol: str) -> SymbolRules:
+            return SymbolRules(
+                symbol, "0.01", "0.01", "0.001", "5"
+            )
+
+    now = _utc_now().replace(second=0, microsecond=0)
+    exchange = CentStepExchange(now)
+    trader = CombinedBreakoutV8GridV6LiveTrader(
+        _armed_config(tmp_path), exchange
+    )
+    trader.validate_startup()
+    trader.state["started_at"] = (
+        now - timedelta(minutes=1)
+    ).isoformat()
+    _install_context(trader, now, "ETHUSDT")
+    assert trader._open_grid_candidate(
+        _grid_candidate("ETHUSDT", now), now
+    )
+
+    campaign = trader.state["grid_campaign"]
+    first_lot = next(iter(campaign["lots"].values()))
+    first_lot["quantity"] = 92.7
+    campaign["levels"][0]["quantity"] = 92.7
+    trader.state["grid_campaign"] = campaign
+    exchange.position_amounts["ETHUSDT"] = -0.01
+    exchange.entry_prices["ETHUSDT"] = 1.561
+
+    protection = trader.state["protective_orders"][
+        GRID_KEY
+    ]
+    stop_client_id = protection["stop_client_id"]
+    stop = exchange.algo_orders[stop_client_id]
+    stop["algoStatus"] = "FINISHED"
+    stop["quantity"] = "92.69"
+    exchange._next_id += 1
+    stop_actual_order_id = exchange._next_id
+    stop["actualOrderId"] = stop_actual_order_id
+    exchange.orders["exchange-stop-child"] = {
+        "symbol": "ETHUSDT",
+        "side": "BUY",
+        "clientOrderId": "exchange-stop-child",
+        "orderId": stop_actual_order_id,
+        "status": "FILLED",
+        "origQty": "92.69",
+        "executedQty": "92.69",
+        "avgPrice": "1.591",
+        "cumQuote": str(92.69 * 1.591),
+        "reduceOnly": True,
+    }
+
+    account = trader.reconcile()
+
+    assert "ETHUSDT" not in account.positions
+    assert exchange.position_amounts["ETHUSDT"] == pytest.approx(0.0)
+    assert trader.state["grid_campaign"] is None
+    assert trader.state["grid_exchange"] is None
+    assert trader.state["pending_orders"] == {}
+    assert trader.state["protective_orders"] == {}
+    assert trader.state["operational_halt"] is False
+    assert trader.state["circuit_breaker"] is False
+    residual_exits = [
+        row
+        for row in exchange.market_calls
+        if row["reduceOnly"]
+        and "-resid-" in row["clientOrderId"]
+    ]
+    assert len(residual_exits) == 1
+    assert residual_exits[0]["origQty"] == "0.01"
+    assert (
+        trader.state["trades"][-1]["exit_reason"]
+        == "protective_stop_residual_closed"
+    )
+    events = [
+        json.loads(line)
+        for line in trader.event_log_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert any(
+        row["event_type"] == "protective_stop_residual_closed"
+        and row["stop_fill_quantity"] == pytest.approx(92.69)
+        and row["residual_quantity"] == pytest.approx(0.01)
+        for row in events
+    )
+
+
+def test_verified_flat_emergency_round_trip_clears_only_reviewed_halt(
+    tmp_path: Path,
+) -> None:
+    class TradeHistoryExchange(FakeExchange):
+        def user_trades(
+            self,
+            symbol: str | None = None,
+            limit: int = 1000,
+            start_time: int | None = None,
+            end_time: int | None = None,
+        ) -> list[dict[str, Any]]:
+            del limit, start_time, end_time
+            rows = []
+            for index, order in enumerate(self.market_calls, start=1):
+                if symbol is not None and order["symbol"] != symbol:
+                    continue
+                quantity = float(order["executedQty"])
+                price = float(order["avgPrice"])
+                rows.append(
+                    {
+                        "symbol": order["symbol"],
+                        "id": index,
+                        "orderId": order["orderId"],
+                        "side": order["side"],
+                        "price": str(price),
+                        "qty": str(quantity),
+                        "quoteQty": str(quantity * price),
+                        "commission": str(
+                            quantity * price * 0.0005
+                        ),
+                        "commissionAsset": "USDT",
+                        "realizedPnl": (
+                            "-0.01" if order["reduceOnly"] else "0"
+                        ),
+                    }
+                )
+            return rows
+
+    now = _utc_now().replace(second=0, microsecond=0)
+    exchange = TradeHistoryExchange(now)
+    trader = CombinedBreakoutV8GridV6LiveTrader(
+        _armed_config(tmp_path), exchange
+    )
+    trader.validate_startup()
+    trader.state["started_at"] = (
+        now - timedelta(minutes=1)
+    ).isoformat()
+    _install_context(trader, now, "BTCUSDT")
+    assert trader._open_breakout_candidate(
+        _breakout_candidate("BTCUSDT", now), now
+    )
+    model = trader.state["breakout_position"]
+    entry = trader.state["breakout_exchange"]
+    entry_id = entry["entry_client_id"]
+    event_id = entry["event_id"]
+    emergency_id = trader._client_id(
+        BREAKOUT_KEY, event_id, "emerg", 0
+    )
+    quantity = float(entry["quantity"])
+    exchange.new_market_order(
+        "BTCUSDT",
+        "SELL",
+        str(quantity),
+        reduce_only=True,
+        new_client_order_id=emergency_id,
+    )
+    for row in exchange.algo_orders.values():
+        row["algoStatus"] = "CANCELED"
+    trader.state["breakout_position"] = None
+    trader.state["breakout_exchange"] = None
+    trader.state["protective_orders"] = {}
+    trader.state["pending_orders"] = {
+        entry_id: {
+            "strategy": BREAKOUT_KEY,
+            "event_id": event_id,
+            "symbol": "BTCUSDT",
+            "direction": Direction.LONG.name,
+            "client_id": entry_id,
+            "created_at": now.isoformat(),
+            "exchange_status": "FILLED",
+            "model": model,
+        }
+    }
+    trader.state["operational_halt"] = True
+    trader.state["halt_reason"] = (
+        "BTCUSDT entry fill was not final: test | "
+        "BTCUSDT protective stop placement failed: test | "
+        "BTCUSDT filled entry has no exchange position; "
+        "trade-history review required"
+    )
+
+    result = trader.recover_verified_flat_emergency_round_trip(
+        expected_entry_client_id=entry_id,
+        expected_emergency_client_id=emergency_id,
+    )
+
+    assert result["cleared"] is True
+    assert result["already_recovered"] is False
+    assert trader.state["operational_halt"] is False
+    assert trader.state["halt_reason"] == ""
+    assert trader.state["pending_orders"] == {}
+    assert len(trader.state["recovery_journal"]) == 1
+    assert (
+        trader.state["recovery_journal"][0]["entry_client_id"]
+        == entry_id
+    )
+    assert trader.state["trades"][-1]["pnl_source"] == (
+        "verified_exchange_trade_history"
+    )
+    assert trader.state["daily_entries"][BREAKOUT_KEY]
+    assert "BTCUSDT" in trader.state["cooldown_until"][BREAKOUT_KEY]
+    assert (
+        trader.state["seen_events"][BREAKOUT_KEY][event_id]["status"]
+        == "emergency_flattened_after_execution_fault"
+    )
+    repeated = trader.recover_verified_flat_emergency_round_trip(
+        expected_entry_client_id=entry_id,
+        expected_emergency_client_id=emergency_id,
+    )
+    assert repeated["already_recovered"] is True
+
+
+def test_flat_emergency_recovery_refuses_unrelated_halt(
+    tmp_path: Path,
+) -> None:
+    trader = CombinedBreakoutV8GridV6LiveTrader(
+        _armed_config(tmp_path), FakeExchange()
+    )
+    trader.state["operational_halt"] = True
+    trader.state["halt_reason"] = "BTCUSDT direction differs from live ledger"
+    trader.state["pending_orders"] = {
+        "reviewed-entry": {
+            "strategy": BREAKOUT_KEY,
+            "event_id": "event",
+            "symbol": "BTCUSDT",
+            "direction": Direction.LONG.name,
+            "client_id": "reviewed-entry",
+            "created_at": _utc_now().isoformat(),
+            "model": {},
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="unrelated recovery reason"):
+        trader.recover_verified_flat_emergency_round_trip(
+            expected_entry_client_id="reviewed-entry"
+        )
+
+    assert trader.state["operational_halt"] is True
+    assert "reviewed-entry" in trader.state["pending_orders"]
+
+
+def test_verified_flat_protective_stop_incident_recovery_is_strict(
+    tmp_path: Path,
+) -> None:
+    class IncidentExchange(FakeExchange):
+        def __init__(self) -> None:
+            super().__init__()
+            self.trade_rows: list[dict[str, Any]] = []
+            self.income_rows: list[dict[str, Any]] = []
+
+        def symbol_rules(self, symbol: str) -> SymbolRules:
+            return SymbolRules(
+                symbol, "0.01", "0.01", "0.001", "5"
+            )
+
+        def user_trades(
+            self,
+            symbol: str | None = None,
+            limit: int = 1000,
+            start_time: int | None = None,
+            end_time: int | None = None,
+        ) -> list[dict[str, Any]]:
+            del limit, start_time, end_time
+            return [
+                dict(row)
+                for row in self.trade_rows
+                if symbol is None or row["symbol"] == symbol
+            ]
+
+        def income_history(
+            self,
+            symbol: str | None = None,
+            income_type: str | None = None,
+            limit: int = 1000,
+            start_time: int | None = None,
+            end_time: int | None = None,
+        ) -> list[dict[str, Any]]:
+            del limit, start_time, end_time
+            return [
+                dict(row)
+                for row in self.income_rows
+                if (symbol is None or row["symbol"] == symbol)
+                and (
+                    income_type is None
+                    or row["incomeType"] == income_type
+                )
+            ]
+
+    exchange = IncidentExchange()
+    trader = CombinedBreakoutV8GridV6LiveTrader(
+        _armed_config(tmp_path), exchange
+    )
+    symbol = "TRUMPUSDT"
+    event_id = "3926b7712530497f5b36aca7"
+    entry_ids = [
+        trader._client_id(GRID_KEY, event_id, "entry", 0),
+        trader._client_id(GRID_KEY, event_id, "ge1", 0),
+        trader._client_id(GRID_KEY, event_id, "ge2", 0),
+    ]
+    take_profit_ids = [
+        trader._client_id(GRID_KEY, event_id, "tp0", 0),
+        trader._client_id(GRID_KEY, event_id, "tp1", 0),
+        trader._client_id(GRID_KEY, event_id, "tp2", 0),
+    ]
+    primary_stop_id = trader._client_id(
+        GRID_KEY, event_id, "stop", 3
+    )
+    residual_stop_id = trader._client_id(
+        GRID_KEY, event_id, "stop", 4
+    )
+
+    next_order_id = 2000
+    entry_prices = (1.553, 1.561, 1.569)
+    for index, (client_id, price) in enumerate(
+        zip(entry_ids, entry_prices), start=1
+    ):
+        next_order_id += 1
+        exchange.orders[client_id] = {
+            "symbol": symbol,
+            "side": "SELL",
+            "clientOrderId": client_id,
+            "orderId": next_order_id,
+            "status": "FILLED",
+            "origQty": "30.9",
+            "executedQty": "30.9",
+            "avgPrice": str(price),
+            "cumQuote": str(30.9 * price),
+            "reduceOnly": False,
+            "updateTime": index * 1000,
+        }
+        exchange.trade_rows.append(
+            {
+                "symbol": symbol,
+                "orderId": next_order_id,
+                "side": "SELL",
+                "qty": "30.9",
+                "quoteQty": str(30.9 * price),
+                "commission": "0.02",
+                "commissionAsset": "USDT",
+                "realizedPnl": "0",
+            }
+        )
+    for client_id in take_profit_ids:
+        next_order_id += 1
+        exchange.orders[client_id] = {
+            "symbol": symbol,
+            "side": "BUY",
+            "clientOrderId": client_id,
+            "orderId": next_order_id,
+            "status": "EXPIRED",
+            "origQty": "30.9",
+            "executedQty": "0",
+            "avgPrice": "0",
+            "cumQuote": "0",
+            "reduceOnly": True,
+            "updateTime": 4000,
+        }
+
+    stop_specs = (
+        (primary_stop_id, 92.69, 1.591, -2.7807, 5000),
+        (residual_stop_id, 0.01, 1.592, -0.00031, 6000),
+    )
+    for stop_client_id, quantity, price, pnl, update_time in stop_specs:
+        next_order_id += 1
+        actual_order_id = next_order_id
+        exchange.algo_orders[stop_client_id] = {
+            "symbol": symbol,
+            "side": "BUY",
+            "clientAlgoId": stop_client_id,
+            "algoId": actual_order_id + 1000,
+            "algoStatus": "FINISHED",
+            "orderType": "STOP_MARKET",
+            "quantity": str(quantity),
+            "triggerPrice": "1.59",
+            "actualOrderId": actual_order_id,
+            "reduceOnly": True,
+            "updateTime": update_time,
+        }
+        actual_client_id = f"actual-{stop_client_id}"
+        exchange.orders[actual_client_id] = {
+            "symbol": symbol,
+            "side": "BUY",
+            "clientOrderId": actual_client_id,
+            "orderId": actual_order_id,
+            "status": "FILLED",
+            "origQty": str(quantity),
+            "executedQty": str(quantity),
+            "avgPrice": str(price),
+            "cumQuote": str(quantity * price),
+            "reduceOnly": True,
+            "updateTime": update_time,
+        }
+        exchange.trade_rows.append(
+            {
+                "symbol": symbol,
+                "orderId": actual_order_id,
+                "side": "BUY",
+                "qty": str(quantity),
+                "quoteQty": str(quantity * price),
+                "commission": "0.03",
+                "commissionAsset": "USDT",
+                "realizedPnl": str(pnl),
+            }
+        )
+
+    commission = sum(
+        float(row["commission"]) for row in exchange.trade_rows
+    )
+    realized = sum(
+        float(row["realizedPnl"]) for row in exchange.trade_rows
+    )
+    exchange.income_rows = [
+        {
+            "symbol": symbol,
+            "incomeType": "COMMISSION",
+            "income": str(-commission),
+        },
+        {
+            "symbol": symbol,
+            "incomeType": "REALIZED_PNL",
+            "income": str(realized),
+        },
+        {
+            "symbol": symbol,
+            "incomeType": "FUNDING_FEE",
+            "income": "0.005",
+        },
+    ]
+    reviewed_ids = (
+        entry_ids
+        + take_profit_ids
+        + [primary_stop_id, residual_stop_id]
+    )
+    trader.state["order_journal"] = [
+        {
+            "time": _utc_now().isoformat(),
+            "action": "reviewed",
+            "symbol": symbol,
+            "client_id": client_id,
+        }
+        for client_id in reviewed_ids
+    ]
+    trader.state["trades"] = [
+        {
+            "time": _utc_now().isoformat(),
+            "strategy": GRID_KEY,
+            "symbol": symbol,
+            "exit_reason": "exchange_closed_or_protection_triggered",
+            "pnl_source": "exchange_trade_history",
+        }
+    ]
+    trader.state["operational_halt"] = True
+    trader.state["halt_reason"] = (
+        f"{symbol} quantity differs: ledger=92.7 exchange=0.01 | "
+        "reconciliation failed 2 times: BinanceApiError: "
+        "Order would immediately trigger. | "
+        "reconciliation failed 3 times: BinanceApiError: "
+        "Unknown order sent."
+    )
+    trader.state["circuit_breaker"] = True
+    trader.state["circuit_reason"] = (
+        "API failures=3: BinanceApiError: Unknown order sent."
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="deterministic Grid event IDs",
+    ):
+        trader.recover_verified_flat_protective_stop_incident(
+            expected_symbol=symbol,
+            expected_event_id="wrong-event",
+            expected_entry_client_ids=entry_ids,
+            expected_primary_stop_client_id=primary_stop_id,
+            expected_residual_stop_client_id=residual_stop_id,
+            expected_take_profit_client_ids=take_profit_ids,
+        )
+    assert trader.state["operational_halt"] is True
+    assert trader.state["circuit_breaker"] is True
+
+    result = (
+        trader.recover_verified_flat_protective_stop_incident(
+            expected_symbol=symbol,
+            expected_event_id=event_id,
+            expected_entry_client_ids=entry_ids,
+            expected_primary_stop_client_id=primary_stop_id,
+            expected_residual_stop_client_id=residual_stop_id,
+            expected_take_profit_client_ids=take_profit_ids,
+        )
+    )
+
+    assert result["cleared"] is True
+    assert result["already_recovered"] is False
+    assert result["record"]["entry_quantity"] == pytest.approx(92.7)
+    assert result["record"]["exit_quantity"] == pytest.approx(92.7)
+    assert result["record"]["realized_pnl"] == pytest.approx(
+        -2.78101
+    )
+    assert result["record"]["funding_pnl_usdt"] == pytest.approx(
+        0.005
+    )
+    assert trader.state["operational_halt"] is False
+    assert trader.state["circuit_breaker"] is False
+    assert trader.state["halt_reason"] == ""
+    assert trader.state["circuit_reason"] == ""
+    assert len(trader.state["recovery_journal"]) == 1
+    trade = trader.state["trades"][0]
+    assert trade["exit_reason"] == (
+        "verified_protective_stop_with_residual_close"
+    )
+    assert trade["pnl_source"] == (
+        "verified_exchange_trades_and_income_history"
+    )
+    assert exchange.market_calls == []
+    repeated = (
+        trader.recover_verified_flat_protective_stop_incident(
+            expected_symbol=symbol,
+            expected_event_id=event_id,
+            expected_entry_client_ids=entry_ids,
+            expected_primary_stop_client_id=primary_stop_id,
+            expected_residual_stop_client_id=residual_stop_id,
+            expected_take_profit_client_ids=take_profit_ids,
+        )
+    )
+    assert repeated["already_recovered"] is True
+    assert len(trader.state["recovery_journal"]) == 1
 
 
 def test_missing_protective_stop_is_repaired_on_reconcile(
@@ -1488,7 +2271,7 @@ def test_external_position_halts_and_drawdown_trips_entry_circuit(
     assert "unmanaged exchange position" in trader.state["halt_reason"]
 
     trader.state["peak_equity"] = 200.0
-    exchange.equity = 179.0
+    exchange.equity = 79.0
     trader._update_risk_circuits(trader.snapshot_account())
     assert trader.state["circuit_breaker"] is True
     assert "drawdown" in trader.state["circuit_reason"]
@@ -1613,7 +2396,7 @@ def test_untracked_owned_order_is_canceled_and_latches_halt(
         _armed_config(tmp_path), exchange
     )
     trader.validate_startup()
-    unknown_id = "b8g6-unknown-open"
+    unknown_id = f"{trader.live.order_id_prefix}-unknown-open"
     exchange.new_limit_order(
         "BTCUSDT",
         "BUY",
