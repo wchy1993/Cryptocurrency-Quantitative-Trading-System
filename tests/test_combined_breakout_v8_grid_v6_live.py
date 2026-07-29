@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from dataclasses import replace
@@ -21,6 +22,9 @@ from crypto_scalper.combined_breakout_v8_grid_v6_live import (
     _round_reduce_only_quantity,
     _transport_code_hashes,
 )
+from crypto_scalper.combined_breakout_v7_grid_v5_shadow import (
+    _v7_position_from_dict,
+)
 from crypto_scalper.combined_volatility_trend_grid_backtest import (
     BREAKOUT_KEY,
     GRID_KEY,
@@ -29,7 +33,6 @@ from crypto_scalper.combined_volatility_trend_grid_shadow import _utc_now
 from crypto_scalper.gui import (
     EXECUTION_MODE_DRY_RUN,
     EXECUTION_MODE_LIVE,
-    LIVE_GUI_CONFIG_PATH,
     STRATEGY_MODE_COMBINED_LIVE,
     STRATEGY_MODE_COMBINED_SHADOW,
     TradingApp,
@@ -52,7 +55,7 @@ from crypto_scalper.volatility_breakout_v4_research import V4MarketSnapshot
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LIVE_CONFIG = ROOT / LIVE_GUI_CONFIG_PATH
+LIVE_CONFIG = ROOT / "config.gui.breakout-v8-grid-v6-max2-live.json"
 LIVE_MANIFEST = (
     ROOT / "config.gui.breakout-v8-grid-v6-max2-live-manifest.json"
 )
@@ -2438,6 +2441,98 @@ def test_all_live_exit_orders_are_reduce_only(tmp_path: Path) -> None:
     exits = [row for row in exchange.market_calls if row["reduceOnly"]]
     assert len(exits) == 1
     assert exchange.position_amounts["BTCUSDT"] == 0.0
+
+
+def test_breakout_partial_fill_recovers_without_duplicate_reduce_order(
+    tmp_path: Path,
+) -> None:
+    now = _utc_now().replace(second=0, microsecond=0)
+    exchange = FakeExchange(now)
+    config = _armed_config(tmp_path)
+    trader = CombinedBreakoutV8GridV6LiveTrader(config, exchange)
+    trader.validate_startup()
+    trader.state["started_at"] = (
+        now - timedelta(minutes=1)
+    ).isoformat()
+    _install_context(trader, now, "BTCUSDT")
+    assert trader._open_breakout_candidate(
+        _breakout_candidate("BTCUSDT", now), now
+    )
+    protected, profile = _v7_position_from_dict(
+        trader.state["breakout_position"]
+    )
+    trial = copy.deepcopy(protected)
+    rules = exchange.symbol_rules("BTCUSDT")
+    submitted = float(
+        _round_reduce_only_quantity(
+            rules, protected.position.quantity * 0.1
+        )
+    )
+    assert submitted > 0.0
+    remaining = protected.position.quantity - submitted
+    remaining_ratio = remaining / protected.position.quantity
+    trial.position.quantity = remaining
+    trial.position.entry_fee *= remaining_ratio
+    trial.position.entry_slippage *= remaining_ratio
+    trial.position.risk_budget *= remaining_ratio
+    trial.partial_taken = True
+    trial.realized_legs.append(
+        {
+            "leg_type": "partial_take_profit",
+            "net_pnl": 1.0,
+        }
+    )
+
+    def simulate_crash_after_exchange_fill(
+        _client_id: str,
+        _response: dict[str, Any] | None = None,
+    ) -> None:
+        raise RuntimeError("simulated post-fill crash")
+
+    trader._finalize_breakout_partial_fill = (  # type: ignore[assignment]
+        simulate_crash_after_exchange_fill
+    )
+    with pytest.raises(RuntimeError, match="post-fill crash"):
+        trader._submit_breakout_partial(
+            protected,
+            trial,
+            profile,
+            minute_token(now) + 1,
+            rules,
+        )
+
+    partial_orders = [
+        row for row in exchange.market_calls if row["reduceOnly"]
+    ]
+    assert len(partial_orders) == 1
+    assert trader.state["pending_orders"]
+
+    restored = CombinedBreakoutV8GridV6LiveTrader(config, exchange)
+    restored._process_pending_breakout_partial_orders()
+
+    assert len(
+        [row for row in exchange.market_calls if row["reduceOnly"]]
+    ) == 1
+    assert restored.state["pending_orders"] == {}
+    model, _ = _v7_position_from_dict(
+        restored.state["breakout_position"]
+    )
+    assert model.position.quantity == pytest.approx(remaining)
+    assert restored.state["breakout_exchange"]["quantity"] == (
+        pytest.approx(remaining)
+    )
+    assert exchange.position_amounts["BTCUSDT"] == pytest.approx(
+        remaining
+    )
+    protection_quantities = [
+        float(row["quantity"])
+        for row in exchange.open_algo_orders("BTCUSDT")
+    ]
+    assert protection_quantities
+    assert all(
+        quantity == pytest.approx(remaining)
+        for quantity in protection_quantities
+    )
 
 
 def test_partial_exit_keeps_ledger_and_protection_and_halts(

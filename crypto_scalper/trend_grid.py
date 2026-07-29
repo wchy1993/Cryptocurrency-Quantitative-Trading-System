@@ -53,6 +53,9 @@ class TrendGridConfig:
     campaign_take_profit_r: float = 0.0
     profit_lock_activation_r: float = 0.0
     profit_giveback_r: float = 0.0
+    cycle_profit_floor_min_take_profits: int = 0
+    cycle_profit_floor_activation_r: float = 0.0
+    cycle_profit_floor_r: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -87,8 +90,29 @@ class TrendGridConfig:
             self.campaign_take_profit_r,
             self.profit_lock_activation_r,
             self.profit_giveback_r,
+            self.cycle_profit_floor_activation_r,
+            self.cycle_profit_floor_r,
         ) < 0.0:
             raise ValueError("campaign R controls cannot be negative")
+        if self.cycle_profit_floor_min_take_profits < 0:
+            raise ValueError(
+                "cycle profit-floor take-profit count cannot be negative"
+            )
+        cycle_floor_enabled = (
+            self.cycle_profit_floor_min_take_profits > 0
+            or self.cycle_profit_floor_activation_r > 0.0
+            or self.cycle_profit_floor_r > 0.0
+        )
+        if cycle_floor_enabled and not (
+            self.cycle_profit_floor_min_take_profits > 0
+            and self.cycle_profit_floor_activation_r > 0.0
+            and self.cycle_profit_floor_r
+            < self.cycle_profit_floor_activation_r
+        ):
+            raise ValueError(
+                "cycle profit floor requires a take-profit count and "
+                "a floor below its positive activation R"
+            )
 
 
 @dataclass(frozen=True)

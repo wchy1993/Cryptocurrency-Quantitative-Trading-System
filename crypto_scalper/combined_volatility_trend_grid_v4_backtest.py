@@ -44,6 +44,7 @@ from .volatility_breakout_optimize import (
     minute_datetime,
     minute_token,
 )
+from .volatility_breakout_v6_engine import BreakoutV6ExecutionProfile
 
 
 COMBINED_V4_STRATEGY_NAME = (
@@ -131,6 +132,9 @@ def simulate_combined_v4_portfolio(
     breakout_portfolio_selector: Callable[
         [Candidate, int, float], PortfolioSearchConfig
     ] | None = None,
+    breakout_profile_selector: Callable[
+        [Candidate, int, float], BreakoutV6ExecutionProfile | None
+    ] | None = None,
 ) -> dict[str, Any]:
     """Shared max-position simulation with a v4 protected Breakout sleeve.
 
@@ -148,6 +152,7 @@ def simulate_combined_v4_portfolio(
     symbol_set = frozenset(symbols)
     cash = float(initial_equity)
     breakout_positions: dict[str, ProtectedPosition] = {}
+    breakout_profiles: dict[str, BreakoutV6ExecutionProfile] = {}
     grid_campaigns: dict[str, GridCampaign] = {}
     trades: list[dict[str, Any]] = []
     breakout_cooldown_until: dict[str, int] = {}
@@ -204,13 +209,22 @@ def simulate_combined_v4_portfolio(
             index = series.index_at(minute)
             if index is None:
                 continue
+            profile = breakout_profiles.get(symbol)
+            position_signal = (
+                profile.signal if profile is not None else breakout_signal_config
+            )
+            position_exit = (
+                profile.exit_protection
+                if profile is not None
+                else breakout_exit_config
+            )
             trade, cash_delta = _process_protected_bar(
                 protected,
                 minute,
                 series,
                 index,
-                breakout_signal_config,
-                breakout_exit_config,
+                position_signal,
+                position_exit,
                 execution,
                 rules[symbol],
             )
@@ -219,6 +233,7 @@ def simulate_combined_v4_portfolio(
                 continue
             trades.append(_tag_trade(trade, BREAKOUT_KEY))
             breakout_positions.pop(symbol, None)
+            breakout_profiles.pop(symbol, None)
             breakout_cooldown_until[symbol] = (
                 minute + breakout_portfolio_config.symbol_cooldown_minutes
             )
@@ -304,11 +319,38 @@ def simulate_combined_v4_portfolio(
                         if available_multiple <= 0.0:
                             rejected[BREAKOUT_KEY]["global_notional_limit"] += 1
                             continue
-                        selected_breakout_portfolio = (
-                            breakout_portfolio_selector(candidate, minute, entry_equity)
-                            if breakout_portfolio_selector is not None
-                            else breakout_portfolio_config
+                        selected_profile = (
+                            breakout_profile_selector(
+                                candidate, minute, entry_equity
+                            )
+                            if breakout_profile_selector is not None
+                            else None
                         )
+                        if (
+                            breakout_profile_selector is not None
+                            and selected_profile is None
+                        ):
+                            rejected[BREAKOUT_KEY]["profile_rejected"] += 1
+                            continue
+                        if selected_profile is not None:
+                            selected_profile.validate()
+                            selected_breakout_portfolio = (
+                                selected_profile.portfolio
+                            )
+                            selected_breakout_signal = selected_profile.signal
+                            selected_breakout_exit = (
+                                selected_profile.exit_protection
+                            )
+                        else:
+                            selected_breakout_portfolio = (
+                                breakout_portfolio_selector(
+                                    candidate, minute, entry_equity
+                                )
+                                if breakout_portfolio_selector is not None
+                                else breakout_portfolio_config
+                            )
+                            selected_breakout_signal = breakout_signal_config
+                            selected_breakout_exit = breakout_exit_config
                         entry_portfolio = replace(
                             selected_breakout_portfolio,
                             max_notional_multiple=min(
@@ -320,7 +362,7 @@ def simulate_combined_v4_portfolio(
                             candidate,
                             execution_data[symbol],
                             rules[symbol],
-                            breakout_signal_config,
+                            selected_breakout_signal,
                             entry_portfolio,
                             execution,
                             entry_equity
@@ -332,9 +374,11 @@ def simulate_combined_v4_portfolio(
                             continue
                         position, entry_fee = opened
                         protected = _protected_position(
-                            position, breakout_exit_config, execution
+                            position, selected_breakout_exit, execution
                         )
                         breakout_positions[symbol] = protected
+                        if selected_profile is not None:
+                            breakout_profiles[symbol] = selected_profile
                         cash -= entry_fee
                         breakout_daily_entries[day_key] += 1
                         observe_entry_exposure(entry_equity)
@@ -346,8 +390,8 @@ def simulate_combined_v4_portfolio(
                                 minute,
                                 execution_data[symbol],
                                 index,
-                                breakout_signal_config,
-                                breakout_exit_config,
+                                selected_breakout_signal,
+                                selected_breakout_exit,
                                 execution,
                                 rules[symbol],
                             )
@@ -355,6 +399,7 @@ def simulate_combined_v4_portfolio(
                             if trade is not None:
                                 trades.append(_tag_trade(trade, BREAKOUT_KEY))
                                 breakout_positions.pop(symbol, None)
+                                breakout_profiles.pop(symbol, None)
                                 breakout_cooldown_until[symbol] = (
                                     minute
                                     + breakout_portfolio_config.symbol_cooldown_minutes
@@ -549,6 +594,9 @@ def simulate_combined_v4_portfolio(
         {
             "strategy": COMBINED_V4_STRATEGY_NAME,
             "breakout_exit_protection_config": asdict(breakout_exit_config),
+            "breakout_profile_selector_enabled": (
+                breakout_profile_selector is not None
+            ),
             "breakout_partial_exit_count": sum(
                 int(trade.get("partial_exit_count", 0))
                 for trade in trades

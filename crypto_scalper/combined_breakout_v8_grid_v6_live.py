@@ -59,6 +59,7 @@ from .trend_grid_optimize import (
     GridCandidate,
     GridLot,
     GridPortfolioConfig,
+    _campaign_unrealized,
     _create_campaign,
 )
 from .trend_grid_v3_optimize import GridMarketOverlay
@@ -279,6 +280,26 @@ class CombinedBreakoutV8GridV6LiveTrader(
     so constructing this class never authorizes an order.
     """
 
+    live_version = BREAKOUT_V8_GRID_V6_LIVE_VERSION
+    transport_version = BREAKOUT_V8_GRID_V6_TRANSPORT_VERSION
+    required_live_confirmation_text = (
+        "CONFIRM_BREAKOUT_V8_GRID_V6_LIVE"
+    )
+    live_reason_token = LIVE_REASON_TOKEN
+
+    def _source_bundle_for_live_config(
+        self, config: LiveAppConfig
+    ) -> dict[str, Any]:
+        return _load_v8_v6_source_bundle(_planner_config(config))
+
+    def _live_config_hash_for_config(
+        self, config: LiveAppConfig
+    ) -> str:
+        return combined_v8_grid_v6_live_config_hash(config)
+
+    def _expected_transport_code_hashes(self) -> dict[str, str]:
+        return _transport_code_hashes()
+
     def __init__(
         self,
         config: LiveAppConfig,
@@ -299,9 +320,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
         self.execution = execution_config_from_live_config(
             config, cost_experiment="full_cost", mode="conservative"
         )
-        self.source_bundle = _load_v8_v6_source_bundle(
-            _planner_config(config)
-        )
+        self.source_bundle = self._source_bundle_for_live_config(config)
         combined = self.source_bundle["combined_payload"]
         breakout = self.source_bundle["breakout_payload"]
         grid = self.source_bundle["grid_payload"]
@@ -350,7 +369,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             **grid["campaign_policy"]
         )
 
-        self.config_hash = combined_v8_grid_v6_live_config_hash(config)
+        self.config_hash = self._live_config_hash_for_config(config)
         path_values = {
             "environment": self.config.exchange.environment.lower()
         }
@@ -396,7 +415,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
                 )
             state.setdefault(
                 "transport_version",
-                BREAKOUT_V8_GRID_V6_TRANSPORT_VERSION,
+                self.transport_version,
             )
             state.setdefault("rate_limit_cooldown_until", None)
             state.setdefault("last_stream_health", {})
@@ -409,7 +428,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             "config_hash": self.config_hash,
             "frozen_version": self.live.frozen_version,
             "transport_version": (
-                BREAKOUT_V8_GRID_V6_TRANSPORT_VERSION
+                self.transport_version
             ),
             "created_at": now,
             "started_at": now,
@@ -489,7 +508,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             )
         if (
             live.required_live_confirmation_text
-            != "CONFIRM_BREAKOUT_V8_GRID_V6_LIVE"
+            != self.required_live_confirmation_text
             or live.runtime_confirmation_text != "RUN_LIVE_NOW"
         ):
             raise RuntimeError("v8/v6 LIVE confirmation contract changed")
@@ -543,7 +562,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             )
         if (
             live.transport_version
-            != BREAKOUT_V8_GRID_V6_TRANSPORT_VERSION
+            != self.transport_version
             or not live.websocket_enabled
         ):
             raise RuntimeError(
@@ -614,11 +633,11 @@ class CombinedBreakoutV8GridV6LiveTrader(
             raise RuntimeError(
                 "combined v8/v6 source hash differs from the LIVE pin"
             )
-        if live.strategy_name != COMBINED_V8_GRID_V6_NAME:
+        if live.strategy_name != self.combined_strategy_name:
             raise RuntimeError("v8/v6 LIVE strategy name changed")
-        if live.frozen_version != BREAKOUT_V8_GRID_V6_LIVE_VERSION:
+        if live.frozen_version != self.live_version:
             raise RuntimeError("v8/v6 LIVE version changed")
-        if combined.get("strategy_name") != COMBINED_V8_GRID_V6_NAME:
+        if combined.get("strategy_name") != self.combined_strategy_name:
             raise RuntimeError("combined source strategy changed")
         if combined.get("status") != "gui_dry_run_frozen":
             raise RuntimeError("combined v8/v6 source is not frozen")
@@ -626,13 +645,13 @@ class CombinedBreakoutV8GridV6LiveTrader(
             raise RuntimeError("combined v8/v6 source equity changed")
         if tuple(combined.get("symbols", ())) != symbols:
             raise RuntimeError("combined source universe changed")
-        if breakout.get("strategy_name") != VOLATILITY_BREAKOUT_V8_NAME:
+        if breakout.get("strategy_name") != self.breakout_strategy_name:
             raise RuntimeError("Breakout v8 source changed")
         if not str(
             breakout.get("selection_status", "")
         ).startswith("strict_robust_improvement"):
             raise RuntimeError("Breakout v8 source is not the frozen winner")
-        if grid.get("strategy_name") != TREND_GRID_V6_NAME:
+        if grid.get("strategy_name") != self.grid_strategy_name:
             raise RuntimeError("Grid v6 source changed")
         if not str(grid.get("selection_status", "")).startswith(
             "strict_robust_improvement"
@@ -645,9 +664,9 @@ class CombinedBreakoutV8GridV6LiveTrader(
             raise RuntimeError("combined source portfolio contract changed")
         if (
             self.breakout_shadow.strategy_name
-            != VOLATILITY_BREAKOUT_V8_NAME
+            != self.breakout_strategy_name
             or self.breakout_shadow.frozen_version
-            != BREAKOUT_V8_COMPONENT_VERSION
+            != self.breakout_component_version
         ):
             raise RuntimeError("Breakout v8 display/source envelope changed")
 
@@ -721,7 +740,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             )
         if (
             report.get("transport_version")
-            != BREAKOUT_V8_GRID_V6_TRANSPORT_VERSION
+            != self.transport_version
             or report.get("live_config_hash") != self.config_hash
             or report.get("strategy_source_hashes")
             != self.source_bundle["hashes"]
@@ -729,7 +748,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             raise RuntimeError(
                 "v8/v6 LIVE transport acceptance belongs to another build"
             )
-        expected_hashes = _transport_code_hashes()
+        expected_hashes = self._expected_transport_code_hashes()
         if report.get("transport_code_hashes") != expected_hashes:
             raise RuntimeError(
                 "v8/v6 LIVE transport code changed after acceptance"
@@ -907,10 +926,16 @@ class CombinedBreakoutV8GridV6LiveTrader(
     def _entry_reason_for_symbol(self, symbol: str) -> str:
         breakout = self.state.get("breakout_exchange") or {}
         if breakout.get("symbol") == symbol:
-            return f"{LIVE_REASON_TOKEN}|breakout_v8"
+            return (
+                f"{self.live_reason_token}|"
+                f"breakout_{self.breakout_profile_prefix}"
+            )
         grid = self.state.get("grid_exchange") or {}
         if grid.get("symbol") == symbol:
-            return f"{LIVE_REASON_TOKEN}|grid_v6"
+            return (
+                f"{self.live_reason_token}|"
+                f"grid_{self.grid_profile_prefix}"
+            )
         return ""
 
     def _opened_at_for_symbol(
@@ -2954,6 +2979,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             return False
         campaign, _initial_fee = opened
         first = campaign.levels[0]
+        prior_lot = campaign.lots[0]
         self._prepare_symbol_for_entry(signal.symbol)
         side = "BUY" if signal.direction == Direction.LONG else "SELL"
         client_id = self._client_id(
@@ -2996,14 +3022,20 @@ class CombinedBreakoutV8GridV6LiveTrader(
             )
             raise
         spacing = signal.atr_value * profile.signal.grid_spacing_atr
+        prior_entry_fee = prior_lot.entry_fee
+        prior_entry_slippage = prior_lot.entry_slippage
+        entry_fee = (
+            fill_price * quantity * self.execution.taker_fee_rate
+        )
+        entry_slippage = abs(fill_price - raw) * quantity
         first.quantity = quantity
         campaign.lots[0] = GridLot(
             level_index=0,
             quantity=quantity,
             raw_entry_price=raw,
             entry_price=fill_price,
-            entry_fee=0.0,
-            entry_slippage=abs(fill_price - raw) * quantity,
+            entry_fee=entry_fee,
+            entry_slippage=entry_slippage,
             entry_minute=live_candidate.entry_minute,
             target_price=(
                 fill_price
@@ -3012,6 +3044,10 @@ class CombinedBreakoutV8GridV6LiveTrader(
                 * profile.signal.grid_target_spacing
             ),
             liquidity="taker",
+        )
+        campaign.fee += entry_fee - prior_entry_fee
+        campaign.slippage += (
+            entry_slippage - prior_entry_slippage
         )
         campaign.entry_count = max(1, campaign.entry_count)
         self.state["grid_campaign"] = _grid_campaign_to_dict(campaign)
@@ -3113,6 +3149,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
             "cycle": generation,
             "quantity": lot.quantity,
             "handled_executed_quantity": 0.0,
+            "handled_quote_quantity": 0.0,
             "price": lot.target_price,
             "status": str(response.get("status", "NEW")).upper(),
             "order_id": response.get("orderId"),
@@ -3333,16 +3370,19 @@ class CombinedBreakoutV8GridV6LiveTrader(
             )
             raise
         spacing = signal.atr_value * profile.signal.grid_spacing_atr
+        entry_fee = (
+            fill_price * quantity * self.execution.taker_fee_rate
+        )
+        entry_slippage = (
+            abs(fill_price - _float(metadata["price"])) * quantity
+        )
         campaign.lots[level_index] = GridLot(
             level_index=level_index,
             quantity=quantity,
             raw_entry_price=_float(metadata["price"]),
             entry_price=fill_price,
-            entry_fee=0.0,
-            entry_slippage=abs(
-                fill_price - _float(metadata["price"])
-            )
-            * quantity,
+            entry_fee=entry_fee,
+            entry_slippage=entry_slippage,
             entry_minute=minute_token(_utc_now()),
             target_price=(
                 fill_price
@@ -3352,6 +3392,8 @@ class CombinedBreakoutV8GridV6LiveTrader(
             ),
             liquidity="taker",
         )
+        campaign.fee += entry_fee
+        campaign.slippage += entry_slippage
         campaign.entry_count += 1
         campaign.max_open_lots = max(
             campaign.max_open_lots, len(campaign.lots)
@@ -3412,6 +3454,7 @@ class CombinedBreakoutV8GridV6LiveTrader(
                 if protection.get(key)
             }
             self._process_pending_initial_orders()
+            self._process_pending_breakout_partial_orders()
             self._process_pending_grid_level_orders()
             self._process_grid_order_updates(standard)
             if account is None:
@@ -3515,6 +3558,147 @@ class CombinedBreakoutV8GridV6LiveTrader(
                 self._halt(
                     f"{symbol} initial market order remained NEW for "
                     f"{age:.1f}s"
+                )
+
+    def _finalize_breakout_partial_fill(
+        self,
+        client_id: str,
+        response: dict[str, Any] | None = None,
+    ) -> None:
+        pending = self.state["pending_orders"].get(client_id)
+        if not pending or pending.get("role") != "breakout_partial":
+            return
+        symbol = str(pending["symbol"])
+        if not pending.get("model_finalized"):
+            response = response or self._query_standard_safely(
+                symbol, client_id
+            )
+            if response is None:
+                raise RuntimeError(
+                    f"{symbol} breakout partial order is unresolved"
+                )
+            expected = _float(pending["submitted_quantity"])
+            response, filled, fill_price = self._confirm_market_fill(
+                symbol=symbol,
+                client_id=client_id,
+                response=response,
+                expected_quantity=expected,
+            )
+            protected, profile = _v7_position_from_dict(
+                dict(pending["model_after"])
+            )
+            modeled_reduction = (
+                _float(pending["quantity_before"])
+                - protected.position.quantity
+            )
+            tolerance = max(abs(expected) * 1e-9, 1e-12)
+            if abs(filled - modeled_reduction) > tolerance:
+                raise RuntimeError(
+                    f"{symbol} breakout partial fill differs from "
+                    "the frozen model reduction"
+                )
+            self.state["breakout_position"] = _v7_position_to_dict(
+                protected, profile
+            )
+            exchange = self.state.get("breakout_exchange") or {}
+            exchange["quantity"] = protected.position.quantity
+            self.state["breakout_exchange"] = exchange
+            pending["model_finalized"] = True
+            pending["exchange_status"] = str(
+                response.get("status", "FILLED")
+            ).upper()
+            pending["filled_quantity"] = filled
+            pending["fill_price"] = fill_price
+            self._persist_state()
+        protected, _profile = _v7_position_from_dict(
+            self.state["breakout_position"]
+        )
+        position = protected.position
+        self._ensure_protection(
+            strategy=BREAKOUT_KEY,
+            event_id=position.candidate.signal.event_id,
+            symbol=symbol,
+            direction=position.candidate.signal.direction,
+            quantity=position.quantity,
+            stop_price=position.stop_price,
+            take_profit_price=position.take_profit_price,
+            force_replace=True,
+        )
+        filled = _float(pending.get("filled_quantity"))
+        fill_price = _float(pending.get("fill_price"))
+        self.state["pending_orders"].pop(client_id, None)
+        self._append_event(
+            "breakout_partial_live_fill",
+            strategy=BREAKOUT_KEY,
+            event_id=position.candidate.signal.event_id,
+            symbol=symbol,
+            quantity=filled,
+            fill_price=fill_price,
+            remaining_quantity=position.quantity,
+            reduce_only=True,
+        )
+        self._persist_state()
+
+    def _process_pending_breakout_partial_orders(self) -> None:
+        now = _utc_now()
+        for client_id, pending in list(
+            self.state["pending_orders"].items()
+        ):
+            if pending.get("role") != "breakout_partial":
+                continue
+            if pending.get("model_finalized"):
+                self._finalize_breakout_partial_fill(client_id)
+                continue
+            symbol = str(pending["symbol"])
+            response = self._query_standard_safely(
+                symbol, client_id
+            )
+            created = _parse_time(str(pending.get("created_at", "")))
+            age = (
+                (now - created).total_seconds()
+                if created is not None
+                else float("inf")
+            )
+            if response is None:
+                if age >= self.live.pending_order_resolution_seconds:
+                    self._halt(
+                        f"{symbol} breakout partial order unresolved for "
+                        f"{age:.1f}s"
+                    )
+                continue
+            status = str(response.get("status", "")).upper()
+            pending["exchange_status"] = status
+            if status == "FILLED":
+                self._finalize_breakout_partial_fill(
+                    client_id, response
+                )
+            elif status in {
+                "CANCELED",
+                "CANCELLED",
+                "REJECTED",
+                "EXPIRED",
+                "EXPIRED_IN_MATCH",
+            }:
+                self.state["pending_orders"].pop(client_id, None)
+                self._append_event(
+                    "breakout_partial_not_filled",
+                    strategy=BREAKOUT_KEY,
+                    symbol=symbol,
+                    client_id=client_id,
+                    status=status,
+                )
+            elif status == "PARTIALLY_FILLED":
+                self._halt(
+                    f"{symbol} breakout partial market order was only "
+                    "partially filled; reconciliation required"
+                )
+            elif (
+                status == "NEW"
+                and age >= self.live.pending_order_resolution_seconds
+            ):
+                self._halt(
+                    f"{symbol} breakout partial market order remained "
+                    f"NEW for {age:.1f}s"
                 )
 
     def _process_pending_grid_level_orders(self) -> None:
@@ -4066,8 +4250,59 @@ class CombinedBreakoutV8GridV6LiveTrader(
             )
             delta = max(0.0, executed - handled)
             if lot is not None and delta > 0.0:
-                lot.quantity = max(0.0, lot.quantity - delta)
+                prior_quantity = lot.quantity
+                closed_quantity = min(delta, prior_quantity)
+                cumulative_quote = _float(
+                    order.get("cumQuote"),
+                    _float(order.get("avgPrice"))
+                    * executed,
+                )
+                handled_quote = _float(
+                    metadata.get("handled_quote_quantity")
+                )
+                delta_quote = max(
+                    0.0, cumulative_quote - handled_quote
+                )
+                fill_price = (
+                    delta_quote / closed_quantity
+                    if delta_quote > 0.0
+                    else _float(
+                        order.get("avgPrice"),
+                        _float(metadata.get("price")),
+                    )
+                )
+                entry_fee = (
+                    lot.entry_fee
+                    * closed_quantity
+                    / max(prior_quantity, 1e-12)
+                )
+                exit_fee = (
+                    fill_price
+                    * closed_quantity
+                    * self.execution.maker_fee_rate
+                )
+                direction = campaign.candidate.signal.direction
+                execution_gross = (
+                    direction.value
+                    * closed_quantity
+                    * (fill_price - lot.entry_price)
+                )
+                raw_gross = (
+                    direction.value
+                    * closed_quantity
+                    * (fill_price - lot.raw_entry_price)
+                )
+                campaign.raw_gross_pnl += raw_gross
+                campaign.fee += exit_fee
+                campaign.net_pnl += (
+                    execution_gross - entry_fee - exit_fee
+                )
+                lot.entry_fee = max(0.0, lot.entry_fee - entry_fee)
+                lot.quantity = max(
+                    0.0, prior_quantity - closed_quantity
+                )
                 metadata["handled_executed_quantity"] = executed
+                metadata["handled_quote_quantity"] = cumulative_quote
                 changed = True
             rules = self.client.symbol_rules(symbol)
             tolerance = max(
@@ -4153,6 +4388,71 @@ class CombinedBreakoutV8GridV6LiveTrader(
     # ------------------------------------------------------------------
     # Position management
     # ------------------------------------------------------------------
+    def _submit_breakout_partial(
+        self,
+        protected: Any,
+        trial: Any,
+        profile: Any,
+        minute: int,
+        rules: SymbolRules,
+    ) -> None:
+        position = protected.position
+        symbol = position.candidate.signal.symbol
+        reduction = (
+            position.quantity - trial.position.quantity
+        )
+        submitted = _round_reduce_only_quantity(rules, reduction)
+        submitted_quantity = _float(submitted)
+        if submitted_quantity <= 0.0:
+            raise RuntimeError(
+                f"{symbol} modeled breakout partial rounded to zero"
+            )
+        client_id = self._client_id(
+            BREAKOUT_KEY,
+            position.candidate.signal.event_id,
+            "part",
+            len(trial.realized_legs),
+        )
+        pending = {
+            "strategy": BREAKOUT_KEY,
+            "role": "breakout_partial",
+            "event_id": position.candidate.signal.event_id,
+            "symbol": symbol,
+            "direction": position.candidate.signal.direction.name,
+            "client_id": client_id,
+            "created_at": _utc_now().isoformat(),
+            "model_minute": minute,
+            "quantity_before": position.quantity,
+            "submitted_quantity": submitted,
+            "model_after": _v7_position_to_dict(trial, profile),
+            "model_finalized": False,
+        }
+        self.state["pending_orders"][client_id] = pending
+        self._persist_state()
+        side = (
+            "SELL"
+            if position.candidate.signal.direction == Direction.LONG
+            else "BUY"
+        )
+        try:
+            response = self._market_order_idempotent(
+                symbol=symbol,
+                side=side,
+                quantity=submitted,
+                reduce_only=True,
+                client_id=client_id,
+            )
+            self._finalize_breakout_partial_fill(
+                client_id, response
+            )
+        except Exception as exc:
+            self._halt(
+                f"{symbol} breakout partial exit is unresolved: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self._persist_state()
+            raise
+
     def _manage_breakout_position(self, now: datetime) -> None:
         payload = self.state.get("breakout_position")
         if not payload:
@@ -4205,13 +4505,27 @@ class CombinedBreakoutV8GridV6LiveTrader(
                     str(trade.get("exit_reason", "model_exit")),
                 )
                 return
+            quantity_changed = not math.isclose(
+                trial.position.quantity,
+                protected.position.quantity,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            )
             stop_changed = not math.isclose(
                 trial.position.stop_price,
                 protected.position.stop_price,
                 rel_tol=1e-12,
             )
+            if quantity_changed:
+                self._submit_breakout_partial(
+                    protected,
+                    trial,
+                    profile,
+                    minute,
+                    rules,
+                )
             protected = trial
-            if stop_changed:
+            if stop_changed and not quantity_changed:
                 self._ensure_protection(
                     strategy=BREAKOUT_KEY,
                     event_id=position.candidate.signal.event_id,
@@ -4242,7 +4556,15 @@ class CombinedBreakoutV8GridV6LiveTrader(
         position = account.positions.get(symbol)
         if position is None:
             return
-        current_pnl = position.unrealized_pnl
+        try:
+            current_pnl = _campaign_unrealized(
+                campaign,
+                position.mark_price,
+                self.execution,
+                self.client.symbol_rules(symbol),
+            )
+        except Exception:
+            current_pnl = campaign.net_pnl + position.unrealized_pnl
         campaign.best_equity_pnl = max(
             campaign.best_equity_pnl, current_pnl
         )
@@ -4257,6 +4579,49 @@ class CombinedBreakoutV8GridV6LiveTrader(
             * profile.signal.campaign_loss_limit_r
         ):
             reason = "campaign_loss_limit"
+        elif (
+            profile.signal.campaign_take_profit_r > 0.0
+            and current_pnl
+            >= (
+                campaign.risk_budget
+                * profile.signal.campaign_take_profit_r
+            )
+        ):
+            reason = "campaign_take_profit"
+        elif (
+            profile.signal.profit_lock_activation_r > 0.0
+            and profile.signal.profit_giveback_r > 0.0
+            and campaign.best_equity_pnl
+            >= (
+                campaign.risk_budget
+                * profile.signal.profit_lock_activation_r
+            )
+            and current_pnl
+            <= (
+                campaign.best_equity_pnl
+                - campaign.risk_budget
+                * profile.signal.profit_giveback_r
+            )
+        ):
+            reason = "profit_giveback"
+        elif (
+            profile.signal.cycle_profit_floor_min_take_profits > 0
+            and campaign.grid_take_profit_count
+            >= (
+                profile.signal.cycle_profit_floor_min_take_profits
+            )
+            and campaign.best_equity_pnl
+            >= (
+                campaign.risk_budget
+                * profile.signal.cycle_profit_floor_activation_r
+            )
+            and current_pnl
+            <= (
+                campaign.risk_budget
+                * profile.signal.cycle_profit_floor_r
+            )
+        ):
+            reason = "cycle_profit_floor"
         elif (
             minute_token(now) - campaign.start_minute
             >= profile.signal.max_campaign_minutes

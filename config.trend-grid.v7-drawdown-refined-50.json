@@ -1,0 +1,401 @@
+{
+  "strategy_name": "dynamic_trend_following_grid_v7_cycle_profit_floor",
+  "status": "independent_research_candidate_not_live",
+  "selection_status": "strict_robust_improvement_over_grid_v6",
+  "entry_gate": {
+    "min_quality_score": -999.0,
+    "max_quality_score": 999.0,
+    "min_alignment_atr": -999.0,
+    "max_alignment_atr": 999.0,
+    "min_extension_atr": -999.0,
+    "max_extension_atr": 999.0,
+    "min_volume_ratio": 0.0,
+    "max_volume_ratio": 999.0,
+    "min_directional_fast_slope_atr": -999.0,
+    "max_directional_fast_slope_atr": 999.0,
+    "min_directional_slow_slope_atr": -999.0,
+    "max_directional_slow_slope_atr": 999.0,
+    "min_market_efficiency_12h": 0.0,
+    "min_directional_breadth": 0.0,
+    "max_directional_breadth": 1.0,
+    "min_regime_score": -999.0,
+    "max_regime_score": 0.5,
+    "require_market_context": true
+  },
+  "market_overlay": {
+    "min_directional_btc_return_4h": -0.01,
+    "max_directional_btc_return_4h": 0.01,
+    "min_directional_eth_return_4h": -999.0,
+    "max_directional_eth_return_4h": 0.015,
+    "min_directional_breadth": 0.25,
+    "max_directional_breadth": 0.7,
+    "min_directional_breadth_change_4h": -999.0,
+    "min_directional_symbol_return_4h": -0.015,
+    "max_directional_symbol_return_4h": 0.08,
+    "min_directional_symbol_efficiency_12h": -0.05,
+    "min_market_efficiency_12h": 0.16,
+    "min_directional_symbol_ema55_atr": -0.5,
+    "max_directional_symbol_ema55_atr": 2.0,
+    "min_regime_score": -999.0,
+    "max_regime_score": 1.0,
+    "max_signals_per_symbol_day": 6,
+    "ranking_mode": "extension_asc"
+  },
+  "signal": {
+    "timeframe_minutes": 60,
+    "atr_period": 14,
+    "fast_ema_period": 21,
+    "slow_ema_period": 55,
+    "slope_lookback": 3,
+    "min_fast_slope_atr": 0.0,
+    "min_slow_slope_atr": 0.05,
+    "min_alignment_atr": 0.3,
+    "max_alignment_atr": 4.0,
+    "min_atr_pct": 0.001,
+    "max_atr_pct": 0.08,
+    "max_entry_extension_atr": 0.65,
+    "entry_mode": "pullback_touch",
+    "pullback_touch_atr": 0.3,
+    "min_directional_close_position": 0.58,
+    "min_volume_ratio": 0.7,
+    "max_volume_ratio": 2.0,
+    "reentry_interval_bars": 12,
+    "max_signals_per_symbol_day": 2,
+    "allow_long": false,
+    "allow_short": true,
+    "grid_spacing_atr": 0.6,
+    "grid_levels": 2,
+    "grid_target_spacing": 1.85,
+    "deeper_level_size_multiplier": 1.0,
+    "initial_entry_enabled": true,
+    "hard_stop_atr_multiple": 3.0,
+    "hard_stop_slow_ema_buffer_atr": 0.35,
+    "regime_exit_mode": "ema_cross",
+    "regime_exit_confirm_bars": 2,
+    "max_campaign_minutes": 4320,
+    "max_cycles_per_level": 2,
+    "max_total_entries": 3,
+    "pause_new_fills_on_fast_breach": false,
+    "campaign_loss_limit_r": 0.7,
+    "campaign_take_profit_r": 0.0,
+    "profit_lock_activation_r": 0.0,
+    "profit_giveback_r": 0.0,
+    "cycle_profit_floor_min_take_profits": 0,
+    "cycle_profit_floor_activation_r": 0.0,
+    "cycle_profit_floor_r": 0.0
+  },
+  "portfolio": {
+    "risk_per_campaign_pct": 0.1,
+    "max_campaign_risk_pct": 0.1,
+    "max_open_campaigns": 1,
+    "max_daily_campaigns": 12,
+    "symbol_cooldown_minutes": 480,
+    "max_notional_multiple": 5.0,
+    "hard_drawdown_stop_pct": 0.7,
+    "compound": true,
+    "long_risk_multiplier": 1.2,
+    "short_risk_multiplier": 1.2
+  },
+  "confidence_policy": {
+    "min_quality_score": 0.45,
+    "min_alignment_atr": 0.52,
+    "min_extension_atr": 0.2,
+    "max_extension_atr": 0.45,
+    "max_volume_ratio": 1.1,
+    "max_regime_score": 0.3,
+    "strong_score": 6,
+    "weak_score": 2,
+    "strong_risk_multiplier": 1.12,
+    "standard_risk_multiplier": 0.92,
+    "weak_risk_multiplier": 0.35,
+    "strong_target_spacing": 1.85,
+    "standard_target_spacing": 1.85,
+    "weak_target_spacing": 1.85,
+    "strong_loss_limit_r": 0.7,
+    "standard_loss_limit_r": 0.7,
+    "weak_loss_limit_r": 0.7,
+    "strong_max_campaign_minutes": 4320,
+    "standard_max_campaign_minutes": 4320,
+    "weak_max_campaign_minutes": 4320,
+    "maximum_campaign_risk_pct": 0.11,
+    "reject_weak_tier": true
+  },
+  "campaign_policy": {
+    "minimum_score": 0,
+    "minimum_actual_extension_atr": 0.05,
+    "maximum_actual_extension_atr": 999.0,
+    "maximum_actual_volume_ratio": 999.0,
+    "score_0_risk_factor": 1.0,
+    "score_1_risk_factor": 1.0,
+    "score_2_risk_factor": 1.0,
+    "score_3_risk_factor": 1.0,
+    "score_4_risk_factor": 1.0,
+    "score_5_risk_factor": 1.0,
+    "score_6_risk_factor": 1.0,
+    "maximum_campaign_risk_pct": 0.1095,
+    "maximum_notional_multiple": 5.0,
+    "target_spacing": 1.85,
+    "campaign_loss_limit_r": 0.7,
+    "max_campaign_minutes": 4320,
+    "campaign_take_profit_r": 0.0,
+    "profit_lock_activation_r": 0.0,
+    "profit_giveback_r": 0.0,
+    "cycle_profit_floor_min_take_profits": 2,
+    "cycle_profit_floor_activation_r": 0.2,
+    "cycle_profit_floor_r": 0.03
+  },
+  "results": {
+    "six_month": {
+      "candidate_count": 231,
+      "trade_count": 39,
+      "grid_entry_count": 105,
+      "grid_take_profit_count": 99,
+      "initial_equity": 200.0,
+      "final_equity": 670.6857740123085,
+      "net_profit": 470.68577401230846,
+      "return_pct": 2.3534288700615424,
+      "win_rate": 0.9743589743589743,
+      "profit_factor": 10999.395811630662,
+      "expectancy_usdt": 12.068866000315602,
+      "expectancy_r": 0.302110027211098,
+      "average_win": 12.387593943928268,
+      "average_loss": -0.04279585696620991,
+      "average_win_loss_ratio": 289.45778451659635,
+      "max_drawdown_pct": 0.0754368075971608,
+      "max_drawdown_duration_minutes": 14770,
+      "fee": 26.116671972900004,
+      "slippage": 8.68631749999987,
+      "funding": -1.7105170147920903,
+      "full_cost": 36.51350648769196,
+      "cost_to_raw_gross_profit_ratio": 0.07034528946331356,
+      "top5_profit_contribution": 0.2801493880063635,
+      "positive_months": 7,
+      "negative_months": 0,
+      "hard_drawdown_stopped": false,
+      "by_month": {
+        "2026-01": {
+          "trade_count": 4,
+          "net_pnl": 21.168762214321095,
+          "gross_profit": 21.168762214321095,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "2026-02": {
+          "trade_count": 3,
+          "net_pnl": 31.85952362594078,
+          "gross_profit": 31.85952362594078,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "2026-03": {
+          "trade_count": 6,
+          "net_pnl": 40.770656271151594,
+          "gross_profit": 40.8134521281178,
+          "gross_loss": 0.04279585696620991,
+          "win_rate": 0.8333333333333334,
+          "profit_factor": 953.6776459539683
+        },
+        "2026-04": {
+          "trade_count": 6,
+          "net_pnl": 61.47470078165982,
+          "gross_profit": 61.47470078165982,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "2026-05": {
+          "trade_count": 10,
+          "net_pnl": 96.79980965119593,
+          "gross_profit": 96.79980965119593,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "2026-06": {
+          "trade_count": 5,
+          "net_pnl": 92.52126638547111,
+          "gross_profit": 92.52126638547111,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "2026-07": {
+          "trade_count": 5,
+          "net_pnl": 126.09105508256765,
+          "gross_profit": 126.09105508256765,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 39,
+          "net_pnl": 470.685774012308,
+          "gross_profit": 470.7285698692742,
+          "gross_loss": 0.04279585696620991,
+          "win_rate": 0.9743589743589743,
+          "profit_factor": 10999.395811630662
+        }
+      },
+      "by_exit_reason": {
+        "ema_regime_exit": {
+          "trade_count": 4,
+          "net_pnl": 65.69522589722487,
+          "gross_profit": 65.69522589722487,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "cycle_profit_floor": {
+          "trade_count": 6,
+          "net_pnl": 3.1149610296879775,
+          "gross_profit": 3.1577568866541874,
+          "gross_loss": 0.04279585696620991,
+          "win_rate": 0.8333333333333334,
+          "profit_factor": 73.78650903398056
+        },
+        "campaign_time_stop": {
+          "trade_count": 22,
+          "net_pnl": 271.9576247362153,
+          "gross_profit": 271.9576247362153,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "hard_stop": {
+          "trade_count": 6,
+          "net_pnl": 101.61672074417982,
+          "gross_profit": 101.61672074417982,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "end_of_backtest": {
+          "trade_count": 1,
+          "net_pnl": 28.301241605000044,
+          "gross_profit": 28.301241605000044,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      }
+    },
+    "three_month": {
+      "candidate_count": 136,
+      "trade_count": 22,
+      "grid_entry_count": 58,
+      "grid_take_profit_count": 56,
+      "initial_equity": 200.0,
+      "final_equity": 410.38946900237886,
+      "net_profit": 210.38946900237886,
+      "return_pct": 1.0519473450118944,
+      "win_rate": 1.0,
+      "profit_factor": null,
+      "expectancy_usdt": 9.563157681926311,
+      "expectancy_r": 0.3172615526722895,
+      "average_win": 9.563157681926308,
+      "average_loss": 0.0,
+      "average_win_loss_ratio": 0.0,
+      "max_drawdown_pct": 0.05810601651469391,
+      "max_drawdown_duration_minutes": 7042,
+      "fee": 11.080779084000003,
+      "slippage": 3.778134999999898,
+      "funding": -0.7217419136213001,
+      "full_cost": 15.5806559976212,
+      "cost_to_raw_gross_profit_ratio": 0.06744558009626427,
+      "top5_profit_contribution": 0.3835089039153831,
+      "positive_months": 4,
+      "negative_months": 0,
+      "hard_drawdown_stopped": false,
+      "by_month": {
+        "2026-04": {
+          "trade_count": 2,
+          "net_pnl": 17.407161392854107,
+          "gross_profit": 17.407161392854107,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "2026-05": {
+          "trade_count": 10,
+          "net_pnl": 59.219096874149955,
+          "gross_profit": 59.219096874149955,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "2026-06": {
+          "trade_count": 5,
+          "net_pnl": 56.60878034706337,
+          "gross_profit": 56.60878034706337,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "2026-07": {
+          "trade_count": 5,
+          "net_pnl": 77.15443038831134,
+          "gross_profit": 77.15443038831134,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      },
+      "by_side": {
+        "SHORT": {
+          "trade_count": 22,
+          "net_pnl": 210.3894690023788,
+          "gross_profit": 210.3894690023788,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      },
+      "by_exit_reason": {
+        "hard_stop": {
+          "trade_count": 5,
+          "net_pnl": 60.09404328845486,
+          "gross_profit": 60.09404328845486,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "campaign_time_stop": {
+          "trade_count": 12,
+          "net_pnl": 105.06495281426386,
+          "gross_profit": 105.06495281426386,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "ema_regime_exit": {
+          "trade_count": 2,
+          "net_pnl": 26.944918728159962,
+          "gross_profit": 26.944918728159962,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "cycle_profit_floor": {
+          "trade_count": 2,
+          "net_pnl": 0.9680923675000663,
+          "gross_profit": 0.9680923675000663,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "end_of_backtest": {
+          "trade_count": 1,
+          "net_pnl": 17.317461804000033,
+          "gross_profit": 17.317461804000033,
+          "gross_loss": 0.0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        }
+      }
+    }
+  }
+}

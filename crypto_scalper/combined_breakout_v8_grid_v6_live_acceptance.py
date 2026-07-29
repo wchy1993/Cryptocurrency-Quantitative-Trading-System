@@ -116,6 +116,14 @@ def run_mainnet_dry_run_stress(
     duration_seconds: float = 45.0,
     stress_cycles: int = 200,
     require_user_stream: bool = True,
+    shadow_trader_class: type = (
+        CombinedBreakoutV8GridV6ShadowTrader
+    ),
+    live_trader_class: type = CombinedBreakoutV8GridV6LiveTrader,
+    live_config_hash_fn: Any = combined_v8_grid_v6_live_config_hash,
+    transport_code_hashes_fn: Any = _transport_code_hashes,
+    transport_version: str = BREAKOUT_V8_GRID_V6_TRANSPORT_VERSION,
+    temporary_prefix: str = "b8g6-live-transport-acceptance-",
 ) -> dict[str, Any]:
     """Exercise the frozen strategy through WebSocket-backed mainnet data.
 
@@ -175,7 +183,7 @@ def run_mainnet_dry_run_stress(
                 f"WebSocket streams not ready: {streams.health()}"
             )
         with tempfile.TemporaryDirectory(
-            prefix="b8g6-live-transport-acceptance-"
+            prefix=temporary_prefix
         ) as temporary:
             root = Path(temporary)
             combined_shadow = replace(
@@ -188,7 +196,7 @@ def run_mainnet_dry_run_stress(
                 dry,
                 combined_volatility_trend_grid_shadow=combined_shadow,
             )
-            trader = CombinedBreakoutV8GridV6ShadowTrader(
+            trader = shadow_trader_class(
                 test_config, client
             )
             trader.validate_startup()
@@ -238,7 +246,7 @@ def run_mainnet_dry_run_stress(
                 live_config,
                 combined_breakout_v8_grid_v6_live=acceptance_live,
             )
-            live_probe = CombinedBreakoutV8GridV6LiveTrader(
+            live_probe = live_trader_class(
                 live_probe_config, client
             )
             live_probe.stream_cache = streams
@@ -289,7 +297,7 @@ def run_mainnet_dry_run_stress(
         else {}
     )
     expected_strategy_hashes = (
-        CombinedBreakoutV8GridV6LiveTrader(
+        live_trader_class(
             live_config, client
         ).source_bundle["hashes"]
     )
@@ -348,7 +356,7 @@ def run_mainnet_dry_run_stress(
     report = {
         "schema_version": 2,
         "transport_version": (
-            BREAKOUT_V8_GRID_V6_TRANSPORT_VERSION
+            transport_version
         ),
         "started_at": started_at.isoformat(),
         "completed_at": completed_at.isoformat(),
@@ -367,10 +375,10 @@ def run_mainnet_dry_run_stress(
         "criteria": criteria,
         "cycles": cycles,
         "live_config_hash": (
-            combined_v8_grid_v6_live_config_hash(live_config)
+            live_config_hash_fn(live_config)
         ),
         "strategy_source_hashes": expected_strategy_hashes,
-        "transport_code_hashes": _transport_code_hashes(),
+        "transport_code_hashes": transport_code_hashes_fn(),
         "stream_health": stream_health,
         "cache_replay": cache_replay,
         "reconciliation_probe": reconciliation_probe,

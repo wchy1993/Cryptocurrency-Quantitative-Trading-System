@@ -76,6 +76,20 @@ class ManagedLaneProfile:
     core_breakeven_trigger_r: float = 3.5
     core_profit_giveback_activation_r: float = 0.0
     core_profit_giveback_r: float = 0.0
+    core_profit_floor_1_activation_r: float = 0.0
+    core_profit_floor_1_lock_r: float = 0.0
+    core_profit_floor_2_activation_r: float = 0.0
+    core_profit_floor_2_lock_r: float = 0.0
+    core_profit_floor_3_activation_r: float = 0.0
+    core_profit_floor_3_lock_r: float = 0.0
+    core_profit_capture_min_score: int = 0
+    core_profit_capture_max_score: int = 5
+    core_profit_capture_long: bool = True
+    core_profit_capture_short: bool = True
+    core_long_profit_floor_activation_r: float = 0.0
+    core_long_profit_floor_lock_r: float = 0.0
+    core_long_profit_floor_min_score: int = 0
+    core_long_profit_floor_max_score: int = 5
     core_partial_r: float = 4.0
     core_partial_fraction: float = 0.10
     core_move_breakeven_after_partial: bool = True
@@ -691,6 +705,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 profile.core_profit_giveback_activation_r
             ),
             profit_giveback_r=profile.core_profit_giveback_r,
+            profit_floor_1_activation_r=(
+                profile.core_profit_floor_1_activation_r
+            ),
+            profit_floor_1_lock_r=profile.core_profit_floor_1_lock_r,
+            profit_floor_2_activation_r=(
+                profile.core_profit_floor_2_activation_r
+            ),
+            profit_floor_2_lock_r=profile.core_profit_floor_2_lock_r,
+            profit_floor_3_activation_r=(
+                profile.core_profit_floor_3_activation_r
+            ),
+            profit_floor_3_lock_r=profile.core_profit_floor_3_lock_r,
             partial_take_profit_r=profile.core_partial_r,
             partial_take_profit_fraction=profile.core_partial_fraction,
             move_stop_to_breakeven_after_partial=(

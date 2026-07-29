@@ -19,7 +19,6 @@ from crypto_scalper.combined_volatility_trend_grid_backtest import (
 )
 from crypto_scalper.combined_volatility_trend_grid_shadow import _utc_now
 from crypto_scalper.gui import (
-    ACTIVE_GUI_CONFIG_PATH,
     STRATEGY_MODE_COMBINED_SHADOW,
     TradingApp,
     _combined_shadow_trader_class,
@@ -42,7 +41,7 @@ from crypto_scalper.volatility_breakout_v4_research import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / ACTIVE_GUI_CONFIG_PATH
+CONFIG = ROOT / "config.gui.breakout-v8-grid-v6-max2-shadow.json"
 
 
 class FakeClient:

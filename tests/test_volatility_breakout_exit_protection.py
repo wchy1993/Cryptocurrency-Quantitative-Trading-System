@@ -186,6 +186,39 @@ def test_profit_giveback_locks_positive_r_after_activation() -> None:
     assert trade["pnl_r"] == pytest.approx(0.9)
 
 
+def test_profit_floor_locks_fixed_r_and_leaves_room_before_activation() -> None:
+    result = _run(
+        [
+            (100.0, 111.0, 99.0, 110.0),
+            (110.0, 110.0, 104.0, 105.0),
+            (105.0, 105.0, 105.0, 105.0),
+        ],
+        ExitProtectionConfig(
+            profit_floor_1_activation_r=2.0,
+            profit_floor_1_lock_r=1.0,
+        ),
+    )
+
+    trade = result["trades"][0]
+    assert trade["exit_reason"] == "profit_floor_1_stop"
+    assert trade["pnl_r"] == pytest.approx(1.0)
+
+
+def test_profit_floor_validation_rejects_gaps_and_falling_locks() -> None:
+    with pytest.raises(ValueError):
+        ExitProtectionConfig(
+            profit_floor_2_activation_r=4.0,
+            profit_floor_2_lock_r=1.0,
+        ).validate()
+    with pytest.raises(ValueError):
+        ExitProtectionConfig(
+            profit_floor_1_activation_r=2.0,
+            profit_floor_1_lock_r=1.0,
+            profit_floor_2_activation_r=4.0,
+            profit_floor_2_lock_r=0.5,
+        ).validate()
+
+
 def test_partial_take_profit_aggregates_legs_and_reconciles_cash() -> None:
     result = _run(
         [

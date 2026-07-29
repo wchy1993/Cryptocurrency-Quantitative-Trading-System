@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import random
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -288,7 +289,38 @@ def _local_structural_variants(
     return list(dict.fromkeys(rows))[:budget]
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+PolicyVariantBuilder = Callable[
+    [GridV6CampaignPolicy, int, int], list[GridV6CampaignPolicy]
+]
+StrictImprovementPredicate = Callable[
+    [
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+    ],
+    bool,
+]
+
+
+def run(
+    args: argparse.Namespace,
+    *,
+    strategy_name: str = TREND_GRID_V6_NAME,
+    strategy_label: str = "Grid v6",
+    result_version: str = "v6_profit_protected",
+    structural_variant_builder: PolicyVariantBuilder | None = None,
+    allocation_variant_builder: PolicyVariantBuilder | None = None,
+    strict_improvement_predicate: StrictImprovementPredicate = (
+        _strict_improvement
+    ),
+    baseline_strategy_label: str | None = None,
+    improvement_reference_slug: str = "prior_grid_v6",
+    manifest_source_files: Iterable[str] = (
+        "crypto_scalper/trend_grid_v6.py",
+        "crypto_scalper/trend_grid_v6_optimize.py",
+    ),
+) -> dict[str, Any]:
     start_six = datetime.fromisoformat(args.start_6m)
     start_three = datetime.fromisoformat(args.start_3m)
     end = datetime.fromisoformat(args.end)
@@ -395,6 +427,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 campaign_take_profit_r=policy.campaign_take_profit_r,
                 profit_lock_activation_r=policy.profit_lock_activation_r,
                 profit_giveback_r=policy.profit_giveback_r,
+                cycle_profit_floor_min_take_profits=(
+                    policy.cycle_profit_floor_min_take_profits
+                ),
+                cycle_profit_floor_activation_r=(
+                    policy.cycle_profit_floor_activation_r
+                ),
+                cycle_profit_floor_r=policy.cycle_profit_floor_r,
             )
             portfolio = replace(
                 base_portfolio,
@@ -404,6 +443,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     * v6_factor
                 ),
                 max_campaign_risk_pct=policy.maximum_campaign_risk_pct,
+                max_notional_multiple=(
+                    policy.maximum_notional_multiple
+                    if policy.maximum_notional_multiple > 0.0
+                    else base_portfolio.max_notional_multiple
+                ),
                 compound=(
                     base_portfolio.compound
                     if force_compound is None
@@ -436,7 +480,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             profile_selector=choose,
             skip_symbols=skip_symbols,
         )
-        result["strategy_version"] = "v6_profit_protected"
+        result["strategy_version"] = result_version
         return result
 
     anchor_policy = GridV6CampaignPolicy()
@@ -450,7 +494,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             **refine_payload["campaign_policy"]
         )
         expected_payload = refine_payload
-        baseline_name = "Grid v6 prior strict candidate"
+        baseline_name = (
+            baseline_strategy_label or "Grid v6 prior strict candidate"
+        )
     base_six = simulate("six", anchor_policy)
     base_three = simulate("three", anchor_policy)
     for name, actual, expected in (
@@ -471,13 +517,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     structural_rows: list[dict[str, Any]] = []
-    policies = (
-        _local_structural_variants(
+    if structural_variant_builder is not None:
+        policies = structural_variant_builder(
             anchor_policy, args.seed, args.structural_budget
         )
-        if args.refine_from_config
-        else _structural_variants(args.seed, args.structural_budget)
-    )
+    else:
+        policies = (
+            _local_structural_variants(
+                anchor_policy, args.seed, args.structural_budget
+            )
+            if args.refine_from_config
+            else _structural_variants(args.seed, args.structural_budget)
+        )
     for number, policy in enumerate(policies, 1):
         six = simulate("six", policy)
         structural_rows.append(
@@ -500,7 +551,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         row["pair_score"] = _pair_score(
             row["six"], row["three"], base_six, base_three
         )
-        row["strict"] = _strict_improvement(
+        row["strict"] = strict_improvement_predicate(
             row["six"], row["three"], base_six, base_three
         )
     structural_finalists = sorted(
@@ -511,7 +562,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     allocation_rows: list[dict[str, Any]] = []
     for source_number, source in enumerate(structural_finalists, 1):
-        variants = _allocation_variants(
+        build_allocation_variants = (
+            allocation_variant_builder or _allocation_variants
+        )
+        variants = build_allocation_variants(
             source["policy"],
             args.seed + source_number,
             args.allocation_budget,
@@ -535,7 +589,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         row["pair_score"] = _pair_score(
             row["six"], row["three"], base_six, base_three
         )
-        row["strict"] = _strict_improvement(
+        row["strict"] = strict_improvement_predicate(
             row["six"], row["three"], base_six, base_three
         )
     recent = sorted(
@@ -625,13 +679,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     selection_status = (
         (
-            "strict_robust_improvement_over_prior_grid_v6"
+            f"strict_robust_improvement_over_{improvement_reference_slug}"
             if args.refine_from_config
             else "strict_robust_improvement_over_grid_v5"
         )
         if selected.get("robust")
         else (
-            "best_available_did_not_clear_prior_grid_v6"
+            f"best_available_did_not_clear_{improvement_reference_slug}"
             if args.refine_from_config
             else "best_available_did_not_clear_grid_v5"
         )
@@ -668,7 +722,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return output
 
     report = {
-        "strategy_name": TREND_GRID_V6_NAME,
+        "strategy_name": strategy_name,
         "status": "independent_research_v5_and_gui_unchanged",
         "selection_status": selection_status,
         "periods": {
@@ -712,7 +766,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     _write_json(args.output, report)
     config = {
-        "strategy_name": TREND_GRID_V6_NAME,
+        "strategy_name": strategy_name,
         "status": "independent_research_candidate_not_live",
         "selection_status": selection_status,
         "entry_gate": gate.as_dict(),
@@ -728,7 +782,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     _write_json(args.config_output, config)
     lines = [
-        "# Grid v6 campaign-protection optimization",
+        f"# {strategy_label} optimization",
         "",
         "- Grid v5 and the active GUI remain unchanged",
         "- Gap-free 1m execution with fees, slippage and funding",
@@ -741,7 +795,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ("3 months", base_three, selected["three"]),
         ("6 months", base_six, selected["six"]),
     ):
-        for name, values in (("Grid v5", baseline), ("Grid v6", result)):
+        baseline_display = (
+            baseline_strategy_label
+            or ("Grid v6 prior" if args.refine_from_config else "Grid v5")
+        )
+        for name, values in (
+            (baseline_display, baseline),
+            (strategy_label, result),
+        ):
             lines.append(
                 f"| {period} | {name} | {values['trade_count']} | "
                 f"{values['net_profit']:+.2f}U | {_pf(values):.3f} | "
@@ -751,7 +812,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     Path(args.summary).parent.mkdir(parents=True, exist_ok=True)
     Path(args.summary).write_text("\n".join(lines) + "\n", encoding="utf-8")
     manifest = {
-        "strategy_name": TREND_GRID_V6_NAME,
+        "strategy_name": strategy_name,
         "status": "independent_research_artifacts",
         "config": args.config_output,
         "report": args.output,
@@ -759,8 +820,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "hashes": {
             str(path): sha256_file(Path(path))
             for path in (
-                "crypto_scalper/trend_grid_v6.py",
-                "crypto_scalper/trend_grid_v6_optimize.py",
+                *manifest_source_files,
                 args.config_output,
                 args.output,
                 args.summary,

@@ -1,0 +1,96 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v9_profit_ladder_plus_dynamic_trend_following_grid_v7_cycle_profit_floor_max2",
+  "version": "breakout_v9_shared_balanced_grid_v7_max2_frozen_20260728",
+  "status": "gui_dry_run_frozen",
+  "initial_equity": 200.0,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "ZECUSDT",
+    "HYPEUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "BNBUSDT",
+    "SIRENUSDT",
+    "1000PEPEUSDT",
+    "TAOUSDT",
+    "NEARUSDT",
+    "WLDUSDT",
+    "SUIUSDT",
+    "ADAUSDT",
+    "TONUSDT",
+    "AVAXUSDT",
+    "ENAUSDT",
+    "LINKUSDT",
+    "FILUSDT",
+    "XLMUSDT",
+    "BCHUSDT",
+    "ONDOUSDT",
+    "TRUMPUSDT",
+    "AAVEUSDT",
+    "DOTUSDT",
+    "PENGUUSDT",
+    "LTCUSDT",
+    "TRXUSDT",
+    "FETUSDT",
+    "UNIUSDT",
+    "INJUSDT",
+    "DASHUSDT",
+    "BUSDT",
+    "ARBUSDT",
+    "1000SHIBUSDT",
+    "APEUSDT",
+    "XMRUSDT",
+    "APTUSDT",
+    "WIFUSDT",
+    "ICPUSDT",
+    "ETCUSDT",
+    "VIRTUALUSDT",
+    "HBARUSDT",
+    "RENDERUSDT",
+    "CRVUSDT",
+    "JTOUSDT",
+    "OPUSDT",
+    "CHZUSDT",
+    "1000BONKUSDT"
+  ],
+  "source_configs": {
+    "volatility_breakout": {
+      "path": "config.volatility-breakout.v9-shared-balanced-risk-50.json",
+      "sha256": "fe7b969bc83a901edf08229f4124e850cf99b55d9459a127218bf64c2fe5d85d"
+    },
+    "dynamic_trend_following_grid": {
+      "path": "config.trend-grid.v7-drawdown-refined-50.json",
+      "sha256": "ed771d4b6be5024ff3df5cfb6b7cfebc789e5a55763e740ff57361a8654d6d80"
+    }
+  },
+  "source_hashes": {
+    "volatility_breakout": "fe7b969bc83a901edf08229f4124e850cf99b55d9459a127218bf64c2fe5d85d",
+    "dynamic_trend_following_grid": "ed771d4b6be5024ff3df5cfb6b7cfebc789e5a55763e740ff57361a8654d6d80"
+  },
+  "portfolio": {
+    "max_open_positions": 2,
+    "max_gross_notional_multiple": 9.0,
+    "hard_drawdown_stop_pct": 0.6,
+    "allow_same_symbol_across_strategies": false,
+    "entry_priority": [
+      "volatility_breakout",
+      "dynamic_trend_following_grid"
+    ]
+  },
+  "frozen_backtest": {
+    "three_month": {
+      "trade_count": 67,
+      "net_profit": 25419.96898295715,
+      "profit_factor": 11.442120915476789,
+      "max_drawdown_pct": 0.2720775137265645
+    },
+    "six_month": {
+      "trade_count": 122,
+      "net_profit": 144022.45037088246,
+      "profit_factor": 11.11096425999978,
+      "max_drawdown_pct": 0.31000833780158793
+    }
+  }
+}

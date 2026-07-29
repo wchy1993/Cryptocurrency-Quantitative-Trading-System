@@ -1,0 +1,110 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v9_profit_ladder_plus_dynamic_trend_following_grid_v7_cycle_profit_floor_max2",
+  "display_name": "Breakout v9 共享平衡版 + Grid v7",
+  "deployment_scope": "gui_dry_run_and_live_manual_start",
+  "production_status": "mainnet_read_only_and_authenticated_dry_run_transport_accepted_manual_start_required",
+  "frozen_version": "breakout_v9_shared_balanced_grid_v7_max2_live_risk1_20260728",
+  "configs": {
+    "dry_run": "config.gui.breakout-v9-grid-v7-max2-shadow.json",
+    "live": "config.gui.breakout-v9-grid-v7-max2-live.json",
+    "combined_source": "config.combined-breakout-v9-shared-balanced-grid-v7-max2.json",
+    "breakout_source": "config.volatility-breakout.v9-shared-balanced-risk-50.json",
+    "grid_source": "config.trend-grid.v7-drawdown-refined-50.json"
+  },
+  "default_authorization": {
+    "environment": "mainnet",
+    "live_enabled": true,
+    "live_armed": false,
+    "mainnet_confirmation_text": "",
+    "strategy_confirmation_text": "",
+    "runtime_confirmation_required": "RUN_LIVE_NOW",
+    "gui_persists_authorization": false,
+    "gui_auto_starts_live": false
+  },
+  "portfolio_limits": {
+    "symbols": 50,
+    "global_max_open_positions": 2,
+    "max_open_positions_per_strategy": 1,
+    "allow_same_symbol_across_strategies": false,
+    "leverage": 10,
+    "margin_type": "CROSSED",
+    "risk_scale_vs_research": 1.0,
+    "max_gross_notional_multiple": 9.0,
+    "max_peak_drawdown_pct": 0.6,
+    "order_id_prefix": "b9g7r1",
+    "ledger_profile": "v9_grid_v7_risk1_isolated"
+  },
+  "exit_contract": {
+    "breakout_short_score_3_to_4": {
+      "partial_take_profit_r": 2.5,
+      "partial_take_profit_fraction": 0.1,
+      "profit_floor_activation_r": 4.0,
+      "profit_floor_lock_r": 1.0
+    },
+    "breakout_long_score_4": {
+      "partial_take_profit_fraction": 0.0,
+      "profit_floor_activation_r": 6.5,
+      "profit_floor_lock_r": 0.75
+    },
+    "breakout_core_giveback": {
+      "activation_r": 15.0,
+      "giveback_r": 12.0
+    },
+    "grid_cycle_profit_floor": {
+      "minimum_completed_take_profits": 2,
+      "activation_r": 0.2,
+      "floor_r": 0.03
+    }
+  },
+  "frozen_backtest": {
+    "three_month": {
+      "trade_count": 67,
+      "net_profit": 25419.96898295715,
+      "profit_factor": 11.442120915476789,
+      "max_drawdown_pct": 0.2720775137265645
+    },
+    "six_month": {
+      "trade_count": 122,
+      "net_profit": 144022.45037088246,
+      "profit_factor": 11.11096425999978,
+      "max_drawdown_pct": 0.31000833780158793
+    }
+  },
+  "transport_acceptance": {
+    "required": true,
+    "report": "reports/combined_breakout_v9_grid_v7_live_risk1_transport_acceptance.json",
+    "schema_version": 2,
+    "mode": "MAINNET_DRY_RUN_NO_ORDER_WITH_USER_STREAM",
+    "latest_result": "passed",
+    "latest_duration_seconds": 45.647747842,
+    "latest_cycles": 786,
+    "symbols_with_stream_data": 50,
+    "dependency_hash_count": 61,
+    "forbidden_order_mutations": 0,
+    "exchange_rate_limits": 0
+  },
+  "hashes": {
+    "config.combined-breakout-v9-shared-balanced-grid-v7-max2.json": "098d5cee8303de4bc542c5151dc5e0dffcdb961e3c7cf8e257e048b408e0e299",
+    "config.gui.breakout-v9-grid-v7-max2-shadow.json": "ecc64bbf4d5e96b5a24cf7639247b1d3c1e1a74de6ffd798126f0da496b8b1c2",
+    "config.gui.breakout-v9-grid-v7-max2-live.json": "ea5f4573d94acfbb9cc70954caccabbfcf44bf0bbfd4ae241fe9e37fa4d83fd2",
+    "config.volatility-breakout.v9-shared-balanced-risk-50.json": "fe7b969bc83a901edf08229f4124e850cf99b55d9459a127218bf64c2fe5d85d",
+    "config.trend-grid.v7-drawdown-refined-50.json": "ed771d4b6be5024ff3df5cfb6b7cfebc789e5a55763e740ff57361a8654d6d80",
+    "crypto_scalper/combined_breakout_v8_grid_v6_shadow.py": "4b2880f1deef62c5443b9d244950ba3da49e710fb7429d2e04b29bd47e5d6dd1",
+    "crypto_scalper/combined_breakout_v8_grid_v6_live.py": "c4f65707b512c66bb9d3ff617c7d9e2bc6dfb60b564433d767aa3a94c329ac49",
+    "crypto_scalper/combined_breakout_v8_grid_v6_live_acceptance.py": "809abae69f8d813accf7abaffb6e2b79e7d22990a2d935616262f0c902d80bd1",
+    "crypto_scalper/combined_breakout_v9_grid_v7_shadow.py": "e020a4391e7efaac692a8668970d531ee340ea981bff1e23b7bcd179bb43e2ad",
+    "crypto_scalper/combined_breakout_v9_grid_v7_live.py": "3d441a335ab050a00acd259972e1ff3607ca084a9b8928834e505c6380433da5",
+    "crypto_scalper/combined_breakout_v9_grid_v7_live_acceptance.py": "8b0bb09de5a8b95b8bce6d3a13b9cb1deca715bc59d7f85d273df42e0eb3fd87",
+    "crypto_scalper/gui.py": "2fb94fce7ea98377b1b545c6a7e5b4b2ade5d887e1a60ea8541a16e61b9e074e",
+    "tests/test_combined_breakout_v9_grid_v7_live.py": "0c76e2556f34b2591bba9a448c5adb55dde435786e91f53f436d20f4deba42e0",
+    "tests/test_combined_breakout_v9_grid_v7_backtest.py": "75d734fe54eb56299bfa70cd355cce085a8ddb7dc611046253d16edc52f543b1",
+    "reports/combined_breakout_v9_grid_v7_live_risk1_transport_acceptance.json": "d3d40215297470d23c87b9efc1dca754cc07d04289b05df741ba92e207771bb2",
+    "config.combined-breakout-v9-shared-balanced-grid-v7-max2-backtest.json": "7cd1048d2001f74115fefe9ddbb86d136bb9c128907783c8edffffad4f461545",
+    "reports/combined_breakout_v9_shared_balanced_grid_v7_max2_3m_6m.json": "616b02cb8a048bf1bfdac3d3a9afc5cc361ac818ebd305700e329285f659cd51"
+  },
+  "secrets": {
+    "stored_in_repository": false,
+    "api_key_environment": "BINANCE_FUTURES_API_KEY",
+    "api_secret_environment": "BINANCE_FUTURES_API_SECRET"
+  }
+}

@@ -13,6 +13,7 @@ from .trend_grid_optimize import (
     GridCampaign,
     GridCandidate,
     GridPortfolioConfig,
+    _campaign_unrealized,
     _close_campaign,
     _create_campaign,
     _mark_equity,
@@ -99,7 +100,9 @@ def simulate_grid_v5_portfolio(
     daily_entries: dict[str, int] = defaultdict(int)
     rejected: dict[str, int] = defaultdict(int)
     peak_equity = cash
+    peak_equity_minute = start_minute
     max_drawdown = 0.0
+    max_drawdown_diagnostic: dict[str, Any] = {}
     max_drawdown_duration = 0
     drawdown_start: int | None = None
     hard_stopped = False
@@ -218,7 +221,9 @@ def simulate_grid_v5_portfolio(
         equity = _mark_equity(
             cash, plain_campaigns(), execution_data, rules, minute, execution
         )
-        peak_equity = max(peak_equity, equity)
+        if equity > peak_equity:
+            peak_equity = equity
+            peak_equity_minute = minute
         drawdown = (
             (peak_equity - equity) / peak_equity if peak_equity > 0.0 else 1.0
         )
@@ -229,7 +234,43 @@ def simulate_grid_v5_portfolio(
             )
         else:
             drawdown_start = None
-        max_drawdown = max(max_drawdown, drawdown)
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+            max_drawdown_diagnostic = {
+                "peak_time": minute_datetime(peak_equity_minute).isoformat(),
+                "trough_time": minute_datetime(minute).isoformat(),
+                "peak_equity": peak_equity,
+                "trough_equity": equity,
+                "cash": cash,
+                "active_campaigns": [
+                    {
+                        "symbol": symbol,
+                        "tier": managed.profile.tier,
+                        "entry_time": minute_datetime(
+                            managed.campaign.start_minute
+                        ).isoformat(),
+                        "risk_usdt": managed.campaign.risk_budget,
+                        "mark_pnl": _campaign_unrealized(
+                            managed.campaign,
+                            float(
+                                execution_data[symbol].closes[
+                                    execution_data[symbol].index_at(minute)
+                                ]
+                            ),
+                            execution,
+                            rules[symbol],
+                        ),
+                        "best_pnl": managed.campaign.best_equity_pnl,
+                        "worst_pnl": managed.campaign.worst_equity_pnl,
+                        "grid_take_profit_count": (
+                            managed.campaign.grid_take_profit_count
+                        ),
+                        "open_lot_count": len(managed.campaign.lots),
+                    }
+                    for symbol, managed in campaigns.items()
+                    if execution_data[symbol].index_at(minute) is not None
+                ],
+            }
         if (
             drawdown >= operational_portfolio.hard_drawdown_stop_pct
             or equity <= 0.0
@@ -273,6 +314,7 @@ def simulate_grid_v5_portfolio(
             "strategy_version": "v5_independent_managed_campaigns",
             "by_v5_tier": _tier_metrics(trades),
             "operational_portfolio_config": asdict(operational_portfolio),
+            "max_drawdown_diagnostic": max_drawdown_diagnostic,
         }
     )
     return result

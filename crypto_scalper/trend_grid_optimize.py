@@ -449,6 +449,28 @@ def _process_campaign_bar(
         )
         campaign._pending_report = report  # type: ignore[attr-defined]
         return cash_delta, "profit_giveback"
+    if (
+        signal_config.cycle_profit_floor_min_take_profits > 0
+        and campaign.grid_take_profit_count
+        >= signal_config.cycle_profit_floor_min_take_profits
+        and campaign.best_equity_pnl
+        >= (
+            campaign.risk_budget
+            * signal_config.cycle_profit_floor_activation_r
+        )
+        and current_open_pnl
+        <= campaign.risk_budget * signal_config.cycle_profit_floor_r
+    ):
+        report, cash_delta = _close_campaign(
+            campaign,
+            open_price,
+            minute,
+            "cycle_profit_floor",
+            execution,
+            rules,
+        )
+        campaign._pending_report = report  # type: ignore[attr-defined]
+        return cash_delta, "cycle_profit_floor"
 
     if snapshot is not None:
         if snapshot.exit_invalid(direction, signal_config.regime_exit_mode):
@@ -849,7 +871,8 @@ def _signal_cache_key(config: TrendGridConfig) -> str:
         "regime_exit_mode", "regime_exit_confirm_bars", "max_campaign_minutes",
         "max_cycles_per_level", "max_total_entries", "pause_new_fills_on_fast_breach",
         "campaign_loss_limit_r", "campaign_take_profit_r", "profit_lock_activation_r",
-        "profit_giveback_r",
+        "profit_giveback_r", "cycle_profit_floor_min_take_profits",
+        "cycle_profit_floor_activation_r", "cycle_profit_floor_r",
     ):
         fields.pop(key, None)
     return json.dumps(fields, sort_keys=True, separators=(",", ":"))

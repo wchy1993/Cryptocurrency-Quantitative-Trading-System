@@ -28,6 +28,7 @@ from .combined_volatility_trend_grid_shadow import (
 )
 from .live_config import LiveAppConfig, load_live_config
 from .live_trader import AccountSnapshot
+from .models import Direction
 from .risk import execution_config_from_live_config
 from .trend_grid import TrendGridConfig
 from .trend_grid_optimize import GridCandidate, GridPortfolioConfig
@@ -208,6 +209,24 @@ class CombinedBreakoutV8GridV6ShadowTrader(
 ):
     """Dry-run-only shared account for Breakout v8 and Grid v6."""
 
+    combined_strategy_name = COMBINED_V8_GRID_V6_NAME
+    shadow_version = BREAKOUT_V8_GRID_V6_SHADOW_VERSION
+    breakout_strategy_name = VOLATILITY_BREAKOUT_V8_NAME
+    breakout_component_version = BREAKOUT_V8_COMPONENT_VERSION
+    grid_strategy_name = TREND_GRID_V6_NAME
+    breakout_profile_prefix = "v8"
+    grid_profile_prefix = "v6"
+
+    def _source_bundle_for_config(
+        self, config: LiveAppConfig
+    ) -> dict[str, Any]:
+        return _load_v8_v6_source_bundle(config)
+
+    def _shadow_config_hash_for_config(
+        self, config: LiveAppConfig
+    ) -> str:
+        return combined_v8_grid_v6_shadow_config_hash(config)
+
     def __init__(
         self,
         config: LiveAppConfig,
@@ -224,7 +243,7 @@ class CombinedBreakoutV8GridV6ShadowTrader(
         self.execution = execution_config_from_live_config(
             config, cost_experiment="full_cost", mode="conservative"
         )
-        self.source_bundle = _load_v8_v6_source_bundle(config)
+        self.source_bundle = self._source_bundle_for_config(config)
         combined = self.source_bundle["combined_payload"]
         breakout = self.source_bundle["breakout_payload"]
         grid = self.source_bundle["grid_payload"]
@@ -273,7 +292,7 @@ class CombinedBreakoutV8GridV6ShadowTrader(
             **grid["campaign_policy"]
         )
 
-        self.config_hash = combined_v8_grid_v6_shadow_config_hash(config)
+        self.config_hash = self._shadow_config_hash_for_config(config)
         self.state_path = Path(self.shadow.state_path)
         self.event_log_path = Path(self.shadow.event_log_path)
         self.report_path = Path(self.shadow.report_path)
@@ -293,7 +312,7 @@ class CombinedBreakoutV8GridV6ShadowTrader(
                 initial_equity=self.state["starting_equity"],
                 universe_size=len(self.shadow.enabled_symbols),
                 max_open_positions=self.shadow.max_open_positions,
-                source_strategy=COMBINED_V8_GRID_V6_NAME,
+                source_strategy=self.combined_strategy_name,
             )
             self.state["sample_initialized_event_logged"] = True
             self._persist_state()
@@ -399,20 +418,20 @@ class CombinedBreakoutV8GridV6ShadowTrader(
         combined = self.source_bundle["combined_payload"]
         breakout = self.source_bundle["breakout_payload"]
         grid = self.source_bundle["grid_payload"]
-        if combined.get("strategy_name") != COMBINED_V8_GRID_V6_NAME:
+        if combined.get("strategy_name") != self.combined_strategy_name:
             raise RuntimeError("combined v8/v6 strategy name changed")
         if combined.get("status") != "gui_dry_run_frozen":
             raise RuntimeError("combined v8/v6 source is not GUI-frozen")
         if float(combined.get("initial_equity", 0.0)) != 200.0:
             raise RuntimeError("combined v8/v6 source equity changed")
-        if self.shadow.strategy_name != COMBINED_V8_GRID_V6_NAME:
+        if self.shadow.strategy_name != self.combined_strategy_name:
             raise RuntimeError("GUI combined v8/v6 strategy name changed")
         if (
             self.shadow.frozen_version
-            != BREAKOUT_V8_GRID_V6_SHADOW_VERSION
+            != self.shadow_version
         ):
             raise RuntimeError("GUI combined v8/v6 version changed")
-        if breakout.get("strategy_name") != VOLATILITY_BREAKOUT_V8_NAME:
+        if breakout.get("strategy_name") != self.breakout_strategy_name:
             raise RuntimeError("Breakout v8 source strategy changed")
         if not str(
             breakout.get("selection_status", "")
@@ -420,7 +439,7 @@ class CombinedBreakoutV8GridV6ShadowTrader(
             raise RuntimeError(
                 "Breakout v8 source is not the selected robust candidate"
             )
-        if grid.get("strategy_name") != TREND_GRID_V6_NAME:
+        if grid.get("strategy_name") != self.grid_strategy_name:
             raise RuntimeError("Grid v6 source strategy changed")
         if not str(
             grid.get("selection_status", "")
@@ -430,12 +449,12 @@ class CombinedBreakoutV8GridV6ShadowTrader(
             )
         if (
             self.breakout_shadow.strategy_name
-            != VOLATILITY_BREAKOUT_V8_NAME
+            != self.breakout_strategy_name
         ):
             raise RuntimeError("GUI Breakout v8 component name changed")
         if (
             self.breakout_shadow.frozen_version
-            != BREAKOUT_V8_COMPONENT_VERSION
+            != self.breakout_component_version
         ):
             raise RuntimeError("GUI Breakout v8 component version changed")
 
@@ -611,18 +630,90 @@ class CombinedBreakoutV8GridV6ShadowTrader(
                 managed.core_fail_fast_max_current_r
             ),
         )
-        exit_config = ExitProtectionConfig(
+        capture_exit_config = ExitProtectionConfig(
             breakeven_trigger_r=managed.core_breakeven_trigger_r,
             profit_giveback_activation_r=(
                 managed.core_profit_giveback_activation_r
             ),
             profit_giveback_r=managed.core_profit_giveback_r,
+            profit_floor_1_activation_r=(
+                managed.core_profit_floor_1_activation_r
+            ),
+            profit_floor_1_lock_r=managed.core_profit_floor_1_lock_r,
+            profit_floor_2_activation_r=(
+                managed.core_profit_floor_2_activation_r
+            ),
+            profit_floor_2_lock_r=managed.core_profit_floor_2_lock_r,
+            profit_floor_3_activation_r=(
+                managed.core_profit_floor_3_activation_r
+            ),
+            profit_floor_3_lock_r=managed.core_profit_floor_3_lock_r,
             partial_take_profit_r=managed.core_partial_r,
             partial_take_profit_fraction=managed.core_partial_fraction,
             move_stop_to_breakeven_after_partial=(
                 managed.core_move_breakeven_after_partial
             ),
         )
+        capture_side = (
+            managed.core_profit_capture_long
+            if candidate.signal.direction == Direction.LONG
+            else managed.core_profit_capture_short
+        )
+        capture_score = (
+            managed.core_profit_capture_min_score
+            <= score
+            <= managed.core_profit_capture_max_score
+        )
+        exit_config = capture_exit_config
+        if not (capture_side and capture_score):
+            exit_config = replace(
+                capture_exit_config,
+                profit_floor_1_activation_r=0.0,
+                profit_floor_1_lock_r=0.0,
+                profit_floor_2_activation_r=0.0,
+                profit_floor_2_lock_r=0.0,
+                profit_floor_3_activation_r=0.0,
+                profit_floor_3_lock_r=0.0,
+                partial_take_profit_r=0.0,
+                partial_take_profit_fraction=0.0,
+                move_stop_to_breakeven_after_partial=False,
+            )
+        if (
+            candidate.signal.direction == Direction.LONG
+            and managed.core_long_profit_floor_activation_r > 0.0
+            and managed.core_long_profit_floor_min_score
+            <= score
+            <= managed.core_long_profit_floor_max_score
+        ):
+            levels = {
+                float(activation): float(lock)
+                for activation, lock in exit_config.profit_floor_levels
+            }
+            activation = float(
+                managed.core_long_profit_floor_activation_r
+            )
+            levels[activation] = max(
+                float(managed.core_long_profit_floor_lock_r),
+                levels.get(activation, 0.0),
+            )
+            ordered: list[tuple[float, float]] = []
+            prior_lock = 0.0
+            for level_activation, lock in sorted(levels.items()):
+                prior_lock = max(prior_lock, lock)
+                ordered.append((level_activation, prior_lock))
+            padded = [
+                *ordered[:3],
+                *((0.0, 0.0),) * max(0, 3 - len(ordered)),
+            ]
+            exit_config = replace(
+                exit_config,
+                profit_floor_1_activation_r=padded[0][0],
+                profit_floor_1_lock_r=padded[0][1],
+                profit_floor_2_activation_r=padded[1][0],
+                profit_floor_2_lock_r=padded[1][1],
+                profit_floor_3_activation_r=padded[2][0],
+                profit_floor_3_lock_r=padded[2][1],
+            )
         peak = max(float(self.state["peak_equity"]), equity)
         drawdown = (peak - equity) / peak if peak > 0.0 else 1.0
         governor = tiered_drawdown_risk_multiplier(
@@ -640,7 +731,7 @@ class CombinedBreakoutV8GridV6ShadowTrader(
             ranking_mode=managed.ranking_mode,
         )
         profile = BreakoutV6ExecutionProfile(
-            f"v8_{lane}",
+            f"{self.breakout_profile_prefix}_{lane}",
             signal,
             portfolio,
             exit_config,
@@ -669,7 +760,7 @@ class CombinedBreakoutV8GridV6ShadowTrader(
             v5_risk = confidence.standard_risk_multiplier
         policy = self.grid_campaign_policy
         profile = GridV5ExecutionProfile(
-            tier=f"v6_{tier}_score_{score}",
+            tier=f"{self.grid_profile_prefix}_{tier}_score_{score}",
             signal=replace(
                 self.grid_signal_config,
                 grid_target_spacing=policy.target_spacing,
@@ -680,6 +771,13 @@ class CombinedBreakoutV8GridV6ShadowTrader(
                     policy.profit_lock_activation_r
                 ),
                 profit_giveback_r=policy.profit_giveback_r,
+                cycle_profit_floor_min_take_profits=(
+                    policy.cycle_profit_floor_min_take_profits
+                ),
+                cycle_profit_floor_activation_r=(
+                    policy.cycle_profit_floor_activation_r
+                ),
+                cycle_profit_floor_r=policy.cycle_profit_floor_r,
             ),
             portfolio=replace(
                 self.grid_portfolio_config,
@@ -690,6 +788,11 @@ class CombinedBreakoutV8GridV6ShadowTrader(
                 ),
                 max_campaign_risk_pct=(
                     policy.maximum_campaign_risk_pct
+                ),
+                max_notional_multiple=(
+                    policy.maximum_notional_multiple
+                    if policy.maximum_notional_multiple > 0.0
+                    else self.grid_portfolio_config.max_notional_multiple
                 ),
             ),
         )

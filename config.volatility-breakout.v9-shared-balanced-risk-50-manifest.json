@@ -1,0 +1,22 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v9_profit_ladder",
+  "status": "independent_research_artifacts",
+  "config": "config.volatility-breakout.v9-shared-balanced-risk-50.json",
+  "report": "reports/volatility_breakout_v9_shared_balanced_risk_3m_6m.json",
+  "summary": "reports/volatility_breakout_v9_shared_balanced_risk_3m_6m.md",
+  "hashes": {
+    "crypto_scalper/volatility_breakout_exit_protection.py": "fdbff421b53a514955b5860b0c85bb20831d5f099fc76a6952720dad10510fa1",
+    "crypto_scalper/volatility_breakout_v8_optimize.py": "e6a614a7b5af6ee262ccb853730d10d00ee56b702ff333b5db2ba525bd0486b6",
+    "crypto_scalper/volatility_breakout_v9.py": "7c4c45650cc51f141b775b29e98a28d7ad4b4ed7906a7ee648509732b37956bf",
+    "crypto_scalper/volatility_breakout_v9_balanced_risk.py": "3c2837a60e517b7697c1218cb0211fd1d291b8a42378b0ee24ca1d124220a6ab",
+    "config.volatility-breakout.v9-shared-balanced-risk-50.json": "fe7b969bc83a901edf08229f4124e850cf99b55d9459a127218bf64c2fe5d85d",
+    "reports/volatility_breakout_v9_shared_balanced_risk_3m_6m.json": "fe3b7f2965d77b4c1b84308922ee0461b81d3c7fb6ba628ed35061ebbf987486",
+    "reports/volatility_breakout_v9_shared_balanced_risk_3m_6m.md": "254448ce468e1fe59577de5b677ae46191e8e046f55f01f4c92874dda8db5efd"
+  },
+  "preserved": {
+    "breakout_v7": "unchanged",
+    "grid_v5": "unchanged",
+    "active_gui": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}

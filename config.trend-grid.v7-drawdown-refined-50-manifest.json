@@ -1,0 +1,25 @@
+{
+  "strategy_name": "dynamic_trend_following_grid_v7_cycle_profit_floor",
+  "status": "independent_research_artifacts",
+  "config": "config.trend-grid.v7-drawdown-refined-50.json",
+  "report": "reports/trend_grid_v7_drawdown_refined_3m_6m.json",
+  "summary": "reports/trend_grid_v7_drawdown_refined_3m_6m.md",
+  "hashes": {
+    "crypto_scalper/trend_grid.py": "84b7aa0fd81a88fe690f4ef667574e1924130056083fd162d42f0fad80bece0d",
+    "crypto_scalper/trend_grid_optimize.py": "9afb65dbf8117b3c142b00903e5566b7b71dae8e05e1950c76fc1e12bdc12f30",
+    "crypto_scalper/trend_grid_v5_engine.py": "e15c249dd708e0664b429bd2ac68564a1200730be8bf14210de6cc0e229ce843",
+    "crypto_scalper/trend_grid_v6.py": "c5e8a214c37a73215c639ef915e97849e1e4458311b387b68ff6c0d402ada5f4",
+    "crypto_scalper/trend_grid_v6_optimize.py": "86ec023adef294348860cd97843330faebe8e052601cd22e11dfecf784beeed5",
+    "crypto_scalper/trend_grid_v7.py": "cd0e1e5d024a4d9ef5ef54c2a6e94d0568208c1a1662e7dfcce91c8879fedc50",
+    "crypto_scalper/trend_grid_v7_drawdown_refine.py": "4126b3204edc7a2c626e15c4cdef4791e8ae2bb75c0b980587c0e65901eae2bd",
+    "config.trend-grid.v7-drawdown-refined-50.json": "ed771d4b6be5024ff3df5cfb6b7cfebc789e5a55763e740ff57361a8654d6d80",
+    "reports/trend_grid_v7_drawdown_refined_3m_6m.json": "75b6bc4eeae7bcdcd9d9705991783ffc74432eb229c3d68f8f00182055ee5e0f",
+    "reports/trend_grid_v7_drawdown_refined_3m_6m.md": "320c49e20809bb4f2bfef8fd27d8c2a6159221b3ceea6d80a8867cb32217564d"
+  },
+  "preserved": {
+    "breakout_v7": "unchanged",
+    "grid_v5": "unchanged",
+    "active_gui": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}

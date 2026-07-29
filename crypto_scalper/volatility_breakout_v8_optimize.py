@@ -7,6 +7,7 @@ import random
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from collections.abc import Callable, Iterable
 from typing import Any, Optional
 
 from .combined_hybrid_v5_grid_v3_backtest import (
@@ -14,6 +15,7 @@ from .combined_hybrid_v5_grid_v3_backtest import (
     _write_json,
     build_frozen_configs,
 )
+from .models import Direction
 from .risk import BacktestExecutionConfig
 from .volatility_breakout import VolatilityBreakoutConfig
 from .volatility_breakout_exit_protection import ExitProtectionConfig
@@ -332,7 +334,37 @@ def _profile_variants(
     return list(dict.fromkeys(rows))[:budget]
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+ProfileVariantBuilder = Callable[
+    [ManagedLaneProfile, int, int], list[ManagedLaneProfile]
+]
+StrictImprovementPredicate = Callable[
+    [
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+    ],
+    bool,
+]
+
+
+def run(
+    args: argparse.Namespace,
+    *,
+    strategy_name: str = VOLATILITY_BREAKOUT_V8_NAME,
+    strategy_label: str = "Breakout v8",
+    result_version: str = "v8_score_convex",
+    profile_variant_builder: ProfileVariantBuilder | None = None,
+    strict_improvement_predicate: StrictImprovementPredicate = (
+        _strict_improvement
+    ),
+    baseline_strategy_label: str | None = None,
+    improvement_reference_slug: str = "prior_breakout_v8",
+    manifest_source_files: Iterable[str] = (
+        "crypto_scalper/volatility_breakout_v8.py",
+        "crypto_scalper/volatility_breakout_v8_optimize.py",
+    ),
+) -> dict[str, Any]:
     start_six = datetime.fromisoformat(args.start_6m)
     start_three = datetime.fromisoformat(args.start_3m)
     end = datetime.fromisoformat(args.end)
@@ -433,12 +465,65 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             breakeven_trigger_r=profile.core_breakeven_trigger_r,
             profit_giveback_activation_r=profile.core_profit_giveback_activation_r,
             profit_giveback_r=profile.core_profit_giveback_r,
+            profit_floor_1_activation_r=(
+                profile.core_profit_floor_1_activation_r
+            ),
+            profit_floor_1_lock_r=profile.core_profit_floor_1_lock_r,
+            profit_floor_2_activation_r=(
+                profile.core_profit_floor_2_activation_r
+            ),
+            profit_floor_2_lock_r=profile.core_profit_floor_2_lock_r,
+            profit_floor_3_activation_r=(
+                profile.core_profit_floor_3_activation_r
+            ),
+            profit_floor_3_lock_r=profile.core_profit_floor_3_lock_r,
             partial_take_profit_r=profile.core_partial_r,
             partial_take_profit_fraction=profile.core_partial_fraction,
             move_stop_to_breakeven_after_partial=(
                 profile.core_move_breakeven_after_partial
             ),
         )
+        non_capture_exit_config = replace(
+            exit_config,
+            profit_floor_1_activation_r=0.0,
+            profit_floor_1_lock_r=0.0,
+            profit_floor_2_activation_r=0.0,
+            profit_floor_2_lock_r=0.0,
+            profit_floor_3_activation_r=0.0,
+            profit_floor_3_lock_r=0.0,
+            partial_take_profit_r=0.0,
+            partial_take_profit_fraction=0.0,
+            move_stop_to_breakeven_after_partial=False,
+        )
+
+        def add_profit_floor(
+            selected_exit: ExitProtectionConfig,
+            activation_r: float,
+            lock_r: float,
+        ) -> ExitProtectionConfig:
+            levels = {
+                float(activation): float(lock)
+                for activation, lock in selected_exit.profit_floor_levels
+            }
+            levels[float(activation_r)] = max(
+                float(lock_r), levels.get(float(activation_r), 0.0)
+            )
+            ordered: list[tuple[float, float]] = []
+            previous_lock = 0.0
+            for activation, lock in sorted(levels.items()):
+                previous_lock = max(previous_lock, lock)
+                ordered.append((activation, previous_lock))
+            ordered = ordered[:3]
+            padded = [*ordered, *((0.0, 0.0),) * (3 - len(ordered))]
+            return replace(
+                selected_exit,
+                profit_floor_1_activation_r=padded[0][0],
+                profit_floor_1_lock_r=padded[0][1],
+                profit_floor_2_activation_r=padded[1][0],
+                profit_floor_2_lock_r=padded[1][1],
+                profit_floor_3_activation_r=padded[2][0],
+                profit_floor_3_lock_r=padded[2][1],
+            )
 
         def choose(
             candidate: Candidate, minute: int, _equity: float
@@ -469,6 +554,33 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             if multiplier <= 0.0:
                 return None
+            capture_side = (
+                profile.core_profit_capture_long
+                if candidate.signal.direction == Direction.LONG
+                else profile.core_profit_capture_short
+            )
+            capture_score = (
+                profile.core_profit_capture_min_score
+                <= score
+                <= profile.core_profit_capture_max_score
+            )
+            selected_exit = (
+                exit_config
+                if capture_side and capture_score
+                else non_capture_exit_config
+            )
+            if (
+                candidate.signal.direction == Direction.LONG
+                and profile.core_long_profit_floor_activation_r > 0.0
+                and profile.core_long_profit_floor_min_score
+                <= score
+                <= profile.core_long_profit_floor_max_score
+            ):
+                selected_exit = add_profit_floor(
+                    selected_exit,
+                    profile.core_long_profit_floor_activation_r,
+                    profile.core_long_profit_floor_lock_r,
+                )
             portfolio = replace(
                 base_portfolio,
                 risk_per_trade_pct=risk * multiplier,
@@ -482,7 +594,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 ),
             )
             return BreakoutV6ExecutionProfile(
-                f"v8_{lane}", signal, portfolio, exit_config
+                f"v8_{lane}", signal, portfolio, selected_exit
             )
 
         def priority(candidate: Candidate):
@@ -553,7 +665,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             priority_selector=priority,
             profile_governor=govern,
         )
-        result["strategy_version"] = "v8_score_convex"
+        result["strategy_version"] = result_version
         return result
 
     anchor_allocation = BreakoutV8ScoreAllocation()
@@ -571,7 +683,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             **refine_payload["managed_profile"]
         )
         expected_payload = refine_payload
-        baseline_name = "Breakout v8 prior strict candidate"
+        baseline_name = (
+            baseline_strategy_label
+            or "Breakout v8 prior strict candidate"
+        )
     base_six = simulate("six", anchor_allocation, anchor_profile)
     base_three = simulate("three", anchor_allocation, anchor_profile)
     expected_six = expected_payload["results"]["six_month"]
@@ -624,7 +739,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         row["pair_score"] = _pair_score(
             row["six"], row["three"], base_six, base_three
         )
-        row["strict"] = _strict_improvement(
+        row["strict"] = strict_improvement_predicate(
             row["six"], row["three"], base_six, base_three
         )
     allocation_finalists = sorted(
@@ -634,7 +749,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )[: args.allocation_finalists]
 
     profile_rows: list[dict[str, Any]] = []
-    profiles = _profile_variants(
+    build_profile_variants = (
+        profile_variant_builder or _profile_variants
+    )
+    profiles = build_profile_variants(
         anchor_profile, args.seed + 1, args.profile_budget
     )
     for source_number, source in enumerate(allocation_finalists, 1):
@@ -658,7 +776,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         row["pair_score"] = _pair_score(
             row["six"], row["three"], base_six, base_three
         )
-        row["strict"] = _strict_improvement(
+        row["strict"] = strict_improvement_predicate(
             row["six"], row["three"], base_six, base_three
         )
     recent = sorted(
@@ -763,13 +881,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     selection_status = (
         (
-            "strict_robust_improvement_over_prior_breakout_v8"
+            f"strict_robust_improvement_over_{improvement_reference_slug}"
             if args.refine_from_config
             else "strict_robust_improvement_over_breakout_v7"
         )
         if selected.get("robust")
         else (
-            "best_available_did_not_clear_prior_breakout_v8"
+            f"best_available_did_not_clear_{improvement_reference_slug}"
             if args.refine_from_config
             else "best_available_did_not_clear_breakout_v7"
         )
@@ -807,7 +925,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return output
 
     report = {
-        "strategy_name": VOLATILITY_BREAKOUT_V8_NAME,
+        "strategy_name": strategy_name,
         "status": "independent_research_v7_and_gui_unchanged",
         "selection_status": selection_status,
         "periods": {
@@ -853,7 +971,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     _write_json(args.output, report)
     config = {
-        "strategy_name": VOLATILITY_BREAKOUT_V8_NAME,
+        "strategy_name": strategy_name,
         "status": "independent_research_candidate_not_live",
         "selection_status": selection_status,
         "entry": gate.as_dict(),
@@ -870,7 +988,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     _write_json(args.config_output, config)
     lines = [
-        "# Breakout v8 score-convex optimization",
+        f"# {strategy_label} optimization",
         "",
         "- Breakout v7 and the active GUI remain unchanged",
         "- Gap-free 1m execution with fees, slippage and funding",
@@ -884,13 +1002,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ("6 months", base_six, selected["six"]),
     ):
         baseline_display = (
-            "Breakout v8 prior"
+            baseline_strategy_label or "Breakout v8 prior"
             if args.refine_from_config
             else "Breakout v7"
         )
         for name, values in (
             (baseline_display, baseline),
-            ("Breakout v8", result),
+            (strategy_label, result),
         ):
             lines.append(
                 f"| {period} | {name} | {values['trade_count']} | "
@@ -901,7 +1019,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     Path(args.summary).parent.mkdir(parents=True, exist_ok=True)
     Path(args.summary).write_text("\n".join(lines) + "\n", encoding="utf-8")
     manifest = {
-        "strategy_name": VOLATILITY_BREAKOUT_V8_NAME,
+        "strategy_name": strategy_name,
         "status": "independent_research_artifacts",
         "config": args.config_output,
         "report": args.output,
@@ -909,8 +1027,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "hashes": {
             str(path): sha256_file(Path(path))
             for path in (
-                "crypto_scalper/volatility_breakout_v8.py",
-                "crypto_scalper/volatility_breakout_v8_optimize.py",
+                *manifest_source_files,
                 args.config_output,
                 args.output,
                 args.summary,

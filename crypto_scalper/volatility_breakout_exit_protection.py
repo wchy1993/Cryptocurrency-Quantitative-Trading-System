@@ -40,6 +40,12 @@ class ExitProtectionConfig:
     breakeven_trigger_r: float = 0.0
     profit_giveback_activation_r: float = 0.0
     profit_giveback_r: float = 0.0
+    profit_floor_1_activation_r: float = 0.0
+    profit_floor_1_lock_r: float = 0.0
+    profit_floor_2_activation_r: float = 0.0
+    profit_floor_2_lock_r: float = 0.0
+    profit_floor_3_activation_r: float = 0.0
+    profit_floor_3_lock_r: float = 0.0
     partial_take_profit_r: float = 0.0
     partial_take_profit_fraction: float = 0.0
     move_stop_to_breakeven_after_partial: bool = False
@@ -49,6 +55,12 @@ class ExitProtectionConfig:
             self.breakeven_trigger_r,
             self.profit_giveback_activation_r,
             self.profit_giveback_r,
+            self.profit_floor_1_activation_r,
+            self.profit_floor_1_lock_r,
+            self.profit_floor_2_activation_r,
+            self.profit_floor_2_lock_r,
+            self.profit_floor_3_activation_r,
+            self.profit_floor_3_lock_r,
             self.partial_take_profit_r,
             self.partial_take_profit_fraction,
         ) < 0.0:
@@ -66,10 +78,57 @@ class ExitProtectionConfig:
             self.profit_giveback_activation_r > 0.0 and self.profit_giveback_r > 0.0
         ):
             raise ValueError("profit giveback requires positive activation and giveback R")
+        enabled_floors = self.profit_floor_levels
+        previous_activation = 0.0
+        previous_lock = -1.0
+        for activation, lock in enabled_floors:
+            if lock > activation:
+                raise ValueError(
+                    "profit-floor lock cannot exceed its activation R"
+                )
+            if activation <= previous_activation or lock < previous_lock:
+                raise ValueError(
+                    "profit-floor levels must have increasing activations "
+                    "and non-decreasing locks"
+                )
+            previous_activation = activation
+            previous_lock = lock
+        floor_pairs = (
+            (self.profit_floor_1_activation_r, self.profit_floor_1_lock_r),
+            (self.profit_floor_2_activation_r, self.profit_floor_2_lock_r),
+            (self.profit_floor_3_activation_r, self.profit_floor_3_lock_r),
+        )
+        disabled_seen = False
+        for activation, lock in floor_pairs:
+            if activation <= 0.0:
+                if lock > 0.0:
+                    raise ValueError(
+                        "profit-floor lock requires a positive activation R"
+                    )
+                disabled_seen = True
+            elif disabled_seen:
+                raise ValueError(
+                    "profit-floor levels must be enabled without gaps"
+                )
 
     @property
     def partial_enabled(self) -> bool:
         return self.partial_take_profit_r > 0.0 and self.partial_take_profit_fraction > 0.0
+
+    @property
+    def profit_floor_levels(self) -> tuple[tuple[float, float], ...]:
+        """Return enabled, causal MFE checkpoints in ascending order."""
+
+        pairs = (
+            (self.profit_floor_1_activation_r, self.profit_floor_1_lock_r),
+            (self.profit_floor_2_activation_r, self.profit_floor_2_lock_r),
+            (self.profit_floor_3_activation_r, self.profit_floor_3_lock_r),
+        )
+        return tuple(
+            (float(activation), float(lock))
+            for activation, lock in pairs
+            if activation > 0.0
+        )
 
 
 @dataclass
@@ -309,6 +368,24 @@ def _process_protected_bar(
         position.max_mae_r,
         _position_current_r(position, adverse, execution, rules),
     )
+
+    for level, (activation_r, lock_r) in enumerate(
+        exit_config.profit_floor_levels, 1
+    ):
+        if position.max_mfe_r < activation_r:
+            continue
+        _raise_stop(
+            protected,
+            _raw_stop_for_full_cost_r(
+                direction,
+                position.entry_price,
+                position.entry_fee / position.quantity,
+                position.unit_risk,
+                lock_r,
+                execution,
+            ),
+            f"profit_floor_{level}_stop",
+        )
 
     if (
         exit_config.profit_giveback_activation_r > 0.0

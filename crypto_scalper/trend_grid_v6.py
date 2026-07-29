@@ -33,12 +33,16 @@ class GridV6CampaignPolicy:
     score_5_risk_factor: float = 1.0
     score_6_risk_factor: float = 1.0
     maximum_campaign_risk_pct: float = 0.11
+    maximum_notional_multiple: float = 0.0
     target_spacing: float = 1.85
     campaign_loss_limit_r: float = 0.70
     max_campaign_minutes: int = 4_320
     campaign_take_profit_r: float = 0.0
     profit_lock_activation_r: float = 0.0
     profit_giveback_r: float = 0.0
+    cycle_profit_floor_min_take_profits: int = 0
+    cycle_profit_floor_activation_r: float = 0.0
+    cycle_profit_floor_r: float = 0.0
 
     def validate(self) -> None:
         if not 0 <= self.minimum_score <= 6:
@@ -55,6 +59,10 @@ class GridV6CampaignPolicy:
             raise ValueError("Grid v6 score risk factors must be positive")
         if self.maximum_campaign_risk_pct <= 0.0:
             raise ValueError("Grid v6 campaign risk ceiling must be positive")
+        if self.maximum_notional_multiple < 0.0:
+            raise ValueError(
+                "Grid v6 notional multiple override cannot be negative"
+            )
         if self.target_spacing <= 0.0:
             raise ValueError("Grid v6 target spacing must be positive")
         if self.campaign_loss_limit_r < 0.0:
@@ -75,6 +83,26 @@ class GridV6CampaignPolicy:
         ):
             raise ValueError(
                 "Grid v6 profit lock activation and giveback must be enabled together"
+            )
+        if self.cycle_profit_floor_min_take_profits < 0:
+            raise ValueError(
+                "Grid v6 cycle profit-floor count cannot be negative"
+            )
+        cycle_enabled = (
+            self.cycle_profit_floor_min_take_profits > 0
+            or self.cycle_profit_floor_activation_r > 0.0
+            or self.cycle_profit_floor_r > 0.0
+        )
+        if cycle_enabled and not (
+            self.cycle_profit_floor_min_take_profits > 0
+            and self.cycle_profit_floor_activation_r > 0.0
+            and 0.0
+            <= self.cycle_profit_floor_r
+            < self.cycle_profit_floor_activation_r
+        ):
+            raise ValueError(
+                "Grid v6 cycle profit floor requires a take-profit count "
+                "and a floor below its positive activation R"
             )
 
     def as_dict(self) -> dict[str, Any]:

@@ -30,6 +30,13 @@ from .combined_breakout_v8_grid_v6_shadow import (
 from .combined_breakout_v8_grid_v6_live import (
     CombinedBreakoutV8GridV6LiveTrader,
 )
+from .combined_breakout_v9_grid_v7_shadow import (
+    COMBINED_V9_GRID_V7_NAME,
+    CombinedBreakoutV9GridV7ShadowTrader,
+)
+from .combined_breakout_v9_grid_v7_live import (
+    CombinedBreakoutV9GridV7LiveTrader,
+)
 from .live_config import (
     DEFAULT_SYMBOLS,
     LiveAppConfig,
@@ -48,8 +55,8 @@ from .volatility_breakout_shadow import (
 
 
 DEFAULT_CONFIG_PATH = "config.gui.mtf-momentum-reset-stage21.json"
-ACTIVE_GUI_CONFIG_PATH = "config.gui.breakout-v8-grid-v6-max2-shadow.json"
-LIVE_GUI_CONFIG_PATH = "config.gui.breakout-v8-grid-v6-max2-live.json"
+ACTIVE_GUI_CONFIG_PATH = "config.gui.breakout-v9-grid-v7-max2-shadow.json"
+LIVE_GUI_CONFIG_PATH = "config.gui.breakout-v9-grid-v7-max2-live.json"
 FALLBACK_CONFIG_PATH = "config.live.example.json"
 STRATEGY_MODE_INDICATOR = "指标反转稳定版"
 STRATEGY_MODE_SUPER_VOLUME = "强放量突破"
@@ -58,10 +65,10 @@ STRATEGY_MODE_MTF_RESET = "MTF动量重置"
 STRATEGY_MODE_OI_FLUSH = "OI去杠杆反弹"
 STRATEGY_MODE_DUAL_THRUST_SHADOW = "Hybrid v5 50币 Shadow"
 STRATEGY_MODE_COMBINED_SHADOW = (
-    "Breakout v8 + Grid v6 50币 Max2 DRY-RUN"
+    "Breakout v9 + Grid v7 50币 Max2 DRY-RUN"
 )
 STRATEGY_MODE_COMBINED_LIVE = (
-    "Breakout v8 + Grid v6 50币 Max2 LIVE"
+    "Breakout v9 + Grid v7 50币 Max2 LIVE"
 )
 EXECUTION_MODE_DRY_RUN = "DRY-RUN"
 EXECUTION_MODE_LIVE = "LIVE"
@@ -69,7 +76,7 @@ EXECUTION_MODE_VALUES = (
     EXECUTION_MODE_DRY_RUN,
     EXECUTION_MODE_LIVE,
 )
-V8_V6_DRY_RUN_DISPLAY_BASELINE_USDT = 200.0
+V9_V7_DRY_RUN_DISPLAY_BASELINE_USDT = 200.0
 STRATEGY_MODE_MANUAL = "手动配置"
 STRATEGY_MODE_VALUES = (
     STRATEGY_MODE_COMBINED_SHADOW,
@@ -83,8 +90,8 @@ STRATEGY_MODE_VALUES = (
     STRATEGY_MODE_MANUAL,
 )
 STRATEGY_MODE_SUMMARIES = {
-    STRATEGY_MODE_COMBINED_SHADOW: "50币共享模拟账户：Breakout v8 + Grid v6，各最多1仓、全局最多2仓；实时主网数据，资金与成交均为本地模拟。",
-    STRATEGY_MODE_COMBINED_LIVE: "独立实盘执行：交易所成交为仓位真相，严格对账、幂等订单、reduceOnly退出、保护止损与熔断；默认锁定且仅使用10%研究风险。",
+    STRATEGY_MODE_COMBINED_SHADOW: "50币共享模拟账户：Breakout v9 共享平衡版 + Grid v7，各最多1仓、全局最多2仓；实时主网数据，资金与成交均为本地模拟。",
+    STRATEGY_MODE_COMBINED_LIVE: "独立实盘执行：交易所成交为仓位真相，严格对账、幂等订单、reduceOnly退出、保护止损与熔断；使用与冻结回测一致的100%风险缩放。",
     STRATEGY_MODE_DUAL_THRUST_SHADOW: "Hybrid v5 Balanced Expansion Runner：50币、60m 多空、单仓、风险2.5%、8R止盈5%、60R主目标、full-cost；强制 dry-run。",
     STRATEGY_MODE_INDICATOR: "当前启用：indicator_reversal 多空分离版。20x/持仓4，risk 0.065，多头0.282/空头0.34，其它策略关闭。",
     STRATEGY_MODE_SUPER_VOLUME: "启用强放量突破策略；适合捕捉高量能趋势启动，旧突破/回踩/反转策略保持关闭。",
@@ -127,6 +134,11 @@ THEME = {
 def _combined_shadow_trader_class(config: LiveAppConfig):
     if (
         config.combined_volatility_trend_grid_shadow.strategy_name
+        == COMBINED_V9_GRID_V7_NAME
+    ):
+        return CombinedBreakoutV9GridV7ShadowTrader
+    if (
+        config.combined_volatility_trend_grid_shadow.strategy_name
         == COMBINED_V8_GRID_V6_NAME
     ):
         return CombinedBreakoutV8GridV6ShadowTrader
@@ -143,10 +155,19 @@ def _combined_shadow_trader_class(config: LiveAppConfig):
     return CombinedVolatilityTrendGridShadowTrader
 
 
+def _combined_live_trader_class(config: LiveAppConfig):
+    if (
+        config.combined_breakout_v8_grid_v6_live.strategy_name
+        == COMBINED_V9_GRID_V7_NAME
+    ):
+        return CombinedBreakoutV9GridV7LiveTrader
+    return CombinedBreakoutV8GridV6LiveTrader
+
+
 class TradingApp(tk.Tk):
     def __init__(self, initial_config_path: str = ACTIVE_GUI_CONFIG_PATH) -> None:
         super().__init__()
-        self.title("V8 / V6 Trading Console")
+        self.title("V9 / V7 Trading Console")
         self.geometry("1280x700")
         self.minsize(1080, 620)
         self.configure(bg=THEME["root"])
@@ -399,12 +420,12 @@ class TradingApp(tk.Tk):
         title_block.pack(side=tk.LEFT)
         ttk.Label(
             title_block,
-            text="V8 / V6 Trading Console",
+            text="V9 / V7 Trading Console",
             style="HeaderTitle.TLabel",
         ).pack(anchor=tk.W)
         ttk.Label(
             title_block,
-            text="Breakout v8 + Grid v6  ·  Binance Futures Mainnet",
+            text="Breakout v9 共享平衡版 + Grid v7  ·  Binance Futures Mainnet",
             style="HeaderSubtitle.TLabel",
         ).pack(anchor=tk.W, pady=(3, 0))
 
@@ -496,7 +517,7 @@ class TradingApp(tk.Tk):
         ).grid(row=0, column=0, sticky=tk.W)
         ttk.Label(
             strategy_card,
-            text="Breakout v8 + Grid v6",
+            text="Breakout v9 共享平衡版 + Grid v7",
             style="ModeValue.TLabel",
         ).grid(row=1, column=0, sticky=tk.W, pady=(7, 9))
         pill_row = ttk.Frame(strategy_card, style="Card.TFrame")
@@ -713,12 +734,12 @@ class TradingApp(tk.Tk):
         self._entry(advanced, "主网确认文本", self.mainnet_confirmation, 2)
         ttk.Checkbutton(
             advanced,
-            text="ARM v8/v6 LIVE（仅实盘配置）",
+            text="ARM v9/v7 LIVE（仅实盘配置）",
             variable=self.live_armed,
         ).grid(row=3, column=1, sticky=tk.W, pady=5)
         self._entry(
             advanced,
-            "v8/v6实盘确认",
+            "v9/v7实盘确认",
             self.live_confirmation,
             4,
         )
@@ -733,9 +754,9 @@ class TradingApp(tk.Tk):
         ttk.Label(
             advanced,
             text=(
-                "v8/v6 实盘必须加载独立 LIVE 配置、使用 One-way 专用账户，"
+                "v9/v7 实盘必须加载独立 LIVE 配置、使用 One-way 专用账户，"
                 "同时 ARM，并填写 CONFIRM_MAINNET 与 "
-                "CONFIRM_BREAKOUT_V8_GRID_V6_LIVE；点击启动后还会再次要求 RUN_LIVE_NOW。"
+                "CONFIRM_BREAKOUT_V9_GRID_V7_LIVE；点击启动后还会再次要求 RUN_LIVE_NOW。"
             ),
             style="Muted.TLabel",
             wraplength=330,
@@ -944,7 +965,7 @@ class TradingApp(tk.Tk):
             "主网实时行情，本地模拟资金与成交，不发送真实订单。"
         )
         self.safety_note.set(
-            "DRY-RUN 与实盘使用相同的 v8/v6 信号源，"
+            "DRY-RUN 与实盘使用相同的 v9/v7 信号源，"
             "但资金、仓位和成交只保存在本地模拟账本。"
         )
         self.start_button.configure(
@@ -1023,7 +1044,7 @@ class TradingApp(tk.Tk):
             self._apply_config(load_live_config(path))
             self._render_empty_positions(self._last_config)
             self.log(
-                "已切换到独立 v8/v6 LIVE 配置；当前默认未ARM，"
+                "已切换到独立 v9/v7 LIVE 配置；当前默认未ARM，"
                 "不会发送订单。"
             )
             return
@@ -1036,7 +1057,7 @@ class TradingApp(tk.Tk):
             self.config_path.set(str(path))
             self._apply_config(load_live_config(path))
             self._render_empty_positions(self._last_config)
-            self.log("已切回 v8/v6 DRY-RUN；真实订单路径已关闭。")
+            self.log("已切回 v9/v7 DRY-RUN；真实订单路径已关闭。")
             return
         self.initial_entry_fraction.set("1.0")
         self.max_scale_ins_per_symbol.set("0")
@@ -1050,7 +1071,7 @@ class TradingApp(tk.Tk):
             self.symbol_margin.set("0.95")
             self.max_drawdown.set("0.60")
             self.dry_run.set(True)
-            self.log("已应用 Breakout v8 + Grid v6 shadow参数：50币、共享账户最多2仓、每策略1仓、强制dry-run。")
+            self.log("已应用 Breakout v9 共享平衡版 + Grid v7 shadow参数：50币、共享账户最多2仓、每策略1仓、强制dry-run。")
         elif mode == STRATEGY_MODE_DUAL_THRUST_SHADOW:
             self.starting_capital.set("2000.0")
             self.max_open_positions.set("1")
@@ -1144,7 +1165,7 @@ class TradingApp(tk.Tk):
             client = self._client_for_config(config)
             self.log_from_thread(f"API Key: {mask_secret(client.api_key)}")
             if config.combined_breakout_v8_grid_v6_live.enabled:
-                trader = CombinedBreakoutV8GridV6LiveTrader(
+                trader = _combined_live_trader_class(config)(
                     config, client, logger=self.log_from_thread
                 )
                 snapshot = trader.snapshot_account()
@@ -1154,7 +1175,7 @@ class TradingApp(tk.Tk):
                 )
                 live = config.combined_breakout_v8_grid_v6_live
                 self.log_from_thread(
-                    f"v8/v6 LIVE账户只读检查: 权益={snapshot.equity:.2f}U "
+                    f"v9/v7 LIVE账户只读检查: 权益={snapshot.equity:.2f}U "
                     f"持仓={len(snapshot.position_rows)}/2 "
                     f"状态={'ARMED' if live.armed else 'LOCKED'} "
                     f"账本={trader.state_path}"
@@ -1297,7 +1318,7 @@ class TradingApp(tk.Tk):
             if live_config.enabled:
                 if not messagebox.askyesno(
                     "确认启动 LIVE 实盘",
-                    "Breakout v8 + Grid v6 将在 Binance 主网真实下单。\n\n"
+                    "Breakout v9 共享平衡版 + Grid v7 将在 Binance 主网真实下单。\n\n"
                     "50 币、10x 全仓、全局最多 2 仓；停止程序不会自动平仓。\n\n"
                     "仅当这是专用 One-way 合约账户，并且你接受真实资金风险时，"
                     "才选择“是”。",
@@ -1315,7 +1336,7 @@ class TradingApp(tk.Tk):
                 )
             client = self._client_for_config(config)
             if live_config.enabled:
-                trader = CombinedBreakoutV8GridV6LiveTrader(
+                trader = _combined_live_trader_class(config)(
                     config,
                     client,
                     logger=self.log_from_thread,
@@ -1527,7 +1548,7 @@ class TradingApp(tk.Tk):
         self.mtf_allow_short.set(False)
         if live_config.enabled:
             self.mtf_core_parameters.set(
-                "Breakout v8 + Grid v6 50币  |  真实交易所执行\n"
+                "Breakout v9 共享平衡版 + Grid v7 50币  |  真实交易所执行\n"
                 "全局最多 2 仓  |  每策略最多 1 仓  |  同币互斥\n"
                 f"研究风险缩放 {live_config.risk_scale * 100:.0f}%  |  "
                 f"总名义上限 {live_config.max_gross_notional_multiple:.2f}x\n"
@@ -1540,23 +1561,40 @@ class TradingApp(tk.Tk):
         elif config.combined_volatility_trend_grid_shadow.enabled:
             combined = config.combined_volatility_trend_grid_shadow
             breakout = config.dual_thrust_shadow
+            is_v9_grid_v7 = (
+                combined.strategy_name == COMBINED_V9_GRID_V7_NAME
+            )
             is_v8_grid_v6 = combined.strategy_name == COMBINED_V8_GRID_V6_NAME
             is_v7_grid_v5 = combined.strategy_name == COMBINED_V7_GRID_V5_NAME
             is_v5_grid_v3 = combined.strategy_name == COMBINED_V5_GRID_V3_NAME
             combined_label = (
-                "Breakout v8 + Grid v6"
-                if is_v8_grid_v6
+                "Breakout v9 共享平衡版 + Grid v7"
+                if is_v9_grid_v7
                 else (
-                    "Breakout v7 + Grid v5"
-                    if is_v7_grid_v5
+                    "Breakout v8 + Grid v6"
+                    if is_v8_grid_v6
                     else (
-                        "Hybrid v5 + Grid v3"
-                        if is_v5_grid_v3
-                        else "Breakout + Dynamic Trend Grid"
+                        "Breakout v7 + Grid v5"
+                        if is_v7_grid_v5
+                        else (
+                            "Hybrid v5 + Grid v3"
+                            if is_v5_grid_v3
+                            else "Breakout + Dynamic Trend Grid"
+                        )
                     )
                 )
             )
-            if is_v8_grid_v6:
+            if is_v9_grid_v7:
+                breakout_line = (
+                    f"Breakout v9: 已收盘{breakout.timeframe_minutes}m 多空 / "
+                    "分数分侧利润保护 + 小比例分批止盈 / "
+                    f"{breakout.stop_atr_multiple:.2f}ATR止损"
+                )
+                grid_line = (
+                    "Grid v7: 已收盘60m / 仅做空 / 两层网格 / "
+                    "弱信号拒绝 + 循环利润回撤保护"
+                )
+            elif is_v8_grid_v6:
                 breakout_line = (
                     f"Breakout v8: 已收盘{breakout.timeframe_minutes}m 多空 / "
                     f"分数凸性动态风险 / {breakout.stop_atr_multiple:.2f}ATR止损"
@@ -2404,9 +2442,10 @@ def _account_display_equity_baseline(
     shadow = config.combined_volatility_trend_grid_shadow
     if (
         shadow.enabled
-        and shadow.strategy_name == COMBINED_V8_GRID_V6_NAME
+        and shadow.strategy_name
+        in {COMBINED_V9_GRID_V7_NAME, COMBINED_V8_GRID_V6_NAME}
     ):
-        return V8_V6_DRY_RUN_DISPLAY_BASELINE_USDT
+        return V9_V7_DRY_RUN_DISPLAY_BASELINE_USDT
     return config.risk.starting_capital_usdt
 
 

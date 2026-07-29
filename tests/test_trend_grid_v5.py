@@ -13,6 +13,8 @@ from crypto_scalper.trend_grid_optimize import (
     CompactSeries,
     GridCandidate,
     GridPortfolioConfig,
+    _create_campaign,
+    _process_campaign_bar,
     minute_token,
     simulate_grid_portfolio,
 )
@@ -168,3 +170,68 @@ def test_grid_v5_all_winning_tier_passes_robustness_check() -> None:
             "profit_factor": None,
         }
     )
+
+
+def test_grid_cycle_floor_closes_only_after_realized_cycles_and_activation() -> None:
+    start = datetime(2026, 1, 1)
+    candidate = _candidate(start)
+    series = CompactSeries(
+        minutes=array("q", [minute_token(start)]),
+        opens=array("d", [100.0]),
+        highs=array("d", [100.2]),
+        lows=array("d", [99.8]),
+        closes=array("d", [100.0]),
+        volumes=array("d", [1_000.0]),
+    )
+    rules = SymbolRules(
+        "TESTUSDT",
+        Decimal("0.001"),
+        Decimal("0.001"),
+        Decimal("0.1"),
+        Decimal("5"),
+    )
+    signal = TrendGridConfig(
+        grid_levels=2,
+        grid_spacing_atr=0.5,
+        hard_stop_atr_multiple=2.0,
+        max_total_entries=1,
+        cycle_profit_floor_min_take_profits=2,
+        cycle_profit_floor_activation_r=0.2,
+        cycle_profit_floor_r=0.03,
+    )
+    execution = BacktestExecutionConfig(
+        market_slippage_bps=0.0,
+        stop_slippage_bps=0.0,
+        take_profit_slippage_bps=0.0,
+        taker_fee_rate=0.0,
+    )
+    opened = _create_campaign(
+        candidate,
+        series,
+        rules,
+        signal,
+        GridPortfolioConfig(
+            risk_per_campaign_pct=0.05,
+            max_notional_multiple=100.0,
+        ),
+        execution,
+        200.0,
+    )
+    assert opened is not None
+    campaign, _ = opened
+    campaign.grid_take_profit_count = 2
+    campaign.best_equity_pnl = campaign.risk_budget * 0.25
+
+    _, reason = _process_campaign_bar(
+        campaign,
+        minute_token(start),
+        series,
+        0,
+        None,
+        signal,
+        execution,
+        rules,
+    )
+
+    assert reason == "cycle_profit_floor"
+    assert campaign._pending_report["exit_reason"] == "cycle_profit_floor"

@@ -1,0 +1,22 @@
+{
+  "strategy_name": "dual_thrust_volatility_breakout_v9_profit_ladder_plus_dynamic_trend_following_grid_v7_cycle_profit_floor_max2",
+  "version": "breakout_v9_grid_v7_shared_max2_backtest_20260728",
+  "status": "independent_combined_research_artifacts",
+  "report": "reports/combined_breakout_v9_shared_balanced_grid_v7_max2_3m_6m.json",
+  "summary": "reports/combined_breakout_v9_shared_balanced_grid_v7_max2_3m_6m.md",
+  "research_config": "config.combined-breakout-v9-shared-balanced-grid-v7-max2-backtest.json",
+  "hashes": {
+    "crypto_scalper/combined_volatility_trend_grid_v4_backtest.py": "9f57deacfb3bbf972d1208ee0097d242cf948ef9193fd23a6f3b0f72c54e35c7",
+    "crypto_scalper/combined_breakout_v9_grid_v7_backtest.py": "6392cc9f7ee9af0571d91bcbf8e8c5d47455d0af4ee780d251de50c4b910020e",
+    "reports/combined_breakout_v9_shared_balanced_grid_v7_max2_3m_6m.json": "616b02cb8a048bf1bfdac3d3a9afc5cc361ac818ebd305700e329285f659cd51",
+    "reports/combined_breakout_v9_shared_balanced_grid_v7_max2_3m_6m.md": "ef33c423bb9a0dc808bad1b69f8e9363d5fa684ef2be06dc6ebfa9be4014ab92",
+    "config.combined-breakout-v9-shared-balanced-grid-v7-max2-backtest.json": "7cd1048d2001f74115fefe9ddbb86d136bb9c128907783c8edffffad4f461545"
+  },
+  "preserved": {
+    "active_gui_config": "unchanged",
+    "active_gui_state": "unchanged",
+    "breakout_v8_source": "unchanged",
+    "grid_v6_source": "unchanged",
+    "apt_grid": "unchanged"
+  }
+}

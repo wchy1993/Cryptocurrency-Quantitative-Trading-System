@@ -115,3 +115,21 @@ def test_grid_v6_profit_lock_requires_a_complete_pair() -> None:
         profit_lock_activation_r=0.2,
         profit_giveback_r=0.1,
     ).validate()
+
+
+def test_grid_v6_cycle_floor_requires_complete_causal_controls() -> None:
+    with pytest.raises(ValueError):
+        GridV6CampaignPolicy(
+            cycle_profit_floor_min_take_profits=2,
+        ).validate()
+    with pytest.raises(ValueError):
+        GridV6CampaignPolicy(
+            cycle_profit_floor_min_take_profits=2,
+            cycle_profit_floor_activation_r=0.2,
+            cycle_profit_floor_r=0.2,
+        ).validate()
+    GridV6CampaignPolicy(
+        cycle_profit_floor_min_take_profits=2,
+        cycle_profit_floor_activation_r=0.2,
+        cycle_profit_floor_r=0.03,
+    ).validate()
