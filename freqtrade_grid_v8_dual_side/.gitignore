@@ -1,0 +1,13 @@
+.runtime/
+.venv/
+.env
+user_data/data/
+user_data/data_*/
+user_data/backtest_results/
+user_data/logs/
+user_data/strategy_state/
+user_data/*.sqlite*
+*.app/
+*.pyc
+__pycache__/
+.DS_Store

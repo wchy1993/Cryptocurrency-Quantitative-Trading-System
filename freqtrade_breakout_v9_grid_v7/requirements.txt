@@ -1,0 +1,4 @@
+# Freqtrade requires Python 3.11 or newer.
+freqtrade==2026.6
+# Required by Freqtrade's backtest metrics on this macOS installation.
+scipy==1.18.0

@@ -1,0 +1,44 @@
+{
+  "manifest_version": 1,
+  "created_at": "2026-07-29T23:11:02+09:00",
+  "selected_strategy": "GridV8DualSideSelected",
+  "strategy_source_sha256": "62fbca27a6b383df24da6a8e82de5b37689aa8d30863de96b8322c79d75e402f",
+  "archived_source_sha256": {
+    "final_3m": "62fbca27a6b383df24da6a8e82de5b37689aa8d30863de96b8322c79d75e402f",
+    "final_6m": "62fbca27a6b383df24da6a8e82de5b37689aa8d30863de96b8322c79d75e402f"
+  },
+  "files": {
+    "README.md": "4fbe94778f0a4157e133b3a3f2636ae8375f33c1c9bb1dac0b62f961d8f159c9",
+    "config.active50.backtest.json": "c26e946b5b954ecfa0aba5750c5393f41d182c9b1e0ab70a1d05ad69fec3e936",
+    "run_backtest_period.sh": "cf6d802585d236b5a3c43a7dac47e8bd01e20664e6d97c9f722cb09fa89909eb",
+    "tools/analyze_trade_features.py": "6cbab312a63c5535ec440c14306c589f07f88addfaaa433dc953c7571962e804",
+    "user_data/strategies/GridV8DualSideFreqtrade.py": "62fbca27a6b383df24da6a8e82de5b37689aa8d30863de96b8322c79d75e402f",
+    "reports/grid_v8_dual_side_3m_6m_20260729.md": "2a9ca61858f2d10d8740bb8560534a4c19e44ad09b90e8ebdbdc650d05f3961c",
+    "reports/grid_v8_dual_side_3m_6m_20260729.json": "81c36ba48d977014ec87fad612a54e8146896816626d6c91488dee46b56bf721"
+  },
+  "dependency": {
+    "../freqtrade_breakout_v9_grid_v7/user_data/strategies/BreakoutV9GridV7Freqtrade.py": "01316a9242f06aa8d5be6253a843512c77c8dcddfede17259f1a9ed9d5a6b222"
+  },
+  "baseline_archives": {
+    "../freqtrade_breakout_v9_grid_v7/user_data/backtest_results/candidates/GridV7OnlyFreqtrade/active50_3m/backtest-result-2026-07-29_20-21-38.zip": "2e922e8cc9313863fb78beb7b5b4e6558134640ca29601a94c2e36eeaf2bf09c",
+    "../freqtrade_breakout_v9_grid_v7/user_data/backtest_results/candidates/GridV7OnlyFreqtrade/active50_3m/backtest-result-2026-07-29_20-21-38.meta.json": "08054a87bd2274dcaa9a3a13da781587a57321c937373ab2ff31b5e4aa5f513a",
+    "../freqtrade_breakout_v9_grid_v7/user_data/backtest_results/candidates/GridV7OnlyFreqtrade/active50_6m/backtest-result-2026-07-29_20-30-17.zip": "9e94e373653812c37bd767c1ce057093929649d79d0cea9484d14030f62bafce",
+    "../freqtrade_breakout_v9_grid_v7/user_data/backtest_results/candidates/GridV7OnlyFreqtrade/active50_6m/backtest-result-2026-07-29_20-30-17.meta.json": "b68c2c2f7a0abe417e508d12b0e2555b5df409d9bfd20153e067a8f95f1ecf2e"
+  },
+  "selected_archives": {
+    "user_data/backtest_results/GridV8DualSideSelected/final_3m/backtest-result-2026-07-29_22-58-19.zip": "becf2771de26effc9ccca61cfe94404b643a1bf92109faf30b994fd48ab224b7",
+    "user_data/backtest_results/GridV8DualSideSelected/final_3m/backtest-result-2026-07-29_22-58-19.meta.json": "bb884b4d6e3fb52690cfde1904c0d3117f4150adb5cac588e8544422b976480d",
+    "user_data/backtest_results/GridV8DualSideSelected/final_6m/backtest-result-2026-07-29_23-07-35.zip": "0ceb941c4820b2fd9a8afb0750412256d2f51ad1014446d4303043a720732ba7",
+    "user_data/backtest_results/GridV8DualSideSelected/final_6m/backtest-result-2026-07-29_23-07-35.meta.json": "1a31bb0a69931fd464782f539eefa5bfab0246278e7da8f8cc83cc840006d2fe"
+  },
+  "robustness_archives": {
+    "user_data/backtest_results/GridV8DualSideRefinedB/early_3m/backtest-result-2026-07-29_22-29-33.zip": "aceb2ec610349e02cb4ad700355276ba67c02862160d76e98a7bccc7576af827",
+    "user_data/backtest_results/GridV8DualSideRefinedB/early_3m/backtest-result-2026-07-29_22-29-33.meta.json": "f23517c398c39198dfd9c86a80bea3fa22b7ebcf25e187c88d9dcdca7a7acb96",
+    "user_data/backtest_results/GridV8DualSideRefinedB/fee12_6m/backtest-result-2026-07-29_22-38-47.zip": "f562b3490b810fe3375f6225c3afa207ab6f9ee8de515adb7a05d3ebad5f2087",
+    "user_data/backtest_results/GridV8DualSideRefinedB/fee12_6m/backtest-result-2026-07-29_22-38-47.meta.json": "578591ef3bbc515df0cc176a7943663dc529be42794c3ba51f0ef10a21ba2426",
+    "user_data/backtest_results/GridV8DualSideNeighborLoose/neighbor_loose_3m/backtest-result-2026-07-29_22-44-05.zip": "074ae24634df8a6a4f5fae3dab3e55df21ca22fc31121bfa6967707678aa3829",
+    "user_data/backtest_results/GridV8DualSideNeighborLoose/neighbor_loose_3m/backtest-result-2026-07-29_22-44-05.meta.json": "1b1611bd87bfdb49769091e7805196b3a898e75f6f8d3f22e9bfd5a660622f3d",
+    "user_data/backtest_results/GridV8DualSideNeighborLoose/neighbor_loose_6m/backtest-result-2026-07-29_22-53-26.zip": "8278eb2fa5c5b4dbe43a7adc77cf4771fe35351b54fa775c355c23e02656ce92",
+    "user_data/backtest_results/GridV8DualSideNeighborLoose/neighbor_loose_6m/backtest-result-2026-07-29_22-53-26.meta.json": "3a537b7af065939d64715830c006fe08419e905f22cd36865e87387dc60f891a"
+  }
+}

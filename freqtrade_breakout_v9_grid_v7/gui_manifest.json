@@ -1,0 +1,145 @@
+{
+  "release": "breakout_v11_adaptive_grid_v8_dual_gui_20260805_tail_exit_guard",
+  "label": "Breakout v11 Adaptive + 双向 Grid v8 + 尾仓全平保护 + 可选非农 Stability v4",
+  "strategy_class": "BreakoutV11AdaptiveGridV8DualSideFreqtrade",
+  "strategy_file": "user_data/strategies/BreakoutV11AdaptiveGridV8DualSideFreqtrade.py",
+  "strategy_sha256": "86006a9287cffa2232319cb33c37b914f170bdc68ed6ec2bc3caef9bbd22c3e1",
+  "nfp_strategy_class": "BreakoutV11AdaptiveGridV8NfpStabilityV4Freqtrade",
+  "nfp_max_open_trades": 3,
+  "nfp_addon_sha256": {
+    "user_data/strategies/BreakoutV11AdaptiveGridV8NfpStabilityV4Freqtrade.py": "e87823225dbe5c4762a3b6d33f77ea535a24c95d09a3cc676c14e700874bee6a",
+    "nfp_stability_v4_runtime.py": "3b204399efb02dbb9594327a74b16b0cb3b2d6fab4cef0a8d73e3185aa2262c4"
+  },
+  "dependency_sha256": {
+    "user_data/strategies/BreakoutV11DefensiveBoS3Risk50Recovery60Q112GridV8DualSideFreqtrade.py": "42ee306806c70286b96bdd9b9f0b638d1088cc28c83435a6c80607f94cffd468",
+    "user_data/strategies/BreakoutV11PortfolioRecovery60ExhaustionQ112GridV8DualSideFreqtrade.py": "1b9b67bb91570f9dd2f25f355bb11f735a143b7c1640640f285ff35693311728",
+    "user_data/strategies/BreakoutV11PortfolioRecovery100ExhaustionQ112GridV8DualSideFreqtrade.py": "fa9860d8cb3ac3ce49b620b801462895d68a9dd3b5f6d5570a21653192b80960",
+    "user_data/strategies/BreakoutV11Trigger18GridV8DualSideFreqtrade.py": "9ddb309503f14c98847c123ab759d0469f6da90ca0d308c595549e26656a39a1",
+    "user_data/strategies/BreakoutV11GridV8DualSideFreqtrade.py": "316f69e1d08cca3747fb8a3982a91d4f7f90de849ba1272dba07eae0a24b72f5",
+    "user_data/strategies/BreakoutV10FGridV8DualSideFreqtrade.py": "7ca7cfad5b99836bb5578ccc21cee7e8401ed150974b3649d3a4107f01c586d6",
+    "user_data/strategies/BreakoutV9GridV7Freqtrade.py": "34b44c7f46fe18151ee621def55ea22db4a9be2fde054bc9f7d20724d921275d",
+    "user_data/strategies/BreakoutV10GridV7Freqtrade.py": "f2061590d533b0e9f718e71cd22515448af67739f9eee3e4f56024b1bbf7d279",
+    "../freqtrade_grid_v8_dual_side/user_data/strategies/GridV8DualSideFreqtrade.py": "62fbca27a6b383df24da6a8e82de5b37689aa8d30863de96b8322c79d75e402f"
+  },
+  "config_file": "config.gui.json",
+  "config_sha256": "318b788e90246b63be44eb0659248d9361f88b0c55521f35c56a797050cd1a5b",
+  "backtest_config_file": "config.backtest.json",
+  "backtest_config_sha256": "7fe58e581a3b784d08acfe4aa6eb2f727f02d7c6c38f05714da011cb15add023",
+  "universe_sha256": "d53a0dbd506ff054568b0cf8dfd7cb780c04a2ef41df26ad717e98cb6e800b2a",
+  "universe_change": {
+    "removed": "TON/USDT:USDT",
+    "added": "SEI/USDT:USDT",
+    "verified_at": "2026-07-29"
+  },
+  "exchange": "binance",
+  "trading_mode": "futures",
+  "margin_mode": "isolated",
+  "pair_count": 50,
+  "max_open_trades": 2,
+  "nfp_stability_v4_optional": {
+    "default_enabled": false,
+    "base_strategy_files_changed": false,
+    "base_max_open_trades": 2,
+    "enabled_max_open_trades": 3,
+    "event_slot": "one independent BTC-only position",
+    "leverage": 50.0,
+    "risk_per_event_pct": 0.005,
+    "schedule_source": "https://www.bls.gov/schedule/2026/home.htm",
+    "schedule_verified_at": "2026-08-04",
+    "verified_schedule_expires": "2026-12-04T13:30:00Z",
+    "historical_60_release_result": {
+      "trades": 19,
+      "win_rate_pct": 78.95,
+      "profit_factor": 5.038,
+      "net_profit_usdt": 15.53,
+      "max_drawdown_pct": 0.68
+    }
+  },
+  "dry_run_wallet": 200.0,
+  "backtest_metric_basis": {
+    "max_drawdown_pct": "minute_wallet_path",
+    "fee_per_side": 0.0008,
+    "timeframe": "1h",
+    "timeframe_detail": "1m"
+  },
+  "live_context_sync": {
+    "version": "live_context_sync_v1_20260731",
+    "scope": "execution_data_adapter_only",
+    "requires_all_pairs_same_latest_closed_timestamp": true,
+    "single_reanalysis_per_closed_timestamp": true,
+    "signal_risk_exit_rules_changed": false
+  },
+  "order_fill_idempotency": {
+    "version": "unique_order_id_v1_20260804",
+    "scope": "execution_state_accounting_only",
+    "restart_safe_trade_custom_data": true,
+    "duplicate_fee_update_callbacks_ignored": true,
+    "signal_risk_exit_rules_changed": false
+  },
+  "tail_exit_safety": {
+    "version": "post_precision_minimum_guard_v1_20260805",
+    "scope": "execution_position_reduction_only",
+    "partial_exit_promoted_when_remainder_is_untradeable": true,
+    "preserves_entry_spacing_risk_and_normal_targets": true,
+    "xlm_incident_live_axis_verified": true,
+    "signal_rules_changed": false
+  },
+  "manual_exchange_reconciliation": {
+    "version": "freqtrade_reload_trade_from_exchange_v1_20260807",
+    "scope": "gui_live_execution_and_ledger_only",
+    "poll_interval_seconds": 10,
+    "supports": ["manual_full_close", "manual_partial_close"],
+    "requires_second_exchange_snapshot": true,
+    "running_bot_paused_during_reconciliation": true,
+    "uses_actual_exchange_orders_fills_fees_and_timestamps": true,
+    "manual_additions_and_direction_changes_fail_closed": true,
+    "strategy_signal_risk_exit_rules_changed": false
+  },
+  "adaptive_high_water_state": {
+    "enabled_for": ["live", "dry_run"],
+    "disabled_for": ["backtest", "hyperopt"],
+    "mode_separated": true,
+    "atomic_owner_only_write": true,
+    "corrupt_state_fails_closed": true,
+    "directory": "user_data/strategy_state"
+  },
+  "backtest_3m": {
+    "timerange": "20260419-20260719",
+    "trades": 52,
+    "net_profit_usdt": 30212.6446177,
+    "profit_factor": 11.856463169973583,
+    "win_rate_pct": 71.15384615384616,
+    "max_drawdown_pct": 9.691003417780605,
+    "wallet_low_usdt": 200.0,
+    "liquidations": 0,
+    "trade_rows_sha256": "83489183f3d0e73ce7c3f90ebb36212b81b240d09f676452351ae1e8eb0aef19",
+    "result_file": "user_data/backtest_results/v11_gui_alias_parity_3m_20260801/backtest-result-2026-08-01_20-08-58.zip",
+    "result_sha256": "e18be08649b9b0e5d05c59f87fd83693a93fb925725b94d2fcbfd8965ebf4379"
+  },
+  "backtest_6m": {
+    "timerange": "20260119-20260719",
+    "trades": 91,
+    "net_profit_usdt": 236559.92410813,
+    "profit_factor": 13.882870397924517,
+    "win_rate_pct": 67.03296703296702,
+    "max_drawdown_pct": 15.972052587969232,
+    "wallet_low_usdt": 200.0,
+    "liquidations": 0,
+    "trade_rows_sha256": "c666d2177149a81bb4ac773b22b8e42b098e18be606073c21b77164997638249",
+    "result_file": "user_data/backtest_results/v11_research_20260801/defensive_bo_s3_risk50_recovery60_q112_6m/backtest-result-2026-08-01_19-30-26.zip",
+    "result_sha256": "94d4058a044b4b9c670c4aa7f9453ba7e7b0ba841b555bd9b78a38446d7ffe5b"
+  },
+  "backtest_1y": {
+    "timerange": "20250719-20260719",
+    "trades": 178,
+    "net_profit_usdt": 260230.62450572997,
+    "profit_factor": 13.71474373773051,
+    "win_rate_pct": 47.752808988764045,
+    "max_drawdown_pct": 25.993356930000004,
+    "wallet_low_usdt": 148.01328614,
+    "liquidations": 0,
+    "trade_rows_sha256": "411b8795fed94cd32f02aa081d11c33dee97ccad66561c199267e3fb4637c7d8",
+    "result_file": "user_data/backtest_results/v11_research_20260801/defensive_bo_s3_risk50_recovery60_q112_1y/backtest-result-2026-08-01_19-43-50.zip",
+    "result_sha256": "135ea26a58eeeb95e0d4e00771890609df17f3f283006dd06fd8e0b2befad9d3"
+  }
+}

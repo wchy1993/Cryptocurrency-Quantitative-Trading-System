@@ -1,0 +1,193 @@
+{
+  "report_id": "grid_v8_dual_side_3m_6m_20260729",
+  "generated_at": "2026-07-29T23:11:02+09:00",
+  "status": "acceptance_target_met",
+  "selected_strategy": "GridV8DualSideSelected",
+  "isolation": {
+    "new_project_only": true,
+    "original_grid_v7_modified": false,
+    "existing_gui_modified": false,
+    "existing_live_modified": false
+  },
+  "execution_model": {
+    "engine": "Freqtrade 2026.6",
+    "exchange": "Binance USDT-M futures",
+    "universe_count": 50,
+    "pairlist": "static current-active-50",
+    "timeframe": "1h",
+    "timeframe_detail": "1m",
+    "starting_balance_usdt": 200.0,
+    "stake_amount": "unlimited",
+    "max_open_trades": 1,
+    "leverage_target_max": 10.0,
+    "leverage_actual_min": 5.0,
+    "leverage_actual_max": 10.0,
+    "exchange_leverage_cap_applied": true,
+    "margin_mode": "isolated",
+    "fee_per_side": 0.0008,
+    "historical_funding": true,
+    "cache": "none"
+  },
+  "baseline_grid_v7": {
+    "3m": {
+      "timerange": "20260419-20260719",
+      "trades": 24,
+      "long_trades": 0,
+      "short_trades": 24,
+      "profit_usdt": 134.98578496,
+      "return_pct": 67.49289248,
+      "profit_factor": 2.4015044363313973,
+      "win_rate_pct": 70.83333333333334,
+      "wallet_max_drawdown_pct": 11.993790863895628,
+      "liquidations": 0
+    },
+    "6m": {
+      "timerange": "20260119-20260719",
+      "trades": 42,
+      "long_trades": 0,
+      "short_trades": 42,
+      "profit_usdt": 902.1504923700002,
+      "return_pct": 451.0752461850001,
+      "profit_factor": 5.537849806089861,
+      "win_rate_pct": 83.33333333333334,
+      "wallet_max_drawdown_pct": 19.51241273233932,
+      "liquidations": 0
+    }
+  },
+  "selected_grid_v8": {
+    "3m": {
+      "timerange": "20260419-20260719",
+      "trades": 22,
+      "long_trades": 5,
+      "short_trades": 17,
+      "profit_usdt": 311.10170755,
+      "return_pct": 155.550853775,
+      "profit_factor": 5.772100052568804,
+      "win_rate_pct": 81.81818181818183,
+      "wallet_max_drawdown_pct": 6.974197109327622,
+      "closed_balance_max_drawdown_pct": 6.974197109327622,
+      "liquidations": 0,
+      "long": {
+        "trades": 5,
+        "wins": 3,
+        "losses": 2,
+        "profit_usdt": 29.388766159999996,
+        "profit_factor": 4.848900006886795
+      },
+      "short": {
+        "trades": 17,
+        "wins": 15,
+        "losses": 2,
+        "profit_usdt": 281.71294139,
+        "profit_factor": 5.894575425174106
+      },
+      "top_1_share_of_gross_profit_pct": 19.46,
+      "top_5_share_of_gross_profit_pct": 61.13
+    },
+    "6m": {
+      "timerange": "20260119-20260719",
+      "trades": 38,
+      "long_trades": 7,
+      "short_trades": 31,
+      "profit_usdt": 1052.08494388,
+      "return_pct": 526.04247194,
+      "profit_factor": 10.805038260453593,
+      "win_rate_pct": 89.47368421052632,
+      "wallet_max_drawdown_pct": 9.03839083915598,
+      "closed_balance_max_drawdown_pct": 7.644746373249481,
+      "liquidations": 0,
+      "long": {
+        "trades": 7,
+        "wins": 5,
+        "losses": 2,
+        "profit_usdt": 86.15678638,
+        "profit_factor": 6.11076165785542
+      },
+      "short": {
+        "trades": 31,
+        "wins": 29,
+        "losses": 2,
+        "profit_usdt": 965.9281575,
+        "profit_factor": 11.680021733311289
+      },
+      "top_1_share_of_gross_profit_pct": 13.926600687708188,
+      "top_5_share_of_gross_profit_pct": 41.39008690083624,
+      "monthly_profit_usdt": {
+        "2026-01-partial": 66.47534167,
+        "2026-02": 161.11236126,
+        "2026-03": 27.55267014,
+        "2026-04": 60.82404002,
+        "2026-05": 175.56785906,
+        "2026-06": 265.83306951,
+        "2026-07-partial": 294.71960222
+      }
+    }
+  },
+  "improvement": {
+    "3m": {
+      "profit_usdt_delta": 176.11592259000003,
+      "profit_multiple": 2.304699769995693,
+      "profit_factor_delta": 3.370595616237407,
+      "win_rate_percentage_points": 10.984848484848484,
+      "wallet_drawdown_percentage_points": -5.019593754568006,
+      "trade_count_delta": -2
+    },
+    "6m": {
+      "profit_usdt_delta": 149.93445150999992,
+      "profit_multiple": 1.1661967185941602,
+      "profit_factor_delta": 5.2671884543637315,
+      "win_rate_percentage_points": 6.140350877192972,
+      "wallet_drawdown_percentage_points": -10.474021893183341,
+      "trade_count_delta": -4
+    }
+  },
+  "robustness": {
+    "non_overlapping_early_3m": {
+      "timerange": "20260119-20260419",
+      "trades": 16,
+      "long_trades": 2,
+      "short_trades": 14,
+      "profit_usdt": 302.31892023,
+      "profit_factor": 9.024509404316404,
+      "win_rate_pct": 93.75,
+      "wallet_max_drawdown_pct": 9.03839083915598,
+      "liquidations": 0
+    },
+    "higher_fee_6m": {
+      "timerange": "20260119-20260719",
+      "fee_per_side": 0.0012,
+      "trades": 38,
+      "long_trades": 7,
+      "short_trades": 31,
+      "profit_usdt": 924.94982447,
+      "profit_factor": 7.071009221650785,
+      "win_rate_pct": 86.8421052631579,
+      "wallet_max_drawdown_pct": 7.372647725619612,
+      "liquidations": 0
+    },
+    "looser_neighbor": {
+      "main_3m_ledger_identical": true,
+      "main_6m_ledger_identical": true
+    }
+  },
+  "acceptance_checks": {
+    "3m_profit_above_grid_v7": true,
+    "6m_profit_above_grid_v7": true,
+    "3m_profit_factor_above_grid_v7": true,
+    "6m_profit_factor_above_grid_v7": true,
+    "3m_wallet_drawdown_at_or_below_10_pct": true,
+    "6m_wallet_drawdown_at_or_below_10_pct": true,
+    "long_and_short_traded_in_both_windows": true,
+    "long_and_short_profitable_in_both_windows": true,
+    "zero_liquidations": true,
+    "frozen_class_matches_selected_candidate_ledger": true,
+    "archived_source_matches_current_source": true
+  },
+  "limitations": [
+    "The main 3m and 6m windows participated in model selection and are not untouched future samples.",
+    "The static current-active-50 universe can introduce survivorship bias.",
+    "One-minute OHLCV detail does not model historical order-book depth, queue position, partial fills, network latency, or extreme slippage.",
+    "Unlimited compounding makes final USDT profit path-dependent and is not a forecast.",
+    "This isolated research strategy is not connected to the existing GUI or LIVE execution layer."
+  ]
+}

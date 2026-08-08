@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-01T20:08:00+09:00",
+  "selected_entry_point": "BreakoutV11AdaptiveGridV8DualSideFreqtrade",
+  "selected_implementation": "BreakoutV11DefensiveBoS3Risk50Recovery60Q112GridV8DualSideFreqtrade",
+  "method": {
+    "universe": "Active50",
+    "starting_wallet_usdt": 200.0,
+    "max_open_trades": 2,
+    "trading_mode": "isolated futures",
+    "target_leverage": 10.0,
+    "stake_amount": "unlimited compounding",
+    "signal_timeframe": "1h",
+    "detail_timeframe": "1m",
+    "fee": 0.0008,
+    "cache": "none"
+  },
+  "periods": {
+    "3m": {
+      "timerange": "20260419-20260719",
+      "baseline": {"trades": 52, "net_profit_usdt": 30212.6446177, "profit_factor": 11.856463169973583, "win_rate_pct": 71.15384615384616, "wallet_max_drawdown_pct": 9.691003417780605, "wallet_low_usdt": 200.0, "liquidations": 0},
+      "selected": {"trades": 52, "net_profit_usdt": 30212.6446177, "profit_factor": 11.856463169973583, "win_rate_pct": 71.15384615384616, "wallet_max_drawdown_pct": 9.691003417780605, "wallet_low_usdt": 200.0, "liquidations": 0},
+      "trade_rows_sha256": "83489183f3d0e73ce7c3f90ebb36212b81b240d09f676452351ae1e8eb0aef19",
+      "archive_sha256": "818c5ee136d273a47cb5adc303b8283ddbbb8b325d819e94c8ae9688409cee19",
+      "gui_entry_point_replay_archive_sha256": "e18be08649b9b0e5d05c59f87fd83693a93fb925725b94d2fcbfd8965ebf4379"
+    },
+    "6m": {
+      "timerange": "20260119-20260719",
+      "baseline": {"trades": 91, "net_profit_usdt": 236559.92410813, "profit_factor": 13.882870397924517, "win_rate_pct": 67.03296703296702, "wallet_max_drawdown_pct": 15.972052587969232, "wallet_low_usdt": 200.0, "liquidations": 0},
+      "selected": {"trades": 91, "net_profit_usdt": 236559.92410813, "profit_factor": 13.882870397924517, "win_rate_pct": 67.03296703296702, "wallet_max_drawdown_pct": 15.972052587969232, "wallet_low_usdt": 200.0, "liquidations": 0},
+      "trade_rows_sha256": "c666d2177149a81bb4ac773b22b8e42b098e18be606073c21b77164997638249",
+      "archive_sha256": "94d4058a044b4b9c670c4aa7f9453ba7e7b0ba841b555bd9b78a38446d7ffe5b"
+    },
+    "1y": {
+      "timerange": "20250719-20260719",
+      "baseline": {"trades": 178, "net_profit_usdt": 252713.83917047997, "profit_factor": 13.689368113062544, "win_rate_pct": 48.87640449438202, "wallet_max_drawdown_pct": 60.253187755000006, "wallet_low_usdt": 79.49362449, "liquidations": 0},
+      "selected": {"trades": 178, "net_profit_usdt": 260230.62450572997, "profit_factor": 13.71474373773051, "win_rate_pct": 47.752808988764045, "wallet_max_drawdown_pct": 25.993356930000004, "wallet_low_usdt": 148.01328614, "liquidations": 0},
+      "selected_components": {
+        "breakout": {"trades": 100, "net_profit_usdt": 179672.8822387, "profit_factor": 16.268729400583435, "win_rate_pct": 36.0},
+        "grid": {"trades": 78, "net_profit_usdt": 80557.74226703, "profit_factor": 10.260081376417679, "win_rate_pct": 62.82051282051282}
+      },
+      "trade_rows_sha256": "411b8795fed94cd32f02aa081d11c33dee97ccad66561c199267e3fb4637c7d8",
+      "entry_sequence_sha256": "4d494b0d7026bb6ee40982a71639971c64c221e63d667a6b8850a4dd5650d08b",
+      "archive_sha256": "135ea26a58eeeb95e0d4e00771890609df17f3f283006dd06fd8e0b2befad9d3"
+    }
+  },
+  "ondo_exact_replay": {
+    "timerange": "20260731-20260801",
+    "ondo_breakout_trades": 0,
+    "retained_trade": {"pair": "TRUMP/USDT:USDT", "enter_tag": "grid_v8_short_s5", "profit_abs_usdt": 4.770},
+    "archive_sha256": "fa50f48946d35141ce0c47f918441c2ea0a45bb46b573f9b7bb168074cecdd03"
+  },
+  "source_sha256": {
+    "entry_point": "ee05f61923e398efc2439f8dbf25bdc68c304b6fda1bc57636354cc1f77e28ef",
+    "selected_implementation": "42ee306806c70286b96bdd9b9f0b638d1088cc28c83435a6c80607f94cffd468"
+  },
+  "deployment": {
+    "state": "gui_connected_not_live_started",
+    "runtime_high_water_persistence": true,
+    "dry_run_live_state_separated": true,
+    "backtest_state_disabled": true,
+    "live_requires_frozen_release_and_reconciliation_preflight": true
+  }
+}

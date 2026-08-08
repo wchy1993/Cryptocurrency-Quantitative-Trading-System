@@ -1,0 +1,138 @@
+{
+  "$schema": "https://schema.freqtrade.io/schema.json",
+  "bot_name": "breakout_v11_adaptive_grid_v8_dual_gui",
+  "strategy": "BreakoutV11AdaptiveGridV8DualSideFreqtrade",
+  "timeframe": "1h",
+  "max_open_trades": 2,
+  "stake_currency": "USDT",
+  "stake_amount": "unlimited",
+  "tradable_balance_ratio": 0.99,
+  "dry_run": true,
+  "dry_run_wallet": 200.0,
+  "trading_mode": "futures",
+  "margin_mode": "isolated",
+  "liquidation_buffer": 0.1,
+  "cancel_open_orders_on_exit": true,
+  "dataformat_ohlcv": "feather",
+  "dataformat_trades": "feather",
+  "unfilledtimeout": {
+    "entry": 10,
+    "exit": 10,
+    "exit_timeout_count": 0,
+    "unit": "minutes"
+  },
+  "entry_pricing": {
+    "price_side": "other",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0.0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 1.0
+    }
+  },
+  "exit_pricing": {
+    "price_side": "other",
+    "use_order_book": true,
+    "order_book_top": 1
+  },
+  "exchange": {
+    "name": "binance",
+    "key": "",
+    "secret": "",
+    "ccxt_config": {
+      "enableRateLimit": true,
+      "options": {
+        "defaultType": "future",
+        "adjustForTimeDifference": true
+      }
+    },
+    "ccxt_async_config": {
+      "enableRateLimit": true,
+      "options": {
+        "defaultType": "future"
+      }
+    },
+    "pair_whitelist": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT",
+      "SOL/USDT:USDT",
+      "ZEC/USDT:USDT",
+      "HYPE/USDT:USDT",
+      "XRP/USDT:USDT",
+      "DOGE/USDT:USDT",
+      "BNB/USDT:USDT",
+      "SIREN/USDT:USDT",
+      "1000PEPE/USDT:USDT",
+      "TAO/USDT:USDT",
+      "NEAR/USDT:USDT",
+      "WLD/USDT:USDT",
+      "SUI/USDT:USDT",
+      "ADA/USDT:USDT",
+      "SEI/USDT:USDT",
+      "AVAX/USDT:USDT",
+      "ENA/USDT:USDT",
+      "LINK/USDT:USDT",
+      "FIL/USDT:USDT",
+      "XLM/USDT:USDT",
+      "BCH/USDT:USDT",
+      "ONDO/USDT:USDT",
+      "TRUMP/USDT:USDT",
+      "AAVE/USDT:USDT",
+      "DOT/USDT:USDT",
+      "PENGU/USDT:USDT",
+      "LTC/USDT:USDT",
+      "TRX/USDT:USDT",
+      "FET/USDT:USDT",
+      "UNI/USDT:USDT",
+      "INJ/USDT:USDT",
+      "DASH/USDT:USDT",
+      "B/USDT:USDT",
+      "ARB/USDT:USDT",
+      "1000SHIB/USDT:USDT",
+      "APE/USDT:USDT",
+      "XMR/USDT:USDT",
+      "APT/USDT:USDT",
+      "WIF/USDT:USDT",
+      "ICP/USDT:USDT",
+      "ETC/USDT:USDT",
+      "VIRTUAL/USDT:USDT",
+      "HBAR/USDT:USDT",
+      "RENDER/USDT:USDT",
+      "CRV/USDT:USDT",
+      "JTO/USDT:USDT",
+      "OP/USDT:USDT",
+      "CHZ/USDT:USDT",
+      "1000BONK/USDT:USDT"
+    ],
+    "pair_blacklist": []
+  },
+  "pairlists": [
+    {
+      "method": "StaticPairList",
+      "allow_inactive": false
+    }
+  ],
+  "telegram": {
+    "enabled": false,
+    "token": "",
+    "chat_id": ""
+  },
+  "api_server": {
+    "enabled": false,
+    "listen_ip_address": "127.0.0.1",
+    "listen_port": 8080,
+    "verbosity": "error",
+    "enable_openapi": false,
+    "jwt_secret_key": "disabled-local-gui-jwt-key-0000000001",
+    "ws_token": "disabled-local-gui-ws-token-0000000001",
+    "CORS_origins": [],
+    "username": "",
+    "password": ""
+  },
+  "initial_state": "stopped",
+  "force_entry_enable": false,
+  "internals": {
+    "process_throttle_secs": 5
+  }
+}
