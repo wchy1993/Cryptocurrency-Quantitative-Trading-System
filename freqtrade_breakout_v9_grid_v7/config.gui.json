@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.freqtrade.io/schema.json",
-  "bot_name": "breakout_v11_adaptive_grid_v8_dual_gui",
-  "strategy": "BreakoutV11AdaptiveGridV8DualSideFreqtrade",
+  "bot_name": "breakout_v16_grid_v15_quality_pf_combined_gui",
+  "strategy": "BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade",
   "timeframe": "1h",
   "max_open_trades": 2,
   "stake_currency": "USDT",

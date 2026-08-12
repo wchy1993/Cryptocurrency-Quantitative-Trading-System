@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="120" y1="64" x2="920" y2="960" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#142744"/>
+      <stop offset="0.55" stop-color="#091426"/>
+      <stop offset="1" stop-color="#050A13"/>
+    </linearGradient>
+    <radialGradient id="coin" cx="38%" cy="30%" r="72%">
+      <stop offset="0" stop-color="#FFF3A6"/>
+      <stop offset="0.28" stop-color="#FFD45A"/>
+      <stop offset="0.7" stop-color="#F2A900"/>
+      <stop offset="1" stop-color="#A85E00"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="290" y1="220" x2="760" y2="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF6B8"/>
+      <stop offset="0.45" stop-color="#FBC43A"/>
+      <stop offset="1" stop-color="#9A5200"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="368" y1="650" x2="682" y2="354" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0A3B31"/>
+      <stop offset="1" stop-color="#087F5B"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="30" stdDeviation="34" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+    <filter id="inner" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="8" result="blur"/>
+      <feOffset dy="8"/>
+      <feComposite in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="shadowDiff"/>
+      <feFlood flood-color="#7A3F00" flood-opacity="0.5"/>
+      <feComposite in2="shadowDiff" operator="in"/>
+      <feComposite in2="SourceGraphic" operator="over"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="url(#background)"/>
+  <path d="M116 744C254 676 344 712 452 628C559 545 625 396 908 286" fill="none" stroke="#203D63" stroke-width="22" stroke-linecap="round" opacity="0.42"/>
+  <g opacity="0.28" stroke="#3A5B80" stroke-width="8" stroke-linecap="round">
+    <path d="M170 650V760M142 706H198"/>
+    <path d="M246 566V708M216 624H276"/>
+    <path d="M780 222V356M750 292H810"/>
+    <path d="M856 172V302M826 232H886"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <circle cx="512" cy="512" r="336" fill="url(#rim)"/>
+    <circle cx="512" cy="512" r="294" fill="url(#coin)" stroke="#FFF0A0" stroke-width="10"/>
+    <circle cx="512" cy="512" r="250" fill="none" stroke="#A86300" stroke-width="7" opacity="0.7"/>
+    <circle cx="512" cy="512" r="231" fill="#F8C442" opacity="0.25" filter="url(#inner)"/>
+  </g>
+
+  <g fill="url(#arrow)">
+    <rect x="348" y="548" width="54" height="112" rx="15"/>
+    <rect x="438" y="488" width="54" height="172" rx="15"/>
+    <rect x="528" y="414" width="54" height="246" rx="15"/>
+    <path d="M362 505L472 430L544 467L682 330L727 374L548 553L476 516L400 569Z"/>
+    <path d="M650 320H737V407Z"/>
+  </g>
+
+  <text x="512" y="755" text-anchor="middle" fill="#5B3500" font-family="Arial, Helvetica, sans-serif" font-size="104" font-weight="800" letter-spacing="6">V11</text>
+  <rect x="690" y="688" width="112" height="76" rx="30" fill="#0E1A2B" stroke="#FFE98A" stroke-width="6"/>
+  <text x="746" y="742" text-anchor="middle" fill="#FFE98A" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="800">V8</text>
+  <ellipse cx="422" cy="300" rx="112" ry="50" transform="rotate(-26 422 300)" fill="#FFFFFF" opacity="0.27"/>
+</svg>
