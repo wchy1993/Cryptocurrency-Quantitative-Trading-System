@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.freqtrade.io/schema.json",
-  "bot_name": "breakout_v16_grid_v15_quality_pf_combined_active50_backtest",
-  "strategy": "BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade",
+  "bot_name": "breakout_v16_grid_v15_precision_guard_active50_backtest",
+  "strategy": "BreakoutV16GridV15PrecisionGuardGlobalLiveParityFreqtrade",
   "timeframe": "1h",
+  "timeframe_detail": "1m",
   "max_open_trades": 2,
   "stake_currency": "USDT",
   "stake_amount": "unlimited",

@@ -6,6 +6,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -27,6 +28,9 @@ from BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade import (  # noqa: E4
 )
 from BreakoutV16GridV15QualityPfCombinedResearchFreqtrade import (  # noqa: E402
     BreakoutV16GridV15QualityPfCombinedResearchFreqtrade,
+)
+from BreakoutV12MultiRegimeGridV9Freqtrade import (  # noqa: E402
+    V12_CONTEXT_COLUMNS,
 )
 
 
@@ -97,6 +101,55 @@ def test_production_class_is_exact_combined_research_path() -> None:
         != BreakoutV16GridV15QualityPfCombinedResearchFreqtrade.
         ADAPTIVE_STATE_BASENAME
     )
+
+
+def test_live_adapter_builds_and_attaches_complete_inherited_context() -> None:
+    pairs = (
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT",
+        "SOL/USDT:USDT",
+        "XRP/USDT:USDT",
+        "DOGE/USDT:USDT",
+        "BNB/USDT:USDT",
+        "ADA/USDT:USDT",
+        "AVAX/USDT:USDT",
+        "LINK/USDT:USDT",
+        "LTC/USDT:USDT",
+    )
+    dates = pd.date_range("2026-01-01T00:00:00Z", periods=620, freq="1h")
+    snapshots: dict[str, pd.DataFrame] = {}
+    for index, pair in enumerate(pairs):
+        trend = np.linspace(100.0 + index, 135.0 + index, len(dates))
+        wave = np.sin(np.arange(len(dates)) / (4.0 + index / 10.0))
+        snapshots[pair] = pd.DataFrame(
+            {"date": dates, "close": trend + wave}
+        )
+
+    provider = SimpleNamespace(
+        runmode=SimpleNamespace(value="live"),
+        current_whitelist=lambda: list(pairs),
+    )
+    strategy = object.__new__(
+        BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade
+    )
+    strategy.dp = provider
+    strategy._live_pair_snapshots = snapshots
+    strategy._live_context_wait_signature = None
+
+    target = strategy._prepare_live_context()
+
+    assert target == dates[-1]
+    cached = strategy._market_context_cache
+    assert set(V12_CONTEXT_COLUMNS) <= set(cached.columns)
+    latest = cached.loc[pd.to_datetime(cached["date"], utc=True) == target]
+    assert len(latest) == 1
+    assert not latest[list(V12_CONTEXT_COLUMNS)].isna().any(axis=None)
+
+    attached = strategy._attach_market_context(
+        pd.DataFrame({"date": [target], "close": [1.0]})
+    )
+    assert set(V12_CONTEXT_COLUMNS) <= set(attached.columns)
+    assert not attached[list(V12_CONTEXT_COLUMNS)].isna().any(axis=None)
 
 
 def test_90_second_expiry_is_live_instance_only() -> None:

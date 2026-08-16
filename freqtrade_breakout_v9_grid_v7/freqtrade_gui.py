@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import queue
 import re
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -84,6 +86,11 @@ STOP_BUTTON = "#C92A3E"
 STOP_BUTTON_HOVER = "#E33F55"
 MODE_IDLE_BUTTON = "#2B3B52"
 APP_ICON_PATH = PROJECT_DIR / "assets" / "coin_app_icon_256.png"
+LIVE_LEDGER_PATH = (
+    PROJECT_DIR
+    / "user_data"
+    / "tradesv3.breakout_v16_grid_v15_combined.live.sqlite"
+)
 
 FONT_FAMILY = "SF Pro Display"
 MONO_FAMILY = "SF Mono"
@@ -101,6 +108,59 @@ class ManualReconciliationError(RuntimeError):
     def __init__(self, message: str, *, trading_paused: bool = False) -> None:
         super().__init__(message)
         self.trading_paused = bool(trading_paused)
+
+
+def _finite_float(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return number if math.isfinite(number) else float(default)
+
+
+def strategy_profit_breakdown(
+    profit: dict[str, Any],
+    open_trades: list[dict[str, Any]],
+) -> tuple[float, float, float]:
+    """Return historical, open-position and combined strategy PnL.
+
+    Freqtrade's ``profit_all_coin`` is authoritative because it includes every
+    closed trade plus the current total profit of open trades.  The explicit
+    fallback keeps the GUI correct with older or reduced API payloads.
+    """
+
+    historical = _finite_float(profit.get("profit_closed_coin"))
+    if "profit_all_coin" in profit:
+        total = _finite_float(profit.get("profit_all_coin"), historical)
+        position = total - historical
+        return historical, position, total
+
+    position = sum(
+        _finite_float(trade.get("profit_abs"))
+        for trade in open_trades
+    )
+    return historical, position, historical + position
+
+
+def read_ledger_realized_profit(path: Path = LIVE_LEDGER_PATH) -> float:
+    """Read all realized strategy PnL without creating or mutating a ledger."""
+
+    if not path.is_file():
+        return 0.0
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    with sqlite3.connect(uri, uri=True, timeout=2.0) as connection:
+        row = connection.execute(
+            """
+            SELECT COALESCE(SUM(
+                CASE
+                    WHEN is_open = 0 THEN COALESCE(close_profit_abs, 0.0)
+                    ELSE COALESCE(realized_profit, 0.0)
+                END
+            ), 0.0)
+            FROM trades
+            """
+        ).fetchone()
+    return _finite_float(row[0] if row else 0.0)
 
 
 def _order_id(order: dict[str, Any]) -> str:
@@ -850,7 +910,7 @@ class TradingConsole:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Breakout V16 + Grid V15 PF Trading Console")
+        self.root.title("Breakout V16 + Grid V15 PF Precision Guard Console")
         self.root.configure(bg=BG)
         self.app_icon = apply_app_icon(self.root)
         width, height, x, y = fitted_window_geometry(
@@ -913,7 +973,7 @@ class TradingConsole:
             )
         elif report.ok:
             self._log(
-                "GUI 已就绪：Breakout V16 + Grid V15 PF，50币，最多同时 2 仓。",
+                f"GUI 已就绪：{RELEASE_LABEL}，50币，最多同时 2 仓。",
                 "success",
             )
             self._log(
@@ -921,7 +981,7 @@ class TradingConsole:
                 "info",
             )
             self._log(
-                "DRY-RUN、LIVE 与回测共用同一组合策略类；LIVE 双策略入口还必须通过同批收盘K线同步门。",
+                "DRY-RUN、LIVE 与回测共用同一组合策略类；Breakout 使用 1m 软确认和交易所硬止损。",
                 "info",
             )
             self._log(
@@ -1143,7 +1203,7 @@ class TradingConsole:
         strategy.pack(fill="x", padx=12)
         tk.Label(
             strategy,
-            text="Breakout V16 + Grid V15 PF · 共享 Max2",
+            text=RELEASE_LABEL,
             bg=CARD,
             fg=TEXT,
             font=(FONT_FAMILY, 11, "bold"),
@@ -1153,7 +1213,7 @@ class TradingConsole:
             value=(
                 "共享 200U / 实盘账户  ·  Breakout 1 + Grid 1\n"
                 "50 币静态池  ·  1H信号+15M路径  ·  Grid分层DCA\n"
-                "逐仓  ·  动态杠杆  ·  市价执行"
+                "1M软确认  ·  交易所硬止损  ·  风险等额缩仓"
             )
         )
         tk.Label(
@@ -1302,7 +1362,7 @@ class TradingConsole:
 
         self.equity_hint = tk.StringVar(value="模拟账户权益")
         self.available_hint = tk.StringVar(value="可用保证金")
-        self.pnl_hint = tk.StringVar(value="会话基准 200.00U")
+        self.pnl_hint = tk.StringVar(value="历史 +0.00 · 持仓 +0.00")
         self.position_hint = tk.StringVar(value="共享账户")
         self.closed_hint = tk.StringVar(value="当前独立账本")
         self.quality_hint = tk.StringVar(value="胜率 —")
@@ -1310,7 +1370,7 @@ class TradingConsole:
         cards = (
             ("账户权益", self.equity_var, self.equity_hint, BLUE),
             ("可用资金", self.available_var, self.available_hint, PURPLE),
-            ("会话盈亏", self.session_pnl_var, self.pnl_hint, GREEN),
+            ("累计盈亏", self.session_pnl_var, self.pnl_hint, GREEN),
             ("当前持仓", self.position_count_var, self.position_hint, AMBER),
             ("已平仓", self.closed_count_var, self.closed_hint, BLUE),
             ("运行质量", self.quality_var, self.quality_hint, GREEN),
@@ -1580,18 +1640,18 @@ class TradingConsole:
             self.equity_var.set(f"{DEFAULT_DRY_WALLET:,.2f} U")
             self.available_var.set(f"{DEFAULT_DRY_WALLET:,.2f} U")
             self.session_pnl_var.set("+0.00 U")
-            self.pnl_hint.set("会话基准 200.00U")
+            self.pnl_hint.set("历史 +0.00 · 持仓 +0.00")
             self.equity_hint.set("模拟账户权益")
         else:
             self.start_button.configure(text="▶  启动实盘")
             self.mode_description_var.set(
                 "Binance 主网真实账户 · 真实资金\n启动后会实际开仓、加仓、止盈与止损"
             )
-            self.baseline_note_var.set("LIVE 手动刷新会把会话盈亏重置为 0")
+            self.baseline_note_var.set("累计盈亏 = 历史已实现 + 当前持仓盈亏")
             self.equity_var.set("—")
             self.available_var.set("—")
             self.session_pnl_var.set("+0.00 U")
-            self.pnl_hint.set("等待账户刷新")
+            self.pnl_hint.set("等待盈亏刷新")
             self.equity_hint.set("主网账户权益")
         self.position_count_var.set(f"0 / {self._selected_max_open_trades()}")
         self.closed_count_var.set("0")
@@ -1775,7 +1835,7 @@ class TradingConsole:
             acquire_pid_lock(
                 ENGINE_LOCK_PATH,
                 pid=process.pid,
-                kind="Breakout V16 + Grid V15 PF Freqtrade engine",
+                kind="Breakout V16 + Grid V15 PF Precision Guard engine",
                 details={
                     "mode": mode,
                     "strategy": spec.strategy_class,
@@ -2137,6 +2197,11 @@ class TradingConsole:
                         "custody": "外部/待对账",
                     }
                 )
+            historical_profit = read_ledger_realized_profit()
+            position_profit = sum(
+                _finite_float(position.get("profit_abs"))
+                for position in positions
+            )
             self.events.put(
                 (
                     "direct_snapshot",
@@ -2145,6 +2210,9 @@ class TradingConsole:
                         "available": available,
                         "stake": "USDT",
                         "positions": positions,
+                        "historical_profit": historical_profit,
+                        "position_profit": position_profit,
+                        "total_profit": historical_profit + position_profit,
                         "clock_offset_ms": clock_sync.local_minus_server_ms,
                     },
                 )
@@ -2324,9 +2392,9 @@ class TradingConsole:
                     body=(
                         f"检测到 {total_positions} 个主网持仓，其中 "
                         f"{len(positions)} 个由当前 Freqtrade 账本管理。\n\n"
-                        "当前策略使用软件动态止损。停止进程后，交易所仓位不会"
-                        "自动平仓，软件止损和退出管理也会停止。请确认你将立即"
-                        "人工接管这些仓位。"
+                        "交易所侧硬止损会继续存在，但1分钟软确认、盈利保护、"
+                        "Grid管理及其他动态退出都会停止。停止进程不会自动平仓，"
+                        "请确认你将立即人工接管这些仓位。"
                     ),
                     phrase="STOP LIVE",
                     confirm_text="停止并人工接管",
@@ -2515,8 +2583,13 @@ class TradingConsole:
             config = payload.get("show_config") or {}
             if not bool(config.get("stoploss_on_exchange")):
                 self._log(
-                    "提示：当前冻结策略使用软件动态止损，LIVE 时必须保持 Freqtrade 进程在线。",
+                    "警告：运行配置未确认交易所硬止损；不要在此状态下托管实盘仓位。",
                     "warning",
+                )
+            else:
+                self._log(
+                    "交易所 STOP_MARKET 硬止损已启用；1分钟软确认和动态盈利保护仍需进程在线。",
+                    "success",
                 )
             return
         if event == "startup_failed":
@@ -2676,13 +2749,26 @@ class TradingConsole:
         if event == "direct_snapshot":
             self.refresh_button.configure(state="normal")
             equity = float(payload.get("equity") or 0.0)
-            self.session_baseline_equity = equity
             self.equity_var.set(f"{equity:,.2f} U")
             self.available_var.set(
                 f"{float(payload.get('available') or 0.0):,.2f} U"
             )
-            self.session_pnl_var.set("+0.00 U")
-            self.pnl_hint.set(f"会话基准 {equity:,.2f}U")
+            historical_profit = _finite_float(
+                payload.get("historical_profit")
+            )
+            position_profit = _finite_float(payload.get("position_profit"))
+            total_profit = _finite_float(
+                payload.get("total_profit"),
+                historical_profit + position_profit,
+            )
+            self.session_pnl_var.set(f"{total_profit:+,.2f} U")
+            self.pnl_hint.set(
+                f"历史 {historical_profit:+,.2f} · "
+                f"持仓 {position_profit:+,.2f}"
+            )
+            self.metric_cards[2].value_label.configure(
+                fg=GREEN if total_profit >= 0 else RED
+            )
             positions = payload.get("positions") or []
             max_open_trades = self._selected_max_open_trades()
             self.position_count_var.set(
@@ -2697,7 +2783,10 @@ class TradingConsole:
             clock_offset = int(payload.get("clock_offset_ms") or 0)
             self._log(
                 f"LIVE 账户只读刷新完成：权益={equity:,.2f}U，"
-                f"持仓={len(positions)}/{max_open_trades}，会话盈亏已重置为 0；"
+                f"持仓={len(positions)}/{max_open_trades}，"
+                f"累计盈亏={total_profit:+,.2f}U"
+                f"（历史={historical_profit:+,.2f}U，"
+                f"持仓={position_profit:+,.2f}U）；"
                 f"时间偏差={clock_offset:+d}ms。",
                 "success",
             )
@@ -2739,19 +2828,18 @@ class TradingConsole:
         profit = payload.get("profit") or {}
         account = extract_account_snapshot(balance)
         equity = float(account["equity"])
-        if self.mode.get() == MODE_DRY:
-            if self.session_baseline_equity is None:
-                self.session_baseline_equity = DEFAULT_DRY_WALLET
-        elif reset_baseline or self.session_baseline_equity is None:
-            self.session_baseline_equity = equity
-        baseline = float(self.session_baseline_equity or equity)
-        session_pnl = equity - baseline
+        historical_profit, position_profit, total_profit = (
+            strategy_profit_breakdown(profit, status)
+        )
 
         self.equity_var.set(f"{equity:,.2f} U")
         self.available_var.set(f"{float(account['available']):,.2f} U")
-        self.session_pnl_var.set(f"{session_pnl:+,.2f} U")
-        self.pnl_hint.set(f"会话基准 {baseline:,.2f}U")
-        pnl_color = GREEN if session_pnl >= 0 else RED
+        self.session_pnl_var.set(f"{total_profit:+,.2f} U")
+        self.pnl_hint.set(
+            f"历史 {historical_profit:+,.2f} · "
+            f"持仓 {position_profit:+,.2f}"
+        )
+        pnl_color = GREEN if total_profit >= 0 else RED
         self.metric_cards[2].value_label.configure(fg=pnl_color)
 
         exchange_positions = account.get("exchange_positions") or []
@@ -2788,7 +2876,8 @@ class TradingConsole:
         self._render_positions(status, exchange_positions)
         if reset_baseline and self.mode.get() == MODE_LIVE:
             self._log(
-                f"LIVE 手动刷新：会话盈亏基准已重置为 {equity:,.2f}U。",
+                "LIVE 手动刷新：累计盈亏已按“历史已实现 + 当前持仓”更新，"
+                "不会因充值、提现或刷新而重置。",
                 "success",
             )
 
@@ -2935,7 +3024,7 @@ class TradingConsole:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Breakout V16 + Grid V15 PF Freqtrade GUI"
+        description="Breakout V16 + Grid V15 PF Precision Guard GUI"
     )
     parser.add_argument(
         "--check",
@@ -2954,7 +3043,7 @@ def main() -> int:
         acquire_pid_lock(
             GUI_LOCK_PATH,
             pid=current_pid,
-            kind="Breakout V16 + Grid V15 PF GUI",
+            kind="Breakout V16 + Grid V15 PF Precision Guard GUI",
             details={"strategy": STRATEGY_CLASS},
         )
     except RuntimeError as exc:

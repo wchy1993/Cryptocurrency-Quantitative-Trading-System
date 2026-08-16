@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -20,6 +21,8 @@ from freqtrade_gui import (
     TradingConsole,
     discover_external_manual_records,
     fitted_window_geometry,
+    read_ledger_realized_profit,
+    strategy_profit_breakdown,
     synchronize_manual_exchange_changes,
 )
 from gui_runtime import (
@@ -260,8 +263,41 @@ class ReleaseTests(unittest.TestCase):
             options = exchange[section]["options"]
             self.assertEqual(options["timeDifference"], 2012)
             self.assertFalse(options["adjustForTimeDifference"])
+            self.assertFalse(
+                options["setMarginMode"]["throwMarginModeAlreadySet"]
+            )
         self.assertNotIn("key", exchange)
         self.assertNotIn("secret", exchange)
+
+    def test_base_config_treats_existing_margin_mode_as_idempotent(self) -> None:
+        config = json.loads(BASE_CONFIG_PATH.read_text())
+        exchange = config["exchange"]
+        for section in ("ccxt_config", "ccxt_async_config"):
+            margin_options = exchange[section]["options"]["setMarginMode"]
+            self.assertFalse(margin_options["throwMarginModeAlreadySet"])
+
+    def test_ccxt_returns_binance_4046_as_success_with_release_option(self) -> None:
+        import ccxt
+        from ccxt.base.errors import MarginModeAlreadySet
+
+        config = json.loads(BASE_CONFIG_PATH.read_text())
+        exchange = ccxt.binanceusdm(config["exchange"]["ccxt_config"])
+        exchange.markets = {}
+        exchange.market = lambda _symbol: {
+            "id": "BTCUSDT",
+            "linear": True,
+            "inverse": False,
+        }
+
+        def already_set(_request):
+            raise MarginModeAlreadySet(
+                "binanceusdm -4046 No need to change margin type."
+            )
+
+        exchange.fapiPrivatePostMarginType = already_set
+        result = exchange.set_margin_mode("isolated", "BTC/USDT:USDT")
+        self.assertEqual(result["code"], -4046)
+        self.assertIn("No need", result["msg"])
 
     def test_nfp_overlay_is_rejected_and_base_remains_combined_max2(self) -> None:
         credentials = ApiCredentials(
@@ -463,6 +499,48 @@ class RuntimeValidationTests(unittest.TestCase):
         self.assertEqual(snapshot["equity"], 289.52)
         self.assertEqual(snapshot["available"], 250.0)
         self.assertEqual(len(snapshot["unmanaged_positions"]), 1)
+
+    def test_strategy_profit_is_closed_history_plus_open_position_pnl(self) -> None:
+        historical, position, total = strategy_profit_breakdown(
+            {
+                "profit_closed_coin": 17.35273614,
+                "profit_all_coin": 20.85273614,
+            },
+            [{"profit_abs": 999.0}],
+        )
+        self.assertAlmostEqual(historical, 17.35273614)
+        self.assertAlmostEqual(position, 3.5)
+        self.assertAlmostEqual(total, 20.85273614)
+
+        fallback = strategy_profit_breakdown(
+            {"profit_closed_coin": 17.35273614},
+            [{"profit_abs": -2.0}, {"profit_abs": 0.75}],
+        )
+        self.assertEqual(fallback, (17.35273614, -1.25, 16.10273614))
+
+    def test_readonly_ledger_profit_includes_closed_and_partial_realized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trades.sqlite"
+            with sqlite3.connect(path) as connection:
+                connection.execute(
+                    "CREATE TABLE trades ("
+                    "is_open BOOLEAN NOT NULL, "
+                    "close_profit_abs FLOAT, "
+                    "realized_profit FLOAT)"
+                )
+                connection.executemany(
+                    "INSERT INTO trades VALUES (?, ?, ?)",
+                    (
+                        (0, 10.0, 10.0),
+                        (0, -3.0, -3.0),
+                        (1, None, 1.25),
+                    ),
+                )
+            before = path.stat().st_mtime_ns
+            realized = read_ledger_realized_profit(path)
+            after = path.stat().st_mtime_ns
+        self.assertEqual(realized, 8.25)
+        self.assertEqual(after, before)
 
     def test_component_labels(self) -> None:
         self.assertEqual(

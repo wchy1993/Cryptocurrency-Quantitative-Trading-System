@@ -4,8 +4,18 @@ from datetime import datetime
 import logging
 from typing import Any
 
+import numpy as np
 import pandas as pd
+from pandas import DataFrame
 
+from BreakoutV10FGridV8DualSideFreqtrade import (
+    LIVE_CONTEXT_COLUMNS,
+    build_synchronized_market_context,
+)
+from BreakoutV12MultiRegimeGridV9Freqtrade import (
+    V12_CONTEXT_COLUMNS,
+    build_v12_market_context,
+)
 from BreakoutV16GridV15QualityPfCombinedResearchFreqtrade import (
     BreakoutV16GridV15QualityPfCombinedResearchFreqtrade,
 )
@@ -14,16 +24,24 @@ from BreakoutV16GridV15QualityPfCombinedResearchFreqtrade import (
 logger = logging.getLogger(__name__)
 
 
+V12_EXTRA_CONTEXT_COLUMNS = tuple(
+    column
+    for column in V12_CONTEXT_COLUMNS
+    if column not in LIVE_CONTEXT_COLUMNS
+)
+
+
 class BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade(
     BreakoutV16GridV15QualityPfCombinedResearchFreqtrade
 ):
     """Production adapter for the selected V16 + Grid V15 shared account.
 
     Backtest and hyperopt pass directly through to the frozen combined
-    research class. DRY-RUN and LIVE add only a completed-hour batch gate:
-    both Breakout and Grid entries must be ranked from the same synchronized
-    closed 1h candle across all 50 pairs. Signals, component arbitration,
-    sizing, leverage, Grid DCA, stops and exits remain owned by the parent.
+    research class. DRY-RUN and LIVE synchronize both the frozen five-column
+    market context and the complete inherited V12 sidecar context from the
+    same closed 1h candle across all 50 pairs before ranking entries. Signals,
+    component arbitration, sizing, leverage, Grid DCA, stops and exits remain
+    owned by the parent.
     """
 
     STRATEGY_VERSION = (
@@ -42,6 +60,117 @@ class BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade(
             self.ignore_buying_expired_candle_after = (
                 self.LIVE_ENTRY_WINDOW_SECONDS
             )
+
+    def _prepare_live_context(self) -> pd.Timestamp | None:
+        """Build one complete, aligned context batch for LIVE/DRY-RUN.
+
+        The first five columns deliberately keep their frozen implementation;
+        the remaining inherited V12 columns are merged as a sidecar.  This is
+        the same split used by the research/backtest path and prevents a live
+        sizing rule from silently receiving a missing-value fallback.
+        """
+
+        pairs = tuple(self.dp.current_whitelist())
+        frozen_context, frozen_target, frozen_unavailable = (
+            build_synchronized_market_context(
+                self._live_pair_snapshots,
+                pairs,
+            )
+        )
+        expanded, expanded_target, expanded_unavailable = (
+            build_v12_market_context(
+                self._live_pair_snapshots,
+                pairs,
+                require_aligned_latest=True,
+            )
+        )
+        target = (
+            expanded_target
+            if expanded_target is not None
+            else frozen_target
+        )
+        unavailable = tuple(
+            sorted(set(frozen_unavailable + expanded_unavailable))
+        )
+        if frozen_target != expanded_target:
+            unavailable = pairs
+        if unavailable:
+            signature = (target, unavailable)
+            if signature != self._live_context_wait_signature:
+                logger.info(
+                    "V16+Grid LIVE full context waiting: target=%s "
+                    "ready=%d/%d missing_or_stale=%s",
+                    target,
+                    len(pairs) - len(unavailable),
+                    len(pairs),
+                    ",".join(unavailable),
+                )
+                self._live_context_wait_signature = signature
+            return None
+        if target is None or frozen_context.empty or expanded.empty:
+            return None
+
+        context = frozen_context.merge(
+            expanded[["date", *V12_EXTRA_CONTEXT_COLUMNS]],
+            on="date",
+            how="left",
+            validate="1:1",
+        )
+        latest = context.loc[
+            pd.to_datetime(context["date"], utc=True) == target
+        ]
+        if (
+            latest.empty
+            or latest[list(V12_CONTEXT_COLUMNS)].isna().any(axis=None)
+        ):
+            self._live_context_wait_signature = (target, pairs)
+            return None
+
+        self._market_context_cache = context
+        self._market_context_end = target
+        self._live_context_pending_at = target
+        self._live_context_wait_signature = None
+        return target
+
+    def _attach_market_context(self, dataframe: DataFrame) -> DataFrame:
+        if not self._live_context_mode():
+            return super()._attach_market_context(dataframe)
+        context = getattr(self, "_market_context_cache", None)
+        if context is None or context.empty:
+            output = dataframe.copy()
+            for column in V12_CONTEXT_COLUMNS:
+                output[column] = np.nan
+            return output
+        return dataframe.merge(
+            context,
+            on="date",
+            how="left",
+            validate="m:1",
+        )
+
+    def _latest_live_context_failures(
+        self,
+        pairs: tuple[str, ...],
+        target: pd.Timestamp,
+    ) -> tuple[str, ...]:
+        failures: list[str] = []
+        for pair in pairs:
+            frame, _updated = self.dp.get_analyzed_dataframe(
+                pair,
+                self.timeframe,
+            )
+            if frame is None or frame.empty:
+                failures.append(pair)
+                continue
+            dates = pd.to_datetime(frame["date"], utc=True)
+            row = frame.loc[dates == target]
+            if (
+                row.empty
+                or not set(V12_CONTEXT_COLUMNS) <= set(row.columns)
+                or row[list(V12_CONTEXT_COLUMNS)].isna().any(axis=None)
+            ):
+                failures.append(pair)
+        return tuple(failures)
 
     @staticmethod
     def _utc_timestamp(value: datetime | pd.Timestamp) -> pd.Timestamp:

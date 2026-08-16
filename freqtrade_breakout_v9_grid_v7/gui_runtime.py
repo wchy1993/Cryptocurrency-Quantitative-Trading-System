@@ -24,9 +24,10 @@ STRATEGY_PATH = (
     PROJECT_DIR
     / "user_data"
     / "strategies"
-    / "BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade.py"
+    / "BreakoutV16GridV15PrecisionGuardLiveParityFreqtrade.py"
 )
 _LOCAL_STRATEGY_DEPENDENCY_NAMES = (
+    "BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade.py",
     "BreakoutV16GridV15QualityPfCombinedResearchFreqtrade.py",
     "GridV15Fixed50QualityProtectedResearchFreqtrade.py",
     "GridV15Fixed50OnlyResearchFreqtrade.py",
@@ -97,9 +98,9 @@ FREQTRADE_BIN = RUNTIME_DIR / "bin" / "freqtrade"
 RUNTIME_PYTHON = RUNTIME_DIR / "bin" / "python"
 
 STRATEGY_CLASS = (
-    "BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade"
+    "BreakoutV16GridV15PrecisionGuardGlobalLiveParityFreqtrade"
 )
-RELEASE_LABEL = "Breakout V16 + Grid V15 PF · 共享 Max2"
+RELEASE_LABEL = "Breakout V16 + Grid V15 PF · 1m 精度止损 · 共享 Max2"
 DEFAULT_DRY_WALLET = 200.0
 MAX_OPEN_TRADES = 2
 BREAKOUT_OPEN_LIMIT = 1
@@ -851,6 +852,12 @@ def build_runtime_overlay(
             "defaultType": "future",
             "adjustForTimeDifference": False,
             "timeDifference": int(time_difference_ms),
+            # Binance -4046 means the requested margin mode is already active.
+            # Returning it as an idempotent success lets Freqtrade continue to
+            # leverage/order creation instead of retrying a completed action.
+            "setMarginMode": {
+                "throwMarginModeAlreadySet": False,
+            },
         }
         base_exchange["ccxt_config"] = {
             "enableRateLimit": True,
