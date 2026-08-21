@@ -24,9 +24,11 @@ STRATEGY_PATH = (
     PROJECT_DIR
     / "user_data"
     / "strategies"
-    / "BreakoutV16GridV15PrecisionGuardLiveParityFreqtrade.py"
+    / "BreakoutV16GridV15PrecisionGuardScore2DecayLiveParityFreqtrade.py"
 )
 _LOCAL_STRATEGY_DEPENDENCY_NAMES = (
+    "BreakoutV16Score2StructuralDecayResearchFreqtrade.py",
+    "BreakoutV16GridV15PrecisionGuardLiveParityFreqtrade.py",
     "BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade.py",
     "BreakoutV16GridV15QualityPfCombinedResearchFreqtrade.py",
     "GridV15Fixed50QualityProtectedResearchFreqtrade.py",
@@ -98,9 +100,11 @@ FREQTRADE_BIN = RUNTIME_DIR / "bin" / "freqtrade"
 RUNTIME_PYTHON = RUNTIME_DIR / "bin" / "python"
 
 STRATEGY_CLASS = (
-    "BreakoutV16GridV15PrecisionGuardGlobalLiveParityFreqtrade"
+    "BreakoutV16GridV15PrecisionGuardScore2DecayLiveParityFreqtrade"
 )
-RELEASE_LABEL = "Breakout V16 + Grid V15 PF · 1m 精度止损 · 共享 Max2"
+RELEASE_LABEL = (
+    "Breakout V16 + Grid V15 PF · Score 2 结构衰减 · 1m 精度止损 · 共享 Max2"
+)
 DEFAULT_DRY_WALLET = 200.0
 MAX_OPEN_TRADES = 2
 BREAKOUT_OPEN_LIMIT = 1

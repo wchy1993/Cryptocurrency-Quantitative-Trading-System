@@ -548,7 +548,7 @@ class _PrecisionConfirmedInitialStopMixin:
                     history = history.sort_values("date").reset_index(drop=True)
                     history_dates = pd.DatetimeIndex(
                         pd.to_datetime(history["date"], utc=True)
-                    )
+                    ).as_unit("ns")
                     cache_entry = (history, history_dates)
                     cache[pair] = cache_entry
 
@@ -562,7 +562,13 @@ class _PrecisionConfirmedInitialStopMixin:
                 return None
             if frame is None or frame.empty or "date" not in frame.columns:
                 return None
-            dates = pd.DatetimeIndex(pd.to_datetime(frame["date"], utc=True))
+            # Live OHLCV dates normally use millisecond resolution while the
+            # engine clock carries microseconds.  Pandas 3 refuses a lossy
+            # searchsorted comparison between those units, so losslessly
+            # promote candle timestamps before locating the completed bar.
+            dates = pd.DatetimeIndex(
+                pd.to_datetime(frame["date"], utc=True)
+            ).as_unit("ns")
         else:
             frame, dates = cache_entry
         if frame is None or frame.empty or "date" not in frame.columns:

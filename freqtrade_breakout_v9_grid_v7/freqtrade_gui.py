@@ -118,6 +118,12 @@ def _finite_float(value: Any, default: float = 0.0) -> float:
     return number if math.isfinite(number) else float(default)
 
 
+def format_profit_u(value: Any) -> str:
+    """Format an absolute position profit in the GUI stake currency."""
+
+    return f"{_finite_float(value):+,.2f}U"
+
+
 def strategy_profit_breakdown(
     profit: dict[str, Any],
     open_trades: list[dict[str, Any]],
@@ -910,7 +916,9 @@ class TradingConsole:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Breakout V16 + Grid V15 PF Precision Guard Console")
+        self.root.title(
+            "Breakout V16 + Grid V15 PF Score 2 Decay Console"
+        )
         self.root.configure(bg=BG)
         self.app_icon = apply_app_icon(self.root)
         width, height, x, y = fitted_window_geometry(
@@ -1362,7 +1370,7 @@ class TradingConsole:
 
         self.equity_hint = tk.StringVar(value="模拟账户权益")
         self.available_hint = tk.StringVar(value="可用保证金")
-        self.pnl_hint = tk.StringVar(value="历史 +0.00 · 持仓 +0.00")
+        self.pnl_hint = tk.StringVar(value="历史 +0.00U · 持仓 +0.00U")
         self.position_hint = tk.StringVar(value="共享账户")
         self.closed_hint = tk.StringVar(value="当前独立账本")
         self.quality_hint = tk.StringVar(value="胜率 —")
@@ -1448,7 +1456,7 @@ class TradingConsole:
             "stake": "保证金",
             "entry": "开仓价",
             "current": "当前价",
-            "pnl": "盈亏",
+            "pnl": "盈亏(U)",
             "duration": "持仓时间",
             "custody": "托管状态",
         }
@@ -1640,7 +1648,7 @@ class TradingConsole:
             self.equity_var.set(f"{DEFAULT_DRY_WALLET:,.2f} U")
             self.available_var.set(f"{DEFAULT_DRY_WALLET:,.2f} U")
             self.session_pnl_var.set("+0.00 U")
-            self.pnl_hint.set("历史 +0.00 · 持仓 +0.00")
+            self.pnl_hint.set("历史 +0.00U · 持仓 +0.00U")
             self.equity_hint.set("模拟账户权益")
         else:
             self.start_button.configure(text="▶  启动实盘")
@@ -2763,8 +2771,8 @@ class TradingConsole:
             )
             self.session_pnl_var.set(f"{total_profit:+,.2f} U")
             self.pnl_hint.set(
-                f"历史 {historical_profit:+,.2f} · "
-                f"持仓 {position_profit:+,.2f}"
+                f"历史 {historical_profit:+,.2f}U · "
+                f"持仓 {position_profit:+,.2f}U"
             )
             self.metric_cards[2].value_label.configure(
                 fg=GREEN if total_profit >= 0 else RED
@@ -2836,8 +2844,8 @@ class TradingConsole:
         self.available_var.set(f"{float(account['available']):,.2f} U")
         self.session_pnl_var.set(f"{total_profit:+,.2f} U")
         self.pnl_hint.set(
-            f"历史 {historical_profit:+,.2f} · "
-            f"持仓 {position_profit:+,.2f}"
+            f"历史 {historical_profit:+,.2f}U · "
+            f"持仓 {position_profit:+,.2f}U"
         )
         pnl_color = GREEN if total_profit >= 0 else RED
         self.metric_cards[2].value_label.configure(fg=pnl_color)
@@ -2933,7 +2941,7 @@ class TradingConsole:
         for trade in managed:
             pair = str(trade.get("pair") or "")
             seen.add(self._pair_key(pair))
-            pnl_pct = float(trade.get("profit_pct") or 0.0)
+            pnl_abs = _finite_float(trade.get("profit_abs"))
             values = (
                 pair.replace("/USDT:USDT", ""),
                 classify_component(trade.get("enter_tag")),
@@ -2942,11 +2950,11 @@ class TradingConsole:
                 f"{float(trade.get('stake_amount') or 0.0):,.2f}U",
                 self._format_price(trade.get("open_rate")),
                 self._format_price(trade.get("current_rate")),
-                f"{pnl_pct:+.2f}%",
+                format_profit_u(pnl_abs),
                 self._format_duration(trade.get("open_date")),
                 "Freqtrade",
             )
-            tag = "profit" if pnl_pct > 0 else "loss" if pnl_pct < 0 else "neutral"
+            tag = "profit" if pnl_abs > 0 else "loss" if pnl_abs < 0 else "neutral"
             self.positions.insert("", "end", values=values, tags=(tag,))
 
         for position in exchange_positions:
@@ -2955,7 +2963,7 @@ class TradingConsole:
             if key in seen:
                 continue
             if "pair" in position:
-                pnl_pct = float(position.get("profit_pct") or 0.0)
+                pnl_abs = _finite_float(position.get("profit_abs"))
                 side = str(position.get("side") or "")
                 values = (
                     pair.replace("/USDT:USDT", ""),
@@ -2965,7 +2973,7 @@ class TradingConsole:
                     f"{float(position.get('stake_amount') or 0.0):,.2f}U",
                     self._format_price(position.get("open_rate")),
                     self._format_price(position.get("current_rate")),
-                    f"{pnl_pct:+.2f}%",
+                    format_profit_u(pnl_abs),
                     self._format_duration(position.get("open_date")),
                     position.get("custody") or "待对账",
                 )
@@ -2983,8 +2991,8 @@ class TradingConsole:
                     "—",
                     "已托管" if position.get("is_bot_managed") else "未托管",
                 )
-                pnl_pct = 0.0
-            tag = "profit" if pnl_pct > 0 else "loss" if pnl_pct < 0 else "neutral"
+                pnl_abs = 0.0
+            tag = "profit" if pnl_abs > 0 else "loss" if pnl_abs < 0 else "neutral"
             self.positions.insert("", "end", values=values, tags=(tag,))
 
     def _log(

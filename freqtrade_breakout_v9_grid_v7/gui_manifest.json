@@ -1,10 +1,12 @@
 {
-  "release": "breakout_v16_grid_v15_precision_guard_gui_20260816",
-  "label": "Breakout V16 MTF + Grid V15 PF · 1m精度止损 · 共享Max2",
-  "strategy_class": "BreakoutV16GridV15PrecisionGuardGlobalLiveParityFreqtrade",
-  "strategy_file": "user_data/strategies/BreakoutV16GridV15PrecisionGuardLiveParityFreqtrade.py",
-  "strategy_sha256": "5d03f5a6319c180d35735feb73b499fb8ded9cbb23e66eb40ad501609b2775a4",
+  "release": "breakout_v16_grid_v15_precision_guard_score2_decay_gui_20260819",
+  "label": "Breakout V16 MTF + Grid V15 PF · Score 2结构衰减 · 1m精度止损 · 共享Max2",
+  "strategy_class": "BreakoutV16GridV15PrecisionGuardScore2DecayLiveParityFreqtrade",
+  "strategy_file": "user_data/strategies/BreakoutV16GridV15PrecisionGuardScore2DecayLiveParityFreqtrade.py",
+  "strategy_sha256": "d2c749702950b6970350b297700f222b868f3098756d12113ea9d87be885f859",
   "dependency_sha256": {
+    "user_data/strategies/BreakoutV16Score2StructuralDecayResearchFreqtrade.py": "e1f0d5b3d6fc0f2d6a29e0bab73076103d289da7557ccf5adf7b9c9cd7028ce3",
+    "user_data/strategies/BreakoutV16GridV15PrecisionGuardLiveParityFreqtrade.py": "3b67e107fd6ffc8ff666a555cfb96c0cc20045ec4abc5f8d377ed393011d69a8",
     "user_data/strategies/BreakoutV16GridV15QualityPfCombinedLiveParityFreqtrade.py": "12ccfa83fdc5e669fd2e647e3083b2fed7542b625e0444ad23e1cbfbbfad936e",
     "user_data/strategies/BreakoutV16GridV15QualityPfCombinedResearchFreqtrade.py": "263a7be9a2506c8b48fcb5d94e8d41ffc4092cbafd3d8170d6ecf02cc6729e30",
     "user_data/strategies/GridV15Fixed50QualityProtectedResearchFreqtrade.py": "087f2cab04b70f9bfc30e8d02233b3074e39412daad337dc540847f816a6afca",
@@ -48,9 +50,9 @@
     "../freqtrade_grid_v8_dual_side/user_data/strategies/GridV8DualSideFreqtrade.py": "62fbca27a6b383df24da6a8e82de5b37689aa8d30863de96b8322c79d75e402f"
   },
   "config_file": "config.gui.json",
-  "config_sha256": "dd08dee875d0d054e9969aec8917bfa494ffba6a1db569fc09fb8a1c325a918e",
+  "config_sha256": "79be5591bff06361a229c15f6dbb0ae7b78616b4511ba658cf3b73828f665f61",
   "backtest_config_file": "config.backtest.json",
-  "backtest_config_sha256": "bc99eae8726a6ee885c6fade7da565ec3ee07f6506df2abb51ed4de0d28817f9",
+  "backtest_config_sha256": "95ad6e5d660c6dcd5d9d9986e24aed7903d4de6d2b45195251bf35d25c3703e3",
   "universe_sha256": "d53a0dbd506ff054568b0cf8dfd7cb780c04a2ef41df26ad717e98cb6e800b2a",
   "exchange": "binance",
   "trading_mode": "futures",
@@ -89,6 +91,14 @@
     "hard_stop_trigger_price_type": "last",
     "hard_stop_exchange_refresh_seconds": 30,
     "hard_stop_armed_in_entry_fill_callback": true,
+    "score2_structural_decay_exit": {
+      "direction": "short",
+      "minimum_hold_minutes": 480,
+      "maximum_mfe_r": 1.25,
+      "requires_completed_1h_rejection": true,
+      "four_hour_momentum_uses_completed_1h_only": true,
+      "decision_window_minutes": 5
+    },
     "grid_stop_logic_unchanged": true
   },
   "path_parity": {
@@ -96,9 +106,10 @@
     "backtest_mode_bypasses_only_live_batch_and_data_availability_gates": true,
     "signals_ranks_component_arbitration_grid_dca_and_noninitial_exits_owned_by_frozen_parent": true,
     "breakout_initial_stop_execution_owned_by_precision_guard": true,
-    "selected_research_class": "BreakoutV16GridV15PrecisionGuardGlobalResearchFreqtrade",
+    "selected_research_class": "BreakoutV16GridV15PrecisionGuardScore2DecayResearchFreqtrade",
     "production_class_inherits_selected_research_without_method_overrides": true,
-    "source_report": "reports/breakout_v16_precision_guard_20260816.md",
+    "source_report": "reports/breakout_v16_score2_structural_decay_20260819.md",
+    "overlay_report": "reports/breakout_v16_score2_structural_decay_20260819.md",
     "acceptance_report": "reports/breakout_v16_precision_guard_20260816.md",
     "acceptance_timerange": "20250811-20260811",
     "acceptance_trades": 224,

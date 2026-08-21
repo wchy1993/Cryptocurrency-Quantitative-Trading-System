@@ -356,6 +356,46 @@ def test_one_minute_close_beyond_soft_stop_exits_before_hard_stop() -> None:
     assert reason == strategy.PRECISION_GUARD_EXIT_REASON
 
 
+def test_live_microsecond_clock_handles_millisecond_candle_dates() -> None:
+    frame = pd.DataFrame(
+        {
+            "date": pd.Series(
+                pd.to_datetime(["2026-08-15T22:24:00Z"]),
+                dtype="datetime64[ms, UTC]",
+            ),
+            "open": [0.1288],
+            "high": [0.1289],
+            "low": [0.1288],
+            "close": [0.1289],
+        }
+    )
+    strategy = _harness(frame)
+    strategy.dp.runmode = SimpleNamespace(value="live")
+    trade = _Trade()
+    plan = strategy._trade_stop_plan(trade)
+    assert plan is not None
+    trade.stop_loss = plan.hard_stop
+
+    reason = strategy.custom_exit(
+        trade.pair,
+        trade,
+        datetime(
+            2026,
+            8,
+            15,
+            22,
+            25,
+            0,
+            123456,
+            tzinfo=timezone.utc,
+        ),
+        current_rate=0.1289,
+        current_profit=-0.08,
+    )
+
+    assert reason == strategy.PRECISION_GUARD_EXIT_REASON
+
+
 def test_stale_minute_data_cannot_generate_delayed_exit() -> None:
     frame = pd.DataFrame(
         {

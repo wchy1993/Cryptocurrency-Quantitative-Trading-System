@@ -21,6 +21,7 @@ from freqtrade_gui import (
     TradingConsole,
     discover_external_manual_records,
     fitted_window_geometry,
+    format_profit_u,
     read_ledger_realized_profit,
     strategy_profit_breakdown,
     synchronize_manual_exchange_changes,
@@ -88,6 +89,11 @@ class LayoutTests(unittest.TestCase):
         self.assertGreaterEqual(y, 0)
         self.assertLessEqual(x + width, 1280)
         self.assertLessEqual(y + height, 800)
+
+    def test_position_profit_is_formatted_as_absolute_usdt(self) -> None:
+        self.assertEqual(format_profit_u(12.345), "+12.35U")
+        self.assertEqual(format_profit_u(-2.5), "-2.50U")
+        self.assertEqual(format_profit_u(None), "+0.00U")
 
     def test_larger_display_does_not_create_an_oversized_console(self) -> None:
         width, height, _x, _y = fitted_window_geometry(2560, 1600)
